@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""PreToolUse hook: one session per checkout.
+
+Matcher is `*`, and the filter is a path, from `file_path` or `notebook_path`,
+on a tool that is not a known reader. A named matcher would be faster but is a
+maintenance trap: when Claude Code ships another file-writing tool -- as
+NotebookEdit itself once was -- it would bypass the claim silently and nothing
+would report the hole. A tool that writes a file must say which file, so
+keying on a path covers any future writer the day it ships. The converse is
+not true, though: `Read` carries `file_path` too, so the READ_ONLY_TOOLS
+exclusion below is what keeps a read from being treated as a write.
+
+KNOWN GAP, ACCEPTED: coverage is the file-writing TOOLS. A file written by
+`bash: echo > file` records no claim and never will. Closing it needs a second
+shell parser inside this hook, and that false-positive surface costs more than
+the hole is worth -- see docs/decisions.md. Do not read the paragraph above as
+a claim of total coverage; it is a claim about tools, not about writes.
+
+Because this process therefore starts on EVERY tool call, the no-path
+early exit happens before any import, any filesystem access, and any config
+read. Everything heavy lives below it.
+
+Exits 2 to block -- the documented behaviour that stops a call before
+permission rules are evaluated, so it holds even under a broad allow rule.
+
+Escape hatch: CLAIM_ALLOW=1.
+"""
+
+# Design decisions about this file that look like accidental complexity are
+# recorded in docs/decisions.md. Read the relevant one before simplifying
+# anything here.
+
+import json
+import os
+import sys
+
+GUARD = "claude-session-claim"
+NOUN = "edit"
+
+
+def _crash_report(exc):
+    # A crashed guard allows (house rule: fail open), but it must not look
+    # like a guard that checked and allowed. Two channels: systemMessage for
+    # the human, additionalContext for Claude -- which reaches Claude on every
+    # surface, so Claude can tell the human where the warning does not render.
+    # permissionDecision is OMITTED: "allow" would bypass other rules.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". This guard's check did not run; "
+                                 "other guards and permission rules still "
+                                 "apply. Tell the user this guard is broken.",
+        },
+    }
+
+
+# Tools that carry a path but never write through it. The filter below keys on
+# the presence of a path, which is what keeps a FUTURE file-writing tool
+# covered the day it ships -- but `Read` carries `file_path` too, and treating
+# it as a write let three reads exhaust the breaker and disarm the guard before
+# the first real write.
+#
+# A list of readers rather than a list of writers, deliberately. Missing a new
+# reader costs one spurious claim, which the decision log shows. Missing a new
+# WRITER would be a silent hole, which is the failure this whole matcher choice
+# exists to avoid. The two mistakes are not symmetric, so the list is on the
+# side where being wrong is cheap.
+READ_ONLY_TOOLS = frozenset({"Read", "NotebookRead", "Glob", "Grep"})
+
+BLOCK_MESSAGE = """BLOCKED by claude-session-claim: {checkout} is already being worked in by
+another live session ({name}).
+
+Two sessions editing one checkout is how work from one PR ends up in another.
+
+A worktree has been created for you:
+  {worktree}  (branch: {branch})
+
+Move into it, then re-apply this edit there:
+  1. Call EnterWorktree with path: {worktree}
+  2. Re-apply this edit to {relative}
+  3. Before opening a PR, rename the branch to something meaningful:
+     git branch -m <your-branch-name>
+
+Override for this session: CLAIM_ALLOW=1
+"""
+
+WARN_MESSAGE = """claude-session-claim: {checkout} is also being worked in by another live
+session ({name}), and a worktree could not be created here ({reason}).
+
+Allowing this edit. Consider moving to your own worktree by hand:
+  git -C {checkout} worktree add .claude/worktrees/<name> -b <branch>
+"""
+
+STAND_DOWN = """claude-session-claim: standing down for this session.
+
+This guard has blocked {count} times, which means relocation is not working --
+a correct block happens once, then the session works in its own worktree. It
+will not block again this session. See ~/.claude/session-claims/decisions.log
+"""
+
+
+def main():
+    # --- hot path: runs on every tool call, must stay trivial ----------------
+    if os.environ.get("CLAIM_ALLOW") == "1":
+        return 0
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        return 0
+    except Exception as exc:
+        print(json.dumps(_crash_report(exc)))
+        return 0
+    if not isinstance(payload, dict):
+        return 0
+    if payload.get("tool_name") in READ_ONLY_TOOLS:
+        return 0
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return 0
+    file_path = tool_input.get("file_path") or tool_input.get("notebook_path")
+    if not file_path or not isinstance(file_path, str):
+        return 0
+
+    # --- past the filter: a genuine file write. Heavy work allowed. ----------
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import breaker_lib
+    import claim_lib
+    import identity_lib
+    import toolkit_config
+
+    # Test seams. Absent in normal use; they exist so the hook can be exercised
+    # as a real subprocess without touching the machine's own claim state.
+    for var, module, attribute in (
+            ("CLAIM_CLAIMS_PATH", claim_lib, "CLAIMS_PATH"),
+            ("CLAIM_BREAKER_PATH", breaker_lib, "BREAKER_PATH"),
+            ("CLAIM_LOG_PATH", breaker_lib, "LOG_PATH")):
+        if os.environ.get(var):
+            setattr(module, attribute, os.environ[var])
+
+    if toolkit_config.get("session_claim", "enabled", default=True) is False:
+        return 0
+
+    checkout = claim_lib.find_checkout(file_path)
+    if not checkout:
+        return 0
+
+    owner = identity_lib.resolve_hook_owner()
+    if owner is None:
+        # Identity not established -> allow. Never block on an unknown owner.
+        breaker_lib.log_decision("allow-uncertain", checkout=checkout,
+                                 reason="owner unresolved")
+        return 0
+
+    # One process start-time table for the whole invocation, threaded into
+    # every liveness check below. Liveness is asked once per claim record and
+    # once per breaker entry, and a `ps` per record adds up quickly with many
+    # records -- inside the lock, on a path that runs on every file write.
+    # Fetched once here rather than lazily in each library so the hook's
+    # timeout budget has a FIXED number of `ps` calls in it (see the budget
+    # comment in claim_lib) instead of one that depends on how much state
+    # happens to be on disk.
+    starts = identity_lib.start_times()
+    if not starts:
+        # The table is unavailable (`ps` failed or timed out; a working table
+        # is never empty), so no claim's liveness can be judged. Allow, and
+        # touch nothing: pruning would persist "dead" for live holders, and
+        # blocking would refuse on evidence we don't have -- a stale claim on a
+        # recycled pid would read as live. Same shape as "owner unresolved".
+        breaker_lib.log_decision("allow-uncertain", checkout=checkout,
+                                 reason="start table unavailable")
+        return 0
+
+    owner_start = starts.get(owner["pid"])
+    if owner_start is None:
+        # The owner's start time comes from this same table as every liveness
+        # check. A record saved without one degrades to a bare existence check,
+        # so a later reuse of that pid would read as live and block another
+        # session. A working table that lacks the owner means it
+        # cannot be identified as a process: allow and write nothing, the same
+        # rule as the two allow-uncertain branches above.
+        breaker_lib.log_decision("allow-uncertain", checkout=checkout,
+                                 reason="owner start unknown")
+        return 0
+    owner = dict(owner, proc_start=owner_start)
+
+    max_blocks = toolkit_config.get_int("session_claim", "max_blocks", default=3)
+    if breaker_lib.is_tripped(owner["pid"], max_blocks, starts=starts):
+        breaker_lib.log_decision("allow-breaker", pid=owner["pid"],
+                                 checkout=checkout)
+        return 0
+
+    # The whole read-modify-write runs under the lock, because two sessions
+    # claiming different checkouts in the same instant would otherwise lose one
+    # of the two claims -- and a lost claim means no block, silently. Note what
+    # is NOT in here: `git worktree add` below runs outside the lock, since
+    # holding a cross-process lock across a git subprocess is how a guard that
+    # fails open turns into one that stalls.
+    with claim_lib.locked():
+        records = claim_lib.prune(claim_lib.load_claims(), starts)
+        held_by = claim_lib.holder(records, checkout, owner["pid"],
+                                   starts=starts)
+        if held_by is None:
+            claim_lib.save_claims(
+                claim_lib.add_claim(records, checkout, owner,
+                                    payload.get("transcript_path")))
+
+    if held_by is None:
+        breaker_lib.log_decision("claim", pid=owner["pid"], checkout=checkout,
+                                 name=owner["name"])
+        return 0
+
+    # Second independent same-session signal: if the transcript matches, this
+    # is us, whatever the pids say.
+    transcript = payload.get("transcript_path")
+    if transcript and held_by.get("transcript_path") == transcript:
+        breaker_lib.log_decision("allow-same-transcript", pid=owner["pid"],
+                                 checkout=checkout)
+        return 0
+
+    worktree, branch = claim_lib.worktree_paths(checkout, owner)
+    if not claim_lib.create_worktree(checkout, worktree, branch):
+        breaker_lib.log_decision("allow-worktree-failed", pid=owner["pid"],
+                                 checkout=checkout)
+        sys.stderr.write(WARN_MESSAGE.format(
+            checkout=checkout, name=held_by.get("name") or "unknown",
+            reason="git worktree add failed"))
+        return 0
+
+    # The worktree is for US, but it lands inside the HOLDER's checkout, where
+    # it shows up as an untracked `.claude/` in their `git status` and gets
+    # staged as an embedded gitlink by a routine `git add -A`. Excluding it
+    # keeps that session's tree clean. Diagnostic only if it fails -- a dirty
+    # status is a nuisance, and refusing to block over it would be worse than
+    # the problem.
+    if not claim_lib.ensure_worktrees_ignored(checkout):
+        breaker_lib.log_decision("exclude-write-failed", pid=owner["pid"],
+                                 checkout=checkout)
+
+    count = breaker_lib.record_block(owner["pid"], owner.get("proc_start"),
+                                     starts=starts)
+    breaker_lib.log_decision("block", pid=owner["pid"], checkout=checkout,
+                             held_by=held_by.get("name"), count=count)
+
+    relative = os.path.relpath(os.path.realpath(os.path.abspath(file_path)),
+                               checkout)
+    sys.stderr.write(BLOCK_MESSAGE.format(
+        checkout=checkout, name=held_by.get("name") or "unknown",
+        worktree=worktree, branch=branch, relative=relative))
+
+    if count >= max_blocks > 0:
+        sys.stderr.write("\n" + STAND_DOWN.format(count=count))
+    return 2
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        # A broken guard must never cost someone a prompt, so it still allows
+        # and exits 0 -- but it says it crashed, on both channels, rather than
+        # looking like a guard that checked and allowed.
+        print(json.dumps(_crash_report(exc)))
+        sys.exit(0)

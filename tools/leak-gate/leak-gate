@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""Fail-closed leak gate for a tree about to be published.
+
+    leak-gate tree --root DIR --profile FILE --inventory FILE
+                   [--exceptions FILE] [--receipt FILE] [--link-root DIR]
+                   [--names-file FILE] [--words-file FILE]
+    leak-gate inventory --root DIR [--out FILE]
+    leak-gate history --repo DIR --all-refs --profile FILE --identity "NAME <EMAIL>"
+                      [--exceptions FILE] [--receipt FILE]
+                      [--names-file FILE] [--words-file FILE]
+    leak-gate selftest --profile FILE [--require-real-control] [--receipt FILE]
+    leak-gate remote-audit --remote URL --expected FILE --profile FILE
+                           --identity "NAME <EMAIL>" [--pulls FILE | --no-pull-requests]
+                           [--authenticated] [--exceptions FILE] [--receipt FILE]
+                           [--names-file FILE] [--words-file FILE]
+
+Exit codes: 0 clean, 1 findings, 2 refused (bad or missing input, empty scope,
+unreadable entry, stale exception, a detector that cannot run, an incomplete
+history).
+
+`tree` scans paths, raw content, symlink text and resolution, and checks the
+tree against an exact expected inventory. The profile is private and lives
+outside every tree; this tool ships with no terms of its own. Output never
+prints a matched value: a term shows as its profile index, a name as <name>.
+
+`inventory` prints the inventory of a tree as it stands. Generating it from the
+tree you then gate cannot catch an unexpected file in that tree, so use it to
+freeze a reviewed tree, or have the exporter write the inventory independently.
+
+`history` scans everything every ref reaches: ref names, every historical path
+and blob, commits, tags and notes, and requires every author, committer and
+tagger to be the one approved identity. Its walk must agree with git's own
+object and ref inventory, or it refuses.
+
+`selftest` plants terms on every surface of disposable repositories and
+requires the gates to catch each one, with synthetic terms and with one real
+term per match mode of the private profile. A mode with no plantable term
+refuses (2): a pass must never cover fewer modes than the profile uses. Exit 1
+means a control failed and the gates are not to be trusted.
+
+`remote-audit` checks a published remote: every advertised ref, including
+pull-request refs, must match the expected publication refs exactly, and
+everything they reach goes through the history gate. Anonymous by default,
+which is what a stranger sees; `--authenticated` uses your git credentials for
+a private remote. A GitHub remote's pull requests are cross-checked against
+the GitHub API (needs `gh`).
+
+What a 0 does not prove is listed in the receipt's `limits` and in
+leak_gate_lib.py's docstring. Read it before treating a clean run as a
+certificate.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # realpath: run via symlink
+
+import history_lib  # noqa: E402
+import leak_gate_lib as lib  # noqa: E402
+import remote_lib  # noqa: E402
+import selftest_lib  # noqa: E402
+
+
+def _write_json(path, data):
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=1, sort_keys=True, ensure_ascii=False)
+        fh.write("\n")
+
+
+def _receipted(gate, receipt, scanned_root, run):
+    """Run `run()`, keeping the receipt at `receipt` honest whatever happens."""
+    if receipt:
+        # Overwrite any earlier receipt BEFORE running, so a refused or crashed
+        # run can never leave a previous clean receipt standing at this path.
+        if scanned_root is not None and lib._inside(
+                receipt, os.path.realpath(os.fsencode(scanned_root))):
+            raise lib.Refused("the receipt is inside what is being scanned; it would ship")
+        _write_json(receipt, {"gate": gate, "exit": 2, "refused": "the run did not complete"})
+    try:
+        return run()
+    except lib.Refused as exc:
+        if receipt:
+            _write_json(receipt, {"gate": gate, "exit": 2, "refused": str(exc)})
+        raise
+
+
+def _tree(args):
+    code, _findings, lines, summary = _receipted("tree", args.receipt, args.root, lambda: (
+        lib.run_tree(args.root, args.profile, args.inventory, args.exceptions,
+                     args.names_file, args.words_file, args.receipt,
+                     args.link_root)))
+    for line in lines:
+        print(line)
+    print("leak-gate tree: %s — %d entries, %d files, %d bytes; profile %s (%d terms); "
+          "%d finding(s), %d exception(s) applied"
+          % ("CLEAN" if code == 0 else "BLOCKED", summary["entries"], summary["files"],
+             summary["bytes"], summary["profile_sha256"][:12], summary["profile_terms"],
+             len(lines), summary["exceptions_applied"]))
+    if args.receipt:
+        _write_json(args.receipt, summary)
+    return code
+
+
+def _history(args):
+    code, _findings, lines, summary = _receipted("history", args.receipt, args.repo, lambda: (
+        history_lib.run_history(args.repo, args.profile, args.identity, args.exceptions,
+                                args.all_refs, args.names_file, args.words_file,
+                                args.receipt)))
+    for line in lines:
+        print(line)
+    print("leak-gate history: %s — %d refs, %d commits, %d trees, %d blobs, %d tags, "
+          "%d paths, %d bytes; git lists %d objects; profile %s (%d terms); "
+          "%d finding(s), %d exception(s) applied"
+          % ("CLEAN" if code == 0 else "BLOCKED", summary["refs"], summary["commits"],
+             summary["trees"], summary["blobs"], summary["tags"], summary["paths"],
+             summary["bytes"], summary["git_objects"], summary["profile_sha256"][:12],
+             summary["profile_terms"], len(lines), summary["exceptions_applied"]))
+    if args.receipt:
+        _write_json(args.receipt, summary)
+    return code
+
+
+def _selftest(args):
+    code, results, summary = _receipted("selftest", args.receipt, None, lambda: (
+        selftest_lib.run_selftest(args.profile, args.require_real_control)))
+    for r in results:
+        if not r.ok:
+            print("FAILED  %-9s %s: %s" % (r.set, r.name, r.detail))
+    print("leak-gate selftest: %s — %d controls (%d with the private profile), %d failed; "
+          "real terms by mode: %s; profile %s (%d terms)"
+          % ("PASS" if code == 0 else "FAIL", summary["controls"], summary["real_controls"],
+             summary["failed"],
+             ", ".join("%s #%d" % kv for kv in summary["real_terms"].items()) or "none",
+             summary["profile_sha256"][:12], summary["profile_terms"]))
+    if args.receipt:
+        _write_json(args.receipt, summary)
+    return code
+
+
+def _remote_audit(args):
+    code, _findings, lines, summary = _receipted("remote-audit", args.receipt, None, lambda: (
+        remote_lib.run_remote_audit(args.remote, args.expected, args.profile, args.identity,
+                                    args.exceptions, args.pulls, args.no_pull_requests,
+                                    args.authenticated, args.names_file, args.words_file)))
+    for line in lines:
+        print(line)
+    h = summary["history"]
+    print("leak-gate remote-audit: %s — %s; %d advertised refs (%d ref finding(s)), %d pull "
+          "request(s) from %s; history: %d commits, %d blobs, %d tags; profile %s (%d terms); "
+          "%d finding(s)"
+          % ("CLEAN" if code == 0 else "BLOCKED", summary["access"], summary["advertised_refs"],
+             summary["ref_findings"], summary["pull_requests"], summary["pull_request_source"],
+             h["commits"], h["blobs"], h["tags"], h["profile_sha256"][:12], h["profile_terms"],
+             len(lines)))
+    if args.receipt:
+        _write_json(args.receipt, summary)
+    return code
+
+
+def _inventory(args):
+    inventory = lib.make_inventory(args.root)
+    if args.out:
+        if lib._inside(args.out, os.path.realpath(os.fsencode(args.root))):
+            raise lib.Refused("the inventory output is inside the tree; it would change it")
+        _write_json(args.out, inventory)
+    else:
+        json.dump(inventory, sys.stdout, indent=1, sort_keys=True, ensure_ascii=False)
+        sys.stdout.write("\n")
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="leak-gate", description=__doc__.split("\n\n")[0])
+    sub = parser.add_subparsers(dest="cmd")
+    tree = sub.add_parser("tree", help="gate one tree against a private profile")
+    tree.add_argument("--root", required=True)
+    tree.add_argument("--profile", required=True)
+    tree.add_argument("--inventory", required=True)
+    tree.add_argument("--exceptions")
+    tree.add_argument("--receipt")
+    tree.add_argument("--link-root", help="judge dangling links against this directory "
+                      "instead of --root; escape is still judged against --root")
+    tree.add_argument("--names-file", default=lib.DEFAULT_NAMES)
+    tree.add_argument("--words-file", default=lib.DEFAULT_WORDS)
+    inv = sub.add_parser("inventory", help="print a tree's inventory as it stands")
+    inv.add_argument("--root", required=True)
+    inv.add_argument("--out")
+    hist = sub.add_parser("history", help="gate everything a repository's refs reach")
+    hist.add_argument("--repo", required=True)
+    hist.add_argument("--all-refs", action="store_true",
+                      help="required: scan every ref (the only mode implemented)")
+    hist.add_argument("--profile", required=True)
+    hist.add_argument("--identity", required=True,
+                      help='the one approved author/committer/tagger, "Name <email>"')
+    hist.add_argument("--exceptions")
+    hist.add_argument("--receipt")
+    hist.add_argument("--names-file", default=lib.DEFAULT_NAMES)
+    hist.add_argument("--words-file", default=lib.DEFAULT_WORDS)
+    st = sub.add_parser("selftest", help="prove the gates catch planted terms")
+    st.add_argument("--profile", required=True)
+    st.add_argument("--require-real-control", action="store_true",
+                    help="accepted for the plan's contract; always on: selftest refuses "
+                         "unless every match mode in the profile gets a real control")
+    st.add_argument("--receipt")
+    ra = sub.add_parser("remote-audit", help="audit every ref a published remote exposes")
+    ra.add_argument("--remote", required=True)
+    ra.add_argument("--expected", required=True, help="the expected publication refs (JSON)")
+    ra.add_argument("--profile", required=True)
+    ra.add_argument("--identity", required=True)
+    ra.add_argument("--pulls", help="pull-request numbers for a non-GitHub host (JSON)")
+    ra.add_argument("--no-pull-requests", action="store_true",
+                    help="the host has no pull requests (refused for GitHub)")
+    ra.add_argument("--authenticated", action="store_true",
+                    help="use your git credentials (default: anonymous)")
+    ra.add_argument("--exceptions")
+    ra.add_argument("--receipt")
+    ra.add_argument("--names-file", default=lib.DEFAULT_NAMES)
+    ra.add_argument("--words-file", default=lib.DEFAULT_WORDS)
+    args = parser.parse_args(argv)  # argparse exits 2 on bad usage: refused
+    if not args.cmd:
+        parser.print_usage(sys.stderr)
+        return 2
+    handlers = {"tree": _tree, "inventory": _inventory, "history": _history,
+                "selftest": _selftest, "remote-audit": _remote_audit}
+    try:
+        return handlers[args.cmd](args)
+    except lib.Refused as exc:
+        print("leak-gate: REFUSED: %s" % exc, file=sys.stderr)
+        return 2
+    except Exception as exc:  # fail closed: an internal error is never a pass
+        print("leak-gate: REFUSED: internal error (%s)" % type(exc).__name__, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

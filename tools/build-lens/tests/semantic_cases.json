@@ -1,0 +1,249 @@
+[
+  {
+    "name": "clean_approve",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "python3 t.py"
+        ],
+        "why_not": ""
+      },
+      "findings": []
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "executed_missing",
+    "report": {
+      "recommendation": "APPROVE",
+      "findings": []
+    },
+    "expect": "reject",
+    "reason": "executed is missing"
+  },
+  {
+    "name": "ran_false_no_why_not_no_findings",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": false,
+        "commands": [],
+        "why_not": ""
+      },
+      "findings": []
+    },
+    "expect": "reject",
+    "reason": "findings is empty"
+  },
+  {
+    "name": "ran_false_honest_why_not_no_findings",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": false,
+        "commands": [],
+        "why_not": "read-only review, nothing to run"
+      },
+      "findings": []
+    },
+    "expect": "reject",
+    "reason": "findings is empty"
+  },
+  {
+    "name": "ran_false_blank_why_not_with_finding",
+    "report": {
+      "recommendation": "COMMENT",
+      "executed": {
+        "ran": false,
+        "commands": [],
+        "why_not": "   "
+      },
+      "findings": [
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "IMPORTANT",
+          "evidence": "e"
+        }
+      ]
+    },
+    "expect": "reject",
+    "reason": "why_not is empty"
+  },
+  {
+    "name": "ran_false_honest_with_finding",
+    "report": {
+      "recommendation": "COMMENT",
+      "executed": {
+        "ran": false,
+        "commands": [],
+        "why_not": "no suite in this repo"
+      },
+      "findings": [
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "IMPORTANT",
+          "evidence": "e"
+        }
+      ]
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "ran_true_no_commands",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [],
+        "why_not": ""
+      },
+      "findings": []
+    },
+    "expect": "reject",
+    "reason": "commands is empty"
+  },
+  {
+    "name": "ran_true_whitespace_command",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "   "
+        ],
+        "why_not": ""
+      },
+      "findings": []
+    },
+    "expect": "reject",
+    "reason": "blank entry"
+  },
+  {
+    "name": "ran_true_one_blank_among_real",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "python3 t.py",
+          ""
+        ],
+        "why_not": ""
+      },
+      "findings": []
+    },
+    "expect": "reject",
+    "reason": "blank entry"
+  },
+  {
+    "name": "approve_with_blocking",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "python3 t.py"
+        ],
+        "why_not": ""
+      },
+      "findings": [
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "BLOCKING",
+          "evidence": "e"
+        }
+      ]
+    },
+    "expect": "reject",
+    "reason": "APPROVE"
+  },
+  {
+    "name": "approve_with_important_then_blocking",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "python3 t.py"
+        ],
+        "why_not": ""
+      },
+      "findings": [
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "IMPORTANT",
+          "evidence": "e"
+        },
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "BLOCKING",
+          "evidence": "e"
+        }
+      ]
+    },
+    "expect": "reject",
+    "reason": "APPROVE"
+  },
+  {
+    "name": "approve_with_important_only",
+    "report": {
+      "recommendation": "APPROVE",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "python3 t.py"
+        ],
+        "why_not": ""
+      },
+      "findings": [
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "IMPORTANT",
+          "evidence": "e"
+        }
+      ]
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "request_changes_with_blocking",
+    "report": {
+      "recommendation": "REQUEST_CHANGES",
+      "executed": {
+        "ran": true,
+        "commands": [
+          "python3 t.py"
+        ],
+        "why_not": ""
+      },
+      "findings": [
+        {
+          "where": "x",
+          "defect": "y",
+          "consequence": "z",
+          "severity": "BLOCKING",
+          "evidence": "e"
+        }
+      ]
+    },
+    "expect": "accept",
+    "reason": ""
+  }
+]

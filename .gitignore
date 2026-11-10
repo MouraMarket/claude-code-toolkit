@@ -1,0 +1,26 @@
+.DS_Store
+
+__pycache__/
+*.pyc
+
+# Worktrees and per-session editor state. Worktrees live in .claude/worktrees/,
+# so without this a `git add -A` stages an entire second checkout of the repo
+# into the repo.
+.claude/
+
+# Session history a memory plugin may write inside a checkout. It is local
+# session memory, not tooling: never ship it.
+.remember/
+
+# Scratch from the upstream superpowers skills (ledgers, briefs, review packages).
+.superpowers/
+
+# Local override, if a machine ever needs one.
+install.local.sh
+
+# skill-trigger's positive control writes these beside a checkout's SKILL.md and
+# restores them itself; a crash leftover is recovered by the next run's scan,
+# never committed.
+*.skill-trigger-backup
+*.skill-trigger-backup.tmp-*
+.skill-trigger-tmp-*

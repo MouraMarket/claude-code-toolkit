@@ -1,0 +1,581 @@
+#!/usr/bin/env python3
+"""What this session spent, by model, split into four lanes — main, executor,
+review, and other — classified from each subagent's `agentType`.
+
+    claude-build-cost <transcript.jsonl>
+    claude-build-cost <transcript.jsonl> --label "auth refactor"
+    claude-build-cost <transcript.jsonl> --json
+    claude-build-cost --ledger            # what previous builds cost
+
+`/build` runs this manually at Phase 5 to report the number on demand. The
+`claude-build-cost-record` hook records automatically at every qualifying
+session's `SessionEnd`, so this no longer has to be remembered.
+
+Records land in the ledger (default `~/.claude/build-costs.jsonl`, override with
+`build_cost.ledger_path` in the toolkit config). One line per session, appended,
+never rewritten — a long session can span several builds, and a resumed session
+appends a superseding row rather than a duplicate.
+
+Exit codes: 0 fine, 2 could not read the transcript.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # realpath: symlinked
+# Three dirname calls, matching every other tool here: this file is
+# <repo>/tools/build-cost/claude-build-cost, so two lands on <repo>/tools and
+# appends a tools/lib that has never existed. It imported anyway, by accident —
+# cost_lib imports watch_lib, which inserts the real <repo>/lib and imports
+# toolkit_config, so the line below found it already in sys.modules. The
+# `except ImportError` then made the breakage silent whenever that chain
+# changed: _config becomes None and build_cost.ledger_path is ignored with no
+# error, writing to the default path forever.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "lib"))
+
+import cost_lib  # noqa: E402
+
+try:
+    import toolkit_config as _config
+except ImportError:  # pragma: no cover - the tool still works without config
+    _config = None
+
+
+def ledger_path():
+    # Moved into cost_lib when the dispatch advisory became a third caller.
+    # `_config` is still passed explicitly rather than letting cost_lib resolve
+    # it, so the import-chain comment above keeps describing what this tool
+    # actually does.
+    return cost_lib.ledger_path(_config)
+
+
+def money(value):
+    return "$%.2f" % value if value >= 0.01 else "$%.4f" % value
+
+
+def print_report(report, label):
+    summary = cost_lib.summarize(report)
+    # Bound once, used by the by-model share and the USD block below. Named
+    # total_cost rather than total: `total` is also the token-row label.
+    total_cost = summary["total_cost"]
+
+    print()
+    print("Build cost%s" % (" — %s" % label if label else ""))
+    print()
+    print("  output tokens by lane (opus-eq weighs each model's output by its list")
+    print("  price against Claude Opus 5.5: a proxy for usage-window draw, not a")
+    print("  published ratio)")
+    print("  %-10s %14s %14s %14s %14s %10s" % ("lane", "output tokens", "opus-eq",
+                                                "cache write", "cache read", "messages"))
+    unweighted_lanes = []
+    for name in cost_lib.LANES:
+        # Per-lane floor and unweighted markers — never the session-wide flags
+        # below, which cannot say which lane carries them.
+        floor_marker = "≥" if summary["%s_opus_equivalent_is_floor" % name] else ""
+        unweighted_marker = "!" if summary["%s_unweighted" % name] else ""
+        if unweighted_marker:
+            unweighted_lanes.append(name)
+        opus_eq_cell = "%s%s%s" % (
+            floor_marker, format(summary["%s_opus_equivalent_output" % name], ",d"),
+            unweighted_marker)
+        print("  %-10s %14s %14s %14s %14s %10d" % (
+            name,
+            format(summary["%s_output" % name], ",d"),
+            opus_eq_cell,
+            format(summary["%s_cache_write" % name], ",d"),
+            format(summary["%s_cache_read" % name], ",d"),
+            summary["%s_messages" % name]))
+    print("  %-10s %14s" % ("total", format(summary["total_output"], ",d")))
+    if unweighted_lanes:
+        print("  ! this lane spent tokens on a model with no weight, so its opus-eq is")
+        print("    understated and its share below is too low. Models: %s"
+              % ", ".join(summary["unweighted_models"]))
+
+    marker = "≥" if summary["opus_equivalent_is_floor"] else " "
+    print("  opus-equivalent output: %s%s" % (
+        marker, format(summary["total_opus_equivalent_output"], ",d")))
+    if summary["opus_equivalent_is_floor"]:
+        print("  (>= because a weight set in USAGE_WEIGHT is marked as a stated")
+        print("   minimum, so real draw may be higher.)")
+    if summary["unweighted_models"]:
+        print("  NOT WEIGHTED (excluded from the figure above): %s"
+              % ", ".join(summary["unweighted_models"]))
+
+    if report["by_model"]:
+        print()
+        print("  by model")
+        for model in sorted(report["by_model"]):
+            lanes = report["by_model"][model]
+            cost = sum(lanes[name]["cost"] for name in cost_lib.LANES)
+            share = (cost / total_cost * 100) if total_cost else 0.0
+            print("    %-28s %-10s %5.1f%%" % (model, money(cost), share))
+
+    print()
+    print("  USD at Anthropic's list prices as of %s (a model-comparison proxy," % cost_lib.PRICES_AS_OF)
+    print("  not an amount owed: a subscription is not billed per token, and an")
+    print("  API bill applies its own discounts and modifiers)")
+    for name in cost_lib.LANES:
+        print("    %-10s %s" % (name, money(summary["%s_cost" % name])))
+    print("    %-10s %s" % ("total", money(summary["total_cost"])))
+
+    if summary["unpriced_models"]:
+        print()
+        print("  NOT PRICED (excluded from the totals above): %s"
+              % ", ".join(summary["unpriced_models"]))
+        print("  Either a model version newer than PRICING in cost_lib.py (add it")
+        print("  from Anthropic's pricing page), or a message off list price, named")
+        print("  in brackets. Until then this build's cost is understated, not zero.")
+
+    if summary["unknown_agent_types"]:
+        print()
+        print("  UNKNOWN AGENT TYPES (counted in `other`): %s"
+              % ", ".join(summary["unknown_agent_types"]))
+        print("  Add them to LANE_BY_AGENT_TYPE in cost_lib.py — until then this")
+        print("  build's executor and review lanes are understated.")
+
+    # The number that decides the routing question. Opus-equivalent, not raw:
+    # raw output sums every model's tokens as one unit, which overstated a
+    # cheaper executor lane — always in the
+    # direction that argues against the split — while understating any lane
+    # that ran a model dearer than the reference.
+    weighted_total = summary["total_opus_equivalent_output"]
+    if weighted_total:
+        print()
+        print("  executor share of window draw: %.0f%%"
+              % (summary["executor_opus_equivalent_output"] / weighted_total * 100))
+        print("  review-gate share            : %.0f%%"
+              % (summary["review_opus_equivalent_output"] / weighted_total * 100))
+        if summary["opus_equivalent_is_floor"]:
+            print("  (A floored weight: a lane containing it is a")
+            print("   minimum share, and every OTHER lane's share is a maximum,")
+            print("   since the same floored figure sits in the total each")
+            print("   share divides by.)")
+        if summary["unweighted_models"]:
+            print("  (A lane above spent tokens on an unweighted model, so these")
+            print("   shares are understated for that lane. See the ! rows.)")
+        print("  (Cost only. A cheaper build that produced more BLOCKED reports")
+        print("   or more rework is not a cheaper build — read this next to those.)")
+    elif summary["total_output"]:
+        # Real tokens, no weighted total: every model in the session is
+        # unrecognised. Silence here would read as "no spend", which is the one
+        # thing it must never read as. Say what happened and name the models.
+        print()
+        print("  NO SHARE AVAILABLE: this session spent %s output tokens but no"
+              % format(summary["total_output"], ",d"))
+        print("  model in it has a usage weight, so window draw cannot be split.")
+        print("  Models: %s" % ", ".join(summary["unweighted_models"]))
+        print("  Add their version to PRICING in cost_lib.py.")
+
+
+# Both moved into `cost_lib` when `lane_stats` became a second reader of this
+# ledger. Aliased rather than re-implemented: two collapse rules over one
+# append-only file would drift the first time either changed, and the call
+# sites below are unaffected. See `cost_lib.collapse_ledger_rows`.
+_number = cost_lib.ledger_number
+
+
+def _tokens(row, key, default=0):
+    """A token count from an untrusted ledger row, as an int.
+
+    `_number` admits float on purpose — `total_cost` is one — but every token
+    cell renders with `",d"`, which rejects floats and takes the whole view down
+    with a ValueError. Coerce here rather than widening the format string: a
+    fractional token count is not meaningful, and int() of a real value is the
+    honest rendering.
+    """
+    value = _number(row, key, default=default)
+    return value if value is None else int(value)
+
+
+DASH = "—"   # a field the row does not carry — never a fabricated 0
+FLOOR = "≥"  # a lane or total whose weight is a stated floor, not exact
+
+# Two different incompletenesses, on two different columns. Conflating them put
+# the wrong caveat on the headline number: `unpriced` means a model has no
+# DOLLAR price, and a model can be weighted without one (a USAGE_WEIGHT
+# override) — so an unpriced row's opus-equivalent figure can be complete while
+# only its usd-proxy is short. What makes an opus-equivalent figure short is
+# `unweighted`: a model with no weight has its output excluded from the total
+# altogether. The two sets genuinely differ on real sessions, so one marker
+# cannot stand for both.
+UNWEIGHTED = "!"  # opus-eq column: tokens excluded, so the figure understates
+UNPRICED = "*"    # usd-proxy column: no list price, so the dollar figure understates
+
+# A third, distinct incompleteness, on the executor/review lane cells: an
+# agentType with no entry in LANE_BY_AGENT_TYPE fell into `other` instead of
+# the executor or review lane it may actually belong to, so both are
+# understated by an amount this row cannot recover. Reusing `!` here would
+# conflate "this model has no weight" with "this classification is unknown" —
+# exactly the two-meanings-one-marker mistake the previous round split apart.
+UNKNOWN_AGENT = "†"
+
+
+_collapse_ledger_rows = cost_lib.collapse_ledger_rows
+
+
+def _row_timestamp(row):
+    value = row.get("timestamp", "?")
+    return value[:19] if isinstance(value, str) else "?"
+
+
+def _has_unknown_agent_types(row):
+    """Whether this row logged a subagent whose agentType had no lane mapping.
+
+    Filtered to strings for the same reason the legend joins below are: an
+    append-only ledger outliving several schema versions can carry a
+    non-string in a list where a model or type name belongs.
+    """
+    value = row.get("unknown_agent_types")
+    return isinstance(value, list) and any(isinstance(item, str) for item in value)
+
+
+def _lane_cell(row, lane):
+    """The opus-equivalent output for one lane of one ledger row, or `—` when
+    the row does not carry it — a row written before the per-lane keys existed,
+    or before the four-lane split entirely, must render as missing, not zero.
+    """
+    value = _tokens(row, "%s_opus_equivalent_output" % lane, default=None)
+    if value is None:
+        return DASH
+    marker = FLOOR if row.get("%s_opus_equivalent_is_floor" % lane) else ""
+    # `<lane>_unweighted` per lane, not the session-wide `unweighted_models` the
+    # total column reads. Third time this exact gap has appeared on this branch:
+    # the per-lane floor keys exist because a session-wide flag cannot say WHICH
+    # lane carries it, and `unknown_agent_types` was recorded in every row and
+    # read by nothing. A row that knows its executor lane is short must say so
+    # in the executor cell. Absent key -> not understated, so a row predating
+    # these keys renders clean rather than falsely marked.
+    unweighted_marker = UNWEIGHTED if _tokens(row, "%s_unweighted" % lane) else ""
+    # Only the executor and review lanes can be understated by an unclassified
+    # agentType — it lands in `other`, which is exactly what it is, so `other`
+    # itself never carries this marker.
+    unknown_marker = (UNKNOWN_AGENT
+                      if lane in ("executor", "review") and _has_unknown_agent_types(row)
+                      else "")
+    return "%s%s%s%s" % (marker, format(value, ",d"),
+                         unweighted_marker, unknown_marker)
+
+
+def _opus_eq_cell(row):
+    value = _tokens(row, "total_opus_equivalent_output", default=None)
+    if value is None:
+        return DASH
+    marker = FLOOR if row.get("opus_equivalent_is_floor") else ""
+    # `unweighted_models`, not `unpriced_models`: this column is tokens, and a
+    # model without a weight is the only thing that leaves tokens out of it.
+    short = UNWEIGHTED if row.get("unweighted_models") else ""
+    return "%s%s%s" % (marker, format(value, ",d"), short)
+
+
+def _output_cell(row):
+    value = _tokens(row, "total_output", default=None)
+    return DASH if value is None else format(value, ",d")
+
+
+def _usd_cell(row):
+    """USD, demoted to a single trailing proxy column. Marked `*` when the row
+    spent on a model with no list price, so the figure never presents as
+    complete when it is not. A distinct marker from the opus-eq column's `!`
+    because they report different gaps — see UNWEIGHTED/UNPRICED above."""
+    value = _number(row, "total_cost", default=None)
+    if value is None:
+        return DASH
+    marker = UNPRICED if row.get("unpriced_models") else ""
+    return "%s%s" % (money(value), marker)
+
+
+_WHEN_W, _OUTPUT_W, _OPUSEQ_W, _LANE_W, _USD_W = 19, 12, 13, 11, 11
+# 5 is the length of the longest value, `adhoc`. It does NOT truncate if set
+# narrower — the cell renders through `"%*s"`, a MINIMUM width, so a short value
+# silently misaligns the column instead. That distinction matters because the
+# obvious mutation (set it to 4) produces a readable-looking table and survived
+# the suite until `test_the_kind_column_is_wide_enough_for_its_widest_value`
+# was added. Widen this whenever a longer kind is introduced.
+_KIND_W = 5
+
+# The agent types only `/build` dispatches. See `_kind_cell`.
+REVIEW_MACHINERY = {"task-reviewer", "workflow-subagent"}
+
+
+def _kind_cell(row):
+    """One of `build`, `adhoc`, `gate`, `none`, or `—`.
+
+    | | means |
+    |---|---|
+    | `build` | an `executor` ran AND review machinery ran with it |
+    | `adhoc` | an `executor` ran and NO review machinery did |
+    | `gate` | review agents ran and no executor did |
+    | `none` | subagents ran but none of them qualifying — a manual record |
+    | `—` | the row carries no `agent_types`, so it predates the field |
+
+    **`adhoc` exists because one large executor session was diluting
+    every average.** The shape: many executors named
+    "Task 1…Task 6" plus one blinded `code-reviewer`, no `task-reviewer`, no
+    workflow agents, and a first message that is a handover continuation —
+    plan-driven executor use, not a `/build` run. Averaged in with real `/build`
+    sessions it drags the review share of the population down, and nothing in
+    the row said so.
+
+    **What this measures is REVIEW MACHINERY, not a `/build` invocation, and the
+    distinction is the honest one.** Nothing on disk records that `/build` was
+    typed. What is recorded is `agentType`, and `/build` is the only thing that
+    dispatches `task-reviewer` per task or runs its gates through
+    `workflow-subagent` (agents inside `workflows/` carry
+    that type). So the signal is real but it is a SHAPE.
+
+    **The limit, stated because it will mislabel someone eventually:** a `/build`
+    whose gates were all declined — a documented, supported choice — and whose
+    per-task reviewers were skipped has no review machinery to observe, and reads
+    as `adhoc`. That is a false label on a real build. It errs toward calling
+    review-less work `adhoc`, which is the safe direction for the dilution this
+    column exists to expose: it can under-count `build`, never inflate it.
+
+    **Classification reads `agent_types` — what RAN — never `qualified_by`.**
+    The latter is an intersection with whatever `qualifying_agent_types` was
+    configured to at record time, so classifying off it meant anyone who
+    dropped `executor` from that list got every build labelled
+    `gate`, with no symptom.
+
+    **`none` exists because there are TWO writers and only one of them gates.**
+    The `SessionEnd` hook refuses to record a session with no qualifying agent;
+    `claude-build-cost <transcript>` records whatever it is pointed at, by
+    design. So a research-only session — `general-purpose`, `Explore` — can
+    reach the ledger through the manual writer alone. Calling that `gate` was a
+    measured defect: it printed a review label on a row whose review lane is 0,
+    directly beneath a legend asserting "`gate` was review only", and dragged
+    the per-kind review share down for the very population the column exists to
+    isolate. The row's own empty `qualified_by` already carries the
+    distinction, so the fix is to consult it rather than to guess.
+
+    **`—` is reserved for what cannot be known, and the two must not merge.**
+    A missing `agent_types` predates the field: the old qualifying rule admitted
+    `task-reviewer`, itself a review-lane type, so such a row could have
+    qualified on review work alone and is genuinely unclassifiable. An EMPTY
+    `agent_types` is different — we looked and found no subagents — and says
+    `none`. Anything malformed lands on `—`, since this ledger is append-only
+    and long-lived and every other reader here degrades per row rather than
+    raising.
+    """
+    kinds = row.get("agent_types")
+    if not isinstance(kinds, list):
+        return DASH
+    names = {cost_lib.bare_agent_type(k) for k in kinds if isinstance(k, str)}
+    # `executor` is the only type that means code was actually written. A
+    # session with both is still a build — the gate ran as part of one.
+    if "executor" in names:
+        # `code-reviewer` is deliberately NOT in this set. The session that
+        # motivated `adhoc` ran one
+        # and was still ad-hoc: a blinded pre-PR review is something any session
+        # can dispatch by hand, so counting it would label the very session that
+        # motivated this column as a `/build`. `task-reviewer` and
+        # `workflow-subagent` are the two that only `/build` produces.
+        if names & REVIEW_MACHINERY:
+            return "build"
+        return "adhoc"
+    # An EMPTY list needs no second field: no subagents ran, so nothing could
+    # have qualified. Reaching for `qualified_by` here and returning `—` when it
+    # is absent would discard a fact this row already states.
+    if not names:
+        return "none"
+    # Subagents ran and none was an executor. Whether that was review work or
+    # merely a hand-recorded research session is what `qualified_by` answers,
+    # and it is the only thing that answers it: `agent_types` alone cannot
+    # separate a review lens from a research agent without re-deriving the
+    # qualifying set this row was written under.
+    qualified = row.get("qualified_by")
+    if not isinstance(qualified, list):
+        # Present `agent_types`, absent or malformed `qualified_by` — half a
+        # record. `gate` would be a guess in the direction that pollutes.
+        return DASH
+    return "gate" if [q for q in qualified if isinstance(q, str)] else "none"
+
+
+def show_ledger(path):
+    if not os.path.exists(path):
+        print("No ledger yet at %s" % path)
+        print("It is written automatically by claude-build-cost-record at")
+        print("SessionEnd, once a session dispatches a qualifying agent")
+        print("(default: executor, task-reviewer, workflow-subagent or")
+        print("code-reviewer — so a review gate that wrote no code counts too).")
+        return 0
+    rows = []
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            # A line can parse and still not be a dict — `null` parses to
+            # None, and every `.get` below would raise AttributeError on it.
+            # Skip per line, mirroring the hook's own reader.
+            if not isinstance(row, dict):
+                continue
+            rows.append(row)
+    if not rows:
+        print("Ledger at %s has no readable rows." % path)
+        return 0
+
+    rows = _collapse_ledger_rows(rows)
+
+    # `other` is dropped from the table entirely unless some rendered row
+    # actually spent something there. An always-present, always-zero column
+    # would invite a reader to sum it with the rest and find a phantom gap;
+    # omitting it when unused means the three shown lanes already account for
+    # everything, and no caveat is needed either way.
+    show_other = any(_number(row, "other_opus_equivalent_output", 0) for row in rows)
+
+    # Filtered to strings: a non-string inside one of these lists raised
+    # TypeError on the `", ".join(...)` below, and only AFTER the table had
+    # already printed — the crash landed in the legend, not the guard.
+    unpriced_models = sorted({
+        model for row in rows
+        if isinstance(row.get("unpriced_models"), list)
+        for model in row["unpriced_models"] if isinstance(model, str)})
+    unweighted_models = sorted({
+        model for row in rows
+        if isinstance(row.get("unweighted_models"), list)
+        for model in row["unweighted_models"] if isinstance(model, str)})
+    unknown_agent_types = sorted({
+        agent_type for row in rows
+        if isinstance(row.get("unknown_agent_types"), list)
+        for agent_type in row["unknown_agent_types"] if isinstance(agent_type, str)})
+
+    lane_labels = ["architect", "executors", "review"]
+    lanes = ["main", "executor", "review"]
+    if show_other:
+        lane_labels.append("other")
+        lanes.append("other")
+
+    header_cells = (["%-*s" % (_WHEN_W, "when"), "%*s" % (_KIND_W, "kind"),
+                     "%*s" % (_OUTPUT_W, "output"),
+                     "%*s" % (_OPUSEQ_W, "opus-eq")]
+                    + ["%*s" % (_LANE_W, label) for label in lane_labels]
+                    + ["%*s" % (_USD_W, "usd-proxy"), "label"])
+    print("  ".join(header_cells))
+
+    for row in rows:
+        cells = (["%-*s" % (_WHEN_W, _row_timestamp(row)),
+                  "%*s" % (_KIND_W, _kind_cell(row)),
+                  "%*s" % (_OUTPUT_W, _output_cell(row)),
+                  "%*s" % (_OPUSEQ_W, _opus_eq_cell(row))]
+                 + ["%*s" % (_LANE_W, _lane_cell(row, lane)) for lane in lanes]
+                 + ["%*s" % (_USD_W, _usd_cell(row)),
+                    row.get("label", "") if isinstance(row.get("label"), str) else ""])
+        print("  ".join(cells))
+
+    total_opus_eq = sum(_tokens(row, "total_opus_equivalent_output", 0) for row in rows)
+    review_opus_eq = sum(_tokens(row, "review_opus_equivalent_output", 0) for row in rows)
+    floored = any(row.get("opus_equivalent_is_floor") for row in rows)
+    review_share = (review_opus_eq / total_opus_eq * 100) if total_opus_eq else 0.0
+
+    print()
+    # The floor marker on the total also belongs on the share computed from
+    # it: `review_share`'s denominator is the same floored figure, so a review
+    # share printed with no marker at all reads as exact when it is not.
+    print("%d sessions, %s%s opus-equivalent output total, review gates %s%.0f%% of it"
+          % (len(rows), FLOOR if floored else "", format(total_opus_eq, ",d"),
+             FLOOR if floored else "", review_share))
+    print("(usd-proxy is a model-comparison proxy, not an amount owed)")
+    # Printed whenever any row is a gate or unclassifiable, because the headline
+    # share above averages over whatever is in the file. Review share is bimodal
+    # — high inside a gated build, much lower across executor-bearing
+    # sessions — so one number over a mixed population describes neither.
+    # The condition is "anything that is not a `build`", NOT "more than one kind
+    # present" — a distinction adding `adhoc` made tempting to blur. A ledger of
+    # one gate-only row is homogeneous and still warns, because the headline
+    # share reads as a BUILD share by default and that row is not one. Rewriting
+    # it as a distinct-kind count passes the all-build control and silently drops
+    # the warning from exactly that case; the suite catches it, which is why the
+    # note is here rather than the change.
+    if any(_kind_cell(row) != "build" for row in rows):
+        print("kind: `build` wrote code with review machinery, `adhoc` wrote "
+              "code with none, `gate` was review only, `none` ran no qualifying "
+              "agent (recorded by hand), `%s` predates the field" % DASH)
+        print("`adhoc` is a shape, not a record of what was typed: a /build with "
+              "every gate declined also lands there.")
+        print("The share above averages both. Review share is bimodal — far higher "
+              "inside a gated build than across all sessions — so read it per kind.")
+    if unweighted_models:
+        print("%s opus-eq understated: a model with no usage weight spent tokens "
+              "that are excluded from it. Models: %s"
+              % (UNWEIGHTED, ", ".join(unweighted_models)))
+    if unpriced_models:
+        print("%s usd-proxy understated: a model with no published price spent "
+              "here. Models: %s" % (UNPRICED, ", ".join(unpriced_models)))
+    if unknown_agent_types:
+        print("%s executor/review understated: an agentType with no lane mapping "
+              "fell into `other` here. Types: %s"
+              % (UNKNOWN_AGENT, ", ".join(unknown_agent_types)))
+    return 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("transcript", nargs="?", help="path to the session's .jsonl")
+    parser.add_argument("--label", default="", help="what was built")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--ledger", action="store_true", help="show past builds and exit")
+    parser.add_argument("--no-record", action="store_true",
+                        help="report without appending to the ledger")
+    args = parser.parse_args(argv)
+
+    path = ledger_path()
+    if args.ledger:
+        return show_ledger(path)
+    if not args.transcript:
+        parser.error("a transcript path is required (or use --ledger)")
+    if not os.path.exists(args.transcript):
+        print("no such transcript: %s" % args.transcript, file=sys.stderr)
+        return 2
+
+    report = cost_lib.analyze(args.transcript)
+    summary = cost_lib.summarize(report)
+
+    if args.json:
+        print(json.dumps({"summary": summary, "by_model": report["by_model"]}, indent=2))
+    else:
+        print_report(report, args.label)
+
+    if not args.no_record:
+        # The timestamp is stamped here rather than derived from the transcript:
+        # a transcript spans hours and the useful key is when the build finished.
+        import datetime
+        record = dict(summary)
+        record["timestamp"] = datetime.datetime.now().isoformat(timespec="seconds")
+        record["label"] = args.label
+        record["transcript"] = os.path.basename(args.transcript)
+        # The hook stamps session_id and the reader collapses on it, so a manual
+        # row without one can never merge with the hook's row for the same
+        # session — it renders as a second, cheaper session and doubles both
+        # footer figures. The transcript filename IS the session id; a session
+        # transcript is <dir>/<session-id>.jsonl, which is the same mapping
+        # cost_lib.session_dir_for relies on.
+        record["session_id"] = os.path.splitext(
+            os.path.basename(args.transcript))[0]
+        # The manual writer must stamp these too. An earlier version did not,
+        # and the consequence was worse than a missing column: `--ledger`
+        # collapses per session_id keeping the largest `total_output`, so an
+        # unstamped manual row could SUPERSEDE the hook's correctly-labelled one
+        # and erase a real `build` label — reported as `—`, "predates the
+        # field", on a session recorded that same day. Found by review, not by
+        # the mutation pass, because no mutation of a line nobody wrote exists.
+        record["agent_types"] = cost_lib.agent_types(args.transcript)
+        wanted = cost_lib.qualifying_agent_types(_config)
+        record["qualified_by"] = cost_lib.qualifies(record["agent_types"], wanted)
+        if cost_lib.append_ledger(path, record) and not args.json:
+            print()
+            print("  recorded to %s" % path.replace(os.path.expanduser("~"), "~"))
+    return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

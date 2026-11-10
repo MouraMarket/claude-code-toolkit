@@ -1,0 +1,7 @@
+{
+  "name": "skill-humanizer",
+  "description": "Strip AI-writing patterns from a draft and give it a human voice, or name the patterns without rewriting.",
+  "author": {
+    "name": "mouramarket"
+  }
+}

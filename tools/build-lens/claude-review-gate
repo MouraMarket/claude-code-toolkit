@@ -1,0 +1,117 @@
+#!/usr/bin/env python3
+"""claude-review-gate: run a /build review gate through the Agent tool.
+
+Used where the `Workflow` tool is absent, in place of `blinded-review.js`.
+The gate references (`tools/build-lens/{design,plan,code,merge}-review.md`)
+say when and how; this command does the two parts that must not be done by
+hand.
+
+    claude-review-gate prompt --gate G --brief P --lens-dir D [--plan P] --report R
+        Print the prompt `blinded-review.js` would send, then where the
+        reviewer writes its report. Refuses an existing report path, so a
+        report from an earlier dispatch can never be read as this one's.
+
+    claude-review-gate check --report R
+        Accept or refuse the report the reviewer wrote.
+
+Exit codes: 0 printed / accepted; 1 the report is not one this gate can
+accept (schema, then the semantic rule); 2 usage, refused arguments, or no
+readable report.
+"""
+import argparse
+import json
+import os
+import sys
+
+# realpath: run through the ~/.local/bin link, the import must resolve
+# against the checkout.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import review_lib  # noqa: E402
+
+
+def _fail(code, message):
+    print("claude-review-gate: %s" % message, file=sys.stderr)
+    return code
+
+
+def _prompt(args):
+    report = args.report
+    if not os.path.isabs(report):
+        return _fail(2, "--report must be an absolute path; got %r" % report)
+    if os.path.lexists(report):
+        return _fail(2, "report path %s already exists; use the next attempt's "
+                        "path instead (nothing was deleted)" % report)
+    try:
+        prompt = review_lib.build_prompt(args.gate, args.brief, args.lens_dir, args.plan)
+    except ValueError as error:
+        return _fail(2, str(error))
+    sys.stdout.write(prompt + "\n\n" + review_lib.report_clause(report) + "\n")
+    return 0
+
+
+def _check(args):
+    path = args.report
+    try:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except OSError as error:
+        return _fail(2, "cannot read report %s: %s" % (path, error.strerror or error))
+    if not raw.strip():
+        return _fail(2, "report %s is empty" % path)
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        return _fail(2, "report %s is not UTF-8" % path)
+    except ValueError as error:
+        return _fail(2, "report %s is not JSON: %s" % (path, error))
+    try:
+        with open(review_lib.REPORT_SCHEMA_PATH, encoding="utf-8") as handle:
+            schema = json.load(handle)
+    except (OSError, ValueError) as error:
+        return _fail(2, "cannot read the report schema %s: %s"
+                     % (review_lib.REPORT_SCHEMA_PATH, error))
+
+    violations = review_lib.validate_against_schema(schema, report)
+    if violations:
+        return _fail(1, "schema: %s" % "; ".join(violations))
+    reason = review_lib.semantic_violation(report)
+    if reason is not None:
+        return _fail(1, "semantic: %s" % reason)
+    print(review_lib.summary_line(report))
+    return 0
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="claude-review-gate",
+        description="Run a /build review gate through the Agent tool.")
+    commands = parser.add_subparsers(dest="command")
+    commands.required = True
+
+    prompt = commands.add_parser("prompt", help="print the reviewer's prompt")
+    prompt.add_argument("--gate", required=True)
+    prompt.add_argument("--brief", required=True)
+    prompt.add_argument("--lens-dir", required=True)
+    prompt.add_argument("--plan")
+    prompt.add_argument("--report", required=True)
+    prompt.set_defaults(run=_prompt)
+
+    check = commands.add_parser("check", help="accept or refuse a written report")
+    check.add_argument("--report", required=True)
+    check.set_defaults(run=_check)
+    return parser
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    return args.run(args)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

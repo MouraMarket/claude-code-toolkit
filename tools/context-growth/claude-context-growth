@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""PostToolUse hook: charge growth in a context file to the session that did it.
+
+Fires after the write, so nothing is blocked — `PostToolUse` cannot block, and
+it should not: the point is attribution, not refusal. See growth_lib for the two
+design decisions (a path-keyed cap map for files outside git, and firing on a
+TRANSITION rather than a state).
+
+Emits nothing at all unless a count ROSE past its cap, or a new cross-reference
+appeared inside a Core. Not an empty `hookSpecificOutput` — that trains whoever
+reads the transcript to skip this hook's output entirely.
+
+Best-effort by construction: every failure path prints nothing and exits 0,
+because a broken hook must never cost someone a prompt.
+"""
+
+import json
+import os
+import sys
+
+
+def _import_paths():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath would not resolve it — it would land on /Users and fail at runtime
+    # while passing every test.
+    #
+    # FOUR insertions, where claude-memory-routing needs two: growth_lib also
+    # imports context_lint_lib (cap_key, caps, core_caps) and digest_lib (the
+    # tooling map's Core cap and default filename).
+    root = os.path.dirname(os.path.dirname(here))
+    for path in (here,
+                 os.path.join(root, "lib"),
+                 os.path.join(root, "tools", "context-lint"),
+                 os.path.join(root, "tools", "tooling-digest")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+
+def cap_main(args):
+    """`--cap <memory file>`: print its lines, cap and triage route.
+
+    The lookup memory-distill's Step 0 runs. It reads the config the hook
+    reads (but not `context_growth.enabled`: a lookup is not a notice) and
+    resolves through the same growth_lib functions, so it cannot disagree
+    with the notice. Exit 2 on a bad argument or a path that is not a
+    readable memory entry.
+    """
+    if len(args) != 1:
+        print("usage: claude-context-growth --cap <memory file>",
+              file=sys.stderr)
+        return 2
+    _import_paths()
+    import growth_lib
+
+    config = None
+    try:
+        import toolkit_config
+
+        config = toolkit_config
+    except Exception:
+        pass
+    path = os.path.abspath(os.path.expanduser(args[0]))
+    report = growth_lib.memory_cap_report(path, config)
+    if report is None:
+        print("claude-context-growth: %s is not a readable memory entry "
+              "(memory/<name>.md); for a CLAUDE.md use claude-context-lint "
+              "--report" % path, file=sys.stderr)
+        return 2
+    lines, cap, route = report
+    print("%s: %d lines, cap %d -> %s" % (path, lines, cap, route))
+    return 0
+
+
+def main():
+    _import_paths()
+    import growth_lib
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+
+    # The EXECUTABLE loads the config and passes it down; growth_lib never
+    # imports toolkit_config itself. That is what makes the lib hermetic by
+    # construction rather than by test discipline.
+    config = None
+    try:
+        import toolkit_config
+
+        if toolkit_config.get("context_growth", "enabled", default=True) is False:
+            return
+        config = toolkit_config
+    except Exception:
+        # No config, or a config helper that moved: default to on. This hook
+        # only ever prints advice, so failing toward enabled costs nothing worse
+        # than one extra line.
+        pass
+
+    notice = growth_lib.build(payload.get("tool_input"), config)
+    if not notice:
+        return
+
+    sys.stdout.write(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": notice,
+        }
+    }))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    if sys.argv[1:2] == ["--cap"]:
+        # A command, not the hook: it fails loudly, never best-effort.
+        sys.exit(cap_main(sys.argv[2:]))
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

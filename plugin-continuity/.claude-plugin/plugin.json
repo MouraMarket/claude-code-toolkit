@@ -1,0 +1,10 @@
+{
+  "name": "toolkit-continuity",
+  "description": "Session continuity skills: /handover, /wrap-up, memory-distill and claude-md-distill.",
+  "author": {
+    "name": "mouramarket"
+  },
+  "dependencies": [
+    "toolkit-core"
+  ]
+}

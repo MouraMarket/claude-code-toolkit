@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""Block a commit — or a merge — that pushes a CLAUDE.md over its size cap.
+
+Three invocation modes, and the split matters:
+
+    claude-context-lint --staged        pre-commit check; exits 1 to block
+    claude-context-lint --report [dir]  human report; ALWAYS exits 0
+    claude-context-lint --check [dir]   CI gate; exits 1 on any over-cap file
+
+None of them reads stdin. A tool that reads stdin unconditionally passes every
+piped test and HANGS when a person runs it from a terminal — the one invocation
+that matters for a command meant to be run by hand. See the same note in
+claude-memory-lint.
+
+**`--staged` and `--report` fail OPEN. `--check` fails CLOSED. Do not flatten
+that.** The asymmetry is the whole reason `--check` exists as a third mode rather
+than a flag on one of the other two:
+
+  - `--staged` is a git hook sharing a pre-commit with the secret scanner. The
+    scanner fails closed because the cost of missing a credential is unbounded;
+    the cost of missing a size check is that a file grows and the next commit
+    catches it. Wedging every commit on the machine over a bug in a line-counting
+    tool is plainly worse. So an unreadable config falls back to shipped caps, a
+    git failure means "I could not tell", and a crash exits 0 with one line to
+    stderr.
+  - `--check` is a CI job on the merge path, where nothing downstream complains.
+    A crash, an unreadable tree or a walk that found no files must be RED. A CI
+    check that cannot fail is indistinguishable from one that passes, which is
+    precisely the defect this mode was added to fix — MEASURED 2026-09-15:
+    `--staged` run in a clean CI checkout finds nothing staged and exits 0
+    against a genuinely over-cap committed file, and `--report` detects that same
+    file correctly and still exits 0. Neither could ever fail a build.
+
+`--check` therefore also exits non-zero when it walks a tree and finds NO context
+file at all. A green run that examined nothing is a failure, not a pass — the same
+trap `ci/local-checks.sh` guards one level up, and the one a wrong path argument walks
+straight into.
+
+`--check` and `--report` share one walk and one cap resolver on purpose. A report
+that says `ok` on a file the gate refuses is what hides the refusal; that defect
+is recorded in context_lint_lib's module docstring and must not be reintroduced by
+giving the two modes separate traversals.
+
+Why commit-time and not a SessionStart hook: that chain is already several hooks
+with real worst-case latency, and this check is irrelevant to the vast majority
+of sessions, which never touch a CLAUDE.md. Growth happens in a commit; that is
+where the signal belongs.
+"""
+
+import os
+import sys
+
+# `subprocess` moved out with `_git`: every git call this tool makes now goes
+# through context_lint_lib, so plan A3's growth_lib can reach the same cap-key
+# functions. An executable has no .py extension and cannot be imported.
+
+_LIBS = None
+
+
+def _load_libs():
+    """Import the libs once per process, memoized.
+
+    The memo is load-bearing, not tidiness: `_staged_reader` is passed BY
+    REFERENCE into `lib.check()` and called once per staged file, so an
+    unmemoized loader would re-insert two sys.path entries per file — one
+    path insertion per staged file on every commit on this machine.
+    """
+    global _LIBS
+    if _LIBS is not None:
+        return _LIBS
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath would not resolve it — it would land on /Users and fail at runtime
+    # while passing every test.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+    import context_lint_lib
+
+    try:
+        import toolkit_config
+    except Exception:
+        toolkit_config = None
+    _LIBS = (context_lint_lib, toolkit_config)
+    return _LIBS
+
+
+def _staged_entries():
+    """(key, staged_path) for each staged file, or None if git could not answer.
+
+    git reports paths relative to the repo root, so they are joined back onto the
+    toplevel before keying — otherwise the key carries no repo component and
+    matches nothing, which is precisely how every override came to be dead.
+    """
+    lib = _load_libs()[0]
+    out = lib._git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+    if out is None:
+        return None
+    top = lib._git(["rev-parse", "--show-toplevel"])
+    if top is None or not top.strip():
+        return None
+    top = top.strip()
+    entries = []
+    for line in out.splitlines():
+        if line.strip():
+            entries.append((lib.cap_key(os.path.join(top, line)), line))
+    return entries
+
+
+def _staged_reader(path):
+    """Content of the STAGED blob, not the working tree.
+
+    A partially staged file would otherwise be judged on its unstaged size, which
+    is both wrong directions at once: it can block a commit that shrinks the file
+    and pass one that grows it.
+    """
+    return _load_libs()[0]._git(["show", ":" + path])
+
+
+def run_staged():
+    lib, config = _load_libs()
+    entries = _staged_entries()
+    if entries is None:
+        # Not a repo, or git failed. "I could not tell" is not "growth found";
+        # blocking here would wedge commits for a reason we cannot state.
+        return 0
+    # The asymmetry, and it must not be flattened. A whole-file or Core count
+    # over cap is a COUNTED FACT and blocks. A dangling reference is a HEURISTIC
+    # ON PROSE: it prints and leaves the exit code alone. A heuristic that blocks
+    # a commit is one somebody routes around with --no-verify, and the size caps
+    # go with it.
+    findings = lib.check(entries, _staged_reader, config)
+    core = lib.core_findings(entries, _staged_reader, config)
+    advisory = lib.sufficiency_findings(entries, _staged_reader, config)
+
+    if advisory:
+        sys.stderr.write(lib.format_sufficiency_block(advisory))
+    if not findings and not core:
+        return 0
+    if findings:
+        sys.stderr.write(lib.format_block(findings))
+    if core:
+        sys.stderr.write(lib.format_core_block(core))
+    return 1
+
+
+def _table(root, header, rows):
+    """One aligned table. Shared so the two cannot drift in formatting."""
+    width = max(len(os.path.relpath(p, root)) for p, _, _ in rows)
+    print("%-*s  %6s  %6s  %s" % (width, "file", header, "cap", "state"))
+    for path, count, cap in rows:
+        state = "OVER by %d" % (count - cap) if count > cap else "ok"
+        print("%-*s  %6d  %6d  %s"
+              % (width, os.path.relpath(path, root), count, cap, state))
+
+
+def _collect(root):
+    """(rows, core_rows, advisory, unreadable) for one tree. THE shared walk.
+
+    `--report` and `--check` both go through here, so the human view and the gate
+    cannot disagree about scope, caps or which files are in play. Splitting them
+    is the defect context_lint_lib's module docstring records: the report
+    certified `ok` on the exact file the hook refused, which is what kept the
+    first cap bug from being noticed.
+
+    **`unreadable` is returned rather than swallowed, and that is the whole
+    point of the fourth element.** A file that raises on read is dropped from
+    `rows`; for the human `--report` view that is correct (skip it and show the
+    rest), but for `--check` it is a FAIL-OPEN HOLE: the empty-walk guard only
+    fires when the whole set is empty, so a tree where *one* file is unreadable
+    and that file is the over-cap one reports "all within cap" and exits 0.
+    Measured with three independent causes — a non-UTF-8 byte
+    (UnicodeDecodeError), a dangling symlink (FileNotFoundError), and mode 000
+    (PermissionError). The two callers must decide separately, so the decision
+    cannot live in here.
+    """
+    lib, config = _load_libs()
+    # TWO predicates over ONE walk. The row sets genuinely differ — TOOLING.md
+    # belongs in the Core table and not the whole-file one, a CLAUDE.md with no
+    # Core belongs in the whole-file table and not the Core one — so one table
+    # would need a "not applicable" sentinel in both directions, which is how a
+    # report starts lying. The Core list must match what --staged uses, or the
+    # report and the hook disagree about scope: that disagreement is the defect
+    # context_lint_lib's module docstring records as the one that hid the first.
+    whole = []
+    core_candidates = []
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "node_modules", "__pycache__")
+                   and not (d == "worktrees" and ".claude" in base)]
+        for name in files:
+            full = os.path.join(base, name)
+            if lib.is_context_file(name):
+                whole.append(full)
+            if lib.is_core_file(name, lib.core_files(config)):
+                core_candidates.append(full)
+
+    def read(path):
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    default_max, overrides = lib.caps(config)
+    unreadable = []
+    rows = []
+    for path in sorted(whole):
+        try:
+            lines = lib.count_lines(read(path))
+        except Exception as exc:
+            # NOT a silent skip. See the docstring: dropping this row is how a
+            # gate reports "all within cap" over a file it never measured.
+            unreadable.append((path, exc.__class__.__name__))
+            continue
+        # Same key function as --staged. The two must never disagree: a report
+        # that says `ok` on a file the hook refuses is what hides the refusal.
+        cap = lib.cap_for(lib.cap_key(os.path.abspath(path)), default_max, overrides)
+        rows.append((path, lines, cap))
+
+    core_default, core_overrides = lib.core_caps(config)
+    core_rows = []
+    for path in sorted(core_candidates):
+        try:
+            body = lib.core_block.extract(read(path))
+        except Exception as exc:
+            unreadable.append((path, exc.__class__.__name__))
+            continue
+        if not body:
+            continue
+        # Through the same resolver as --staged, for the same reason the
+        # whole-file row above uses the same key function: a report that says
+        # `ok` on a file the hook refuses is what hides the refusal. The map's
+        # Core cap is the digest budget, and both views must say so.
+        cap = lib.core_cap_for(lib.cap_key(os.path.abspath(path)), path,
+                               core_default, core_overrides, config)
+        core_rows.append((path, lib.count_lines(body), cap))
+
+    entries = [(lib.cap_key(os.path.abspath(p)), p) for p in sorted(core_candidates)]
+    advisory = lib.sufficiency_findings(entries, read, config)
+    # De-duplicated: a CLAUDE.md is both a whole-file and a Core candidate, so an
+    # unreadable one is appended twice and would be reported twice.
+    seen = set()
+    deduped = []
+    for item in unreadable:
+        if item[0] not in seen:
+            seen.add(item[0])
+            deduped.append(item)
+    return rows, core_rows, advisory, deduped
+
+
+def _print_tables(root, rows, core_rows, advisory):
+    """Shared rendering, so the two modes print the same thing."""
+    lib = _load_libs()[0]
+    if rows:
+        _table(root, "lines", rows)
+    if core_rows:
+        print("")
+        _table(root, "core", core_rows)
+    if advisory:
+        print(lib.format_sufficiency_block(advisory))
+
+
+def run_report(root):
+    # `unreadable` is deliberately DISCARDED here. --report is the human view and
+    # fails open like --staged: showing the files it could read is more useful
+    # than refusing, and it never gates anything. --check makes the other choice.
+    rows, core_rows, advisory, _unreadable = _collect(root)
+    if not rows and not core_rows:
+        print("No CLAUDE.md found under %s" % root)
+        return 0
+    _print_tables(root, rows, core_rows, advisory)
+    # Always 0. --report is the human view; it reports, it never refuses.
+    return 0
+
+
+def run_check(root):
+    """CI gate over a whole tree. Exits 1 on any over-cap file. FAILS CLOSED.
+
+    Three ways this returns non-zero, and the third is the one people forget:
+    a whole-file cap exceeded, a Core cap exceeded, or NOTHING FOUND. A walk that
+    examined no context file has not established that the tree is clean — it has
+    established that the path was wrong, the checkout was empty, or the filter
+    stopped matching. Every one of those is a broken gate, and a broken gate that
+    exits 0 is invisible forever.
+
+    The advisory (dangling-reference) findings deliberately do NOT affect the exit
+    code, exactly as in `--staged`. They are a heuristic on prose, and a heuristic
+    that turns a merge red is one somebody routes around — taking the counted size
+    caps with it. Printed, never fatal.
+    """
+    rows, core_rows, advisory, unreadable = _collect(root)
+
+    # FAIL CLOSED on a file that could not be read. "I could not measure it" is
+    # not "it is within cap", and the empty-walk guard below cannot catch this:
+    # it only fires when EVERY file is missing, so a tree with one good file and
+    # one unreadable over-cap file sails through it.
+    if unreadable:
+        lines = ["", "BLOCKED: claude-context-lint --check could not read a "
+                     "context file.", ""]
+        for path, reason in unreadable:
+            lines.append("  %s" % os.path.relpath(path, root))
+            lines.append("      unreadable (%s)" % reason)
+        lines += [
+            "",
+            "A file this check cannot measure has not been shown to be within",
+            "cap. Fix the file, or exclude it from the checked tree.",
+            "",
+        ]
+        sys.stderr.write("\n".join(lines) + "\n")
+        return 1
+
+    if not rows and not core_rows:
+        sys.stderr.write(
+            "\nBLOCKED: claude-context-lint --check found no context file under "
+            "%s.\n\nA check that examined nothing cannot report success. Either the "
+            "path is\nwrong, the checkout is empty, or the filename filter no longer "
+            "matches.\n" % root)
+        return 1
+
+    _print_tables(root, rows, core_rows, advisory)
+
+    over = [(p, n, c) for p, n, c in rows if n > c]
+    core_over = [(p, n, c) for p, n, c in core_rows if n > c]
+    if not over and not core_over:
+        print("")
+        print("%d file(s) checked, all within cap." % (len(rows) + len(core_rows)))
+        return 0
+
+    lines = ["", "BLOCKED: a context file on this branch is over its size cap.", ""]
+    for path, count, cap in over:
+        lines.append("  %s" % os.path.relpath(path, root))
+        lines.append("      %d lines, cap %d — %d over" % (count, cap, count - cap))
+    for path, count, cap in core_over:
+        lines.append("  %s" % os.path.relpath(path, root))
+        lines.append("      Core is %d lines, cap %d — %d over"
+                     % (count, cap, count - cap))
+    lines += [
+        "",
+        "A CLAUDE.md is injected into every session that loads it, so a line added",
+        "here is paid forever. Cut something of equal size, or raise the cap in",
+        "~/.config/claude-code-toolkit/config.json under context_lint.overrides.",
+        "",
+    ]
+    sys.stderr.write("\n".join(lines) + "\n")
+    return 1
+
+
+def main(argv):
+    args = argv[1:]
+    if "--staged" in args:
+        return run_staged()
+    if "--check" in args:
+        rest = [a for a in args if not a.startswith("--")]
+        return run_check(rest[0] if rest else os.getcwd())
+    if "--report" in args:
+        rest = [a for a in args if not a.startswith("--")]
+        return run_report(rest[0] if rest else os.getcwd())
+    # Paragraphs 1 AND 2 — the mode list and the commands beneath it are two
+    # blocks, and printing only the first leaves a usage message naming no usage.
+    sys.stderr.write("\n\n".join(__doc__.split("\n\n")[1:3]) + "\n")
+    return 2
+
+
+def cli(argv):
+    """`main` wrapped in the fail-open / fail-closed split. Returns an exit code.
+
+    A FUNCTION, not the `if __name__ == "__main__"` block, and deliberately so.
+    The crash-direction decision is the single most important behaviour in this
+    file — it is what separates a CI gate from a git hook — and code inside the
+    main guard cannot be imported, so it can only ever be exercised by spawning a
+    process that genuinely crashes. That is hard to arrange honestly, which in
+    practice means it does not get tested at all: exactly the untested-wiring
+    shape CLAUDE.md's Testing section names, where there is no mutation to
+    survive because there is no coverage.
+    """
+    # `--check` is read BEFORE main() runs, so a crash inside argument handling
+    # itself still lands on the fail-closed branch. Reading it from the parsed
+    # args inside the handler would mean the one input that decides the failure
+    # direction is only available if nothing went wrong.
+    ci = "--check" in argv[1:]
+    try:
+        return main(argv)
+    except Exception as exc:
+        if ci:
+            # FAIL CLOSED. On the merge path an unexpected crash is not "no
+            # growth found" — it is a gate that stopped checking, and exiting 0
+            # there is indistinguishable from a clean tree. See the module
+            # docstring: this asymmetry against --staged is the point.
+            sys.stderr.write(
+                "claude-context-lint: --check FAILED (%s: %s)\n"
+                % (exc.__class__.__name__, exc))
+            return 1
+        # Never take a commit down with a traceback from a line-counting tool.
+        # But say so: a check that silently stopped checking looks exactly like
+        # a check that passed, which is the failure this tool exists to prevent.
+        sys.stderr.write("claude-context-lint: check skipped (%s)\n"
+                         % exc.__class__.__name__)
+        return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(cli(sys.argv))

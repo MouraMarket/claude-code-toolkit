@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""SessionStart hook: notice when MEMORY.md's hooks have drifted into a second copy.
+
+Silent on a healthy index. See lint_lib for why this fires on hook LENGTH rather
+than on total index size, and why the defaults sit above the routing target.
+
+Two invocation modes, and the split matters:
+
+    claude-memory-lint --report [dir]   human report, never reads stdin
+    <hook payload> | claude-memory-lint  session notice, silent when healthy
+
+`--report` must not touch stdin. A tool that reads stdin unconditionally passes
+every piped test and HANGS when a person runs it from a terminal, which is the
+one invocation that matters for a command whose whole purpose is being run by
+hand.
+
+Best-effort by construction: every failure path prints nothing and exits 0,
+because a broken hook must never cost someone a prompt.
+"""
+
+import json
+import os
+import sys
+
+
+def _load_libs():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath would not resolve it — it would land on /Users and fail at runtime
+    # while passing every test.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+    import lint_lib
+
+    return lint_lib
+
+
+def _default_memory_dir():
+    """This machine's memory dir for the current project, best effort.
+
+    Used only by --report, where there is no payload to derive it from. N5:
+    the user-level `autoMemoryDirectory` setting wins first, whether or not it
+    exists on disk yet -- `configured_dir()`, not `resolve_user_dir()` (Merge
+    Review finding 1): a configured folder that has never been written to is
+    the normal state right after `install.sh` runs, and falling back from it
+    silently reported a DIFFERENT project's memory as healthy. `lib/` is
+    already on `sys.path` by the time this runs (see `_load_libs()` above).
+    Falls back to "most recently written index wins" only when the setting is
+    absent or invalid, same as before N5.
+    """
+    try:
+        import auto_memory
+
+        configured = auto_memory.configured_dir(os.path.expanduser("~"))
+        if configured is not None:
+            return configured
+    except Exception:
+        pass
+
+    root = os.path.expanduser("~/.claude/projects")
+    if not os.path.isdir(root):
+        return None
+    candidates = []
+    try:
+        for name in os.listdir(root):
+            path = os.path.join(root, name, "memory")
+            if os.path.isdir(path):
+                candidates.append(path)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+    # Most recently written index wins: with several projects on a machine, the
+    # one being worked in is the one whose memory changed last.
+    def stamp(path):
+        try:
+            return os.path.getmtime(os.path.join(path, "MEMORY.md"))
+        except Exception:
+            return 0
+
+    return max(candidates, key=stamp)
+
+
+def run_report(argv):
+    lint_lib = _load_libs()
+    memory_dir = argv[0] if argv else _default_memory_dir()
+    sys.stdout.write(lint_lib.report(memory_dir) + "\n")
+
+
+def run_hook():
+    lint_lib = _load_libs()
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+
+    memory_dir = lint_lib.memory_dir_from_transcript(payload.get("transcript_path"))
+    notice = lint_lib.build(memory_dir)
+    if not notice:
+        return
+
+    sys.stdout.write(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": notice,
+                }
+            }
+        )
+    )
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("--report", "-r"):
+        run_report(argv[1:])
+        return
+    run_hook()
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

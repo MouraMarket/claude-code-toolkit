@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""claude-backup — copy the machine-local files no cloud holds to a backup folder.
+
+  claude-backup                       back up to backup.destination
+  claude-backup --status              newest backup: fresh and complete?
+  claude-backup --restore FOLDER [--to DIR]   copy a backup to a NEW directory
+
+Exit codes: 0 ok, 1 incomplete/stale (a backup may exist), 2 nothing usable.
+Logic lives in backup_lib.py.
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+
+_TOOL_DIR = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_TOOL_DIR)), "lib"))
+import claude_home  # noqa: E402
+import toolkit_config as config  # noqa: E402
+
+sys.path.insert(0, _TOOL_DIR)
+import backup_lib  # noqa: E402
+
+
+def _toolkit_commit():
+    """HEAD of the toolkit checkout this tool runs from, or None on any failure."""
+    repo_root = os.path.dirname(os.path.dirname(_TOOL_DIR))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        result = subprocess.run(["git", "-C", repo_root, "rev-parse", "HEAD"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL, env=env, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    sha = result.stdout.decode("utf-8", "replace").strip()
+    return sha or None
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).replace(microsecond=0, tzinfo=None)
+
+
+def _positive(key, default):
+    value = config.get_int("backup", key, default=default)
+    return value if value >= 1 else default
+
+
+def _run_backup():
+    destination = config.get_path("backup", "destination")
+    if not destination:
+        sys.stderr.write(
+            "backup.destination is not set in %s\n"
+            'Add {"backup": {"destination": "<an existing folder, e.g. a cloud-synced folder>"}} '
+            "to that file, then run claude-backup again.\n" % config.CONFIG_PATH)
+        return 2
+    keep = _positive("keep", backup_lib.DEFAULT_KEEP)
+    extra_paths = [config.expand(p) for p in config.get_list("backup", "extra_paths")]
+    extra_paths = [p for p in extra_paths if p]
+    excludes = config.get_list("backup", "exclude")
+    workspace_root = config.workspace_root()
+    repos_root = config.repos_root() if workspace_root is not None else None
+    home = os.path.expanduser("~")
+    claude_dir = claude_home.claude_home()
+    host = backup_lib.host_name()
+    now = _utc_now()
+
+    items = backup_lib.build_inventory(workspace_root, home, claude_dir,
+                                       config.CONFIG_PATH, extra_paths, repos_root)
+    staging = None
+    try:
+        backup_lib.check_destination(destination, host, items)
+        staging = tempfile.mkdtemp(prefix="claude-backup-")
+        parts = backup_lib.stage(items, staging, excludes)
+        manifest = backup_lib.write_manifest(
+            staging, items, parts, host, now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            _toolkit_commit())
+        final = backup_lib.publish(staging, destination, host, manifest, now)
+        backup_lib.prune(os.path.join(destination, host), keep, now)
+    except backup_lib.BackupAbort as error:
+        sys.stderr.write("claude-backup: %s\n" % error)
+        return 2
+    finally:
+        if staging:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    files = [f for f in manifest["files"] if f["type"] == "file"]
+    megabytes = sum(f["size"] for f in files) / (1024.0 * 1024.0)
+    excluded = manifest["excluded"]
+    secrets = sum(1 for e in excluded if e["reason"] == "secret")
+    print("claude-backup: copied to %s — %d files, %.1f MB, %d excluded "
+          "(%d secret-scan drops)" % (final, len(files), megabytes,
+                                      len(excluded), secrets))
+    if manifest["complete"]:
+        return 0
+    for item in manifest["items"]:
+        if item["required"] and item["status"] in backup_lib.INCOMPLETE_STATUSES:
+            sys.stderr.write("INCOMPLETE: %s %s %s\n" % (
+                item["dest_rel"], item["status"], item["source"] or "not configured"))
+    return 1
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="claude-backup", description="Back up machine-local Claude files.")
+    parser.add_argument("--status", action="store_true",
+                        help="report the newest backup's age and completeness")
+    parser.add_argument("--restore", metavar="FOLDER",
+                        help="copy a backup folder to a new directory")
+    parser.add_argument("--to", metavar="DIR", help="restore target (with --restore)")
+    args = parser.parse_args(argv)
+    if args.to and not args.restore:
+        parser.error("--to is only valid with --restore")
+    if args.status and args.restore:
+        parser.error("--status and --restore are mutually exclusive")
+
+    if args.status:
+        code, lines = backup_lib.status(
+            config.get_path("backup", "destination"), backup_lib.host_name(),
+            _positive("max_age_days", backup_lib.DEFAULT_MAX_AGE_DAYS),
+            _utc_now())
+    elif args.restore:
+        folder = os.path.normpath(os.path.expanduser(args.restore))
+        target = args.to or os.path.join(
+            os.path.expanduser("~"), "claude-restore-" + os.path.basename(folder))
+        code, lines = backup_lib.restore(folder, os.path.expanduser(target))
+    else:
+        return _run_backup()
+    for line in lines:
+        print(line)
+    return code
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

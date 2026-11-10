@@ -1,0 +1,50 @@
+# CLAUDE.md — template
+
+Copy this to the root of your workspace (the same `workspace_root` you gave
+setup) as `CLAUDE.md`. Claude Code reads it automatically in every session started
+anywhere under that tree.
+
+**The easy way is `/onboard`**: Claude copies this file, fills in the `TODO`
+sections with you, and wires in the toolkit policy. Filling them by hand works too.
+
+Sections marked **`TODO`** are about you, and a wrong guess there is worse than a
+blank. Everything else is a working default: it's your file once you've copied it.
+
+Delete this header block once you've copied the file.
+
+---
+
+# About me
+
+**TODO — replace this whole section.** Two or three sentences: what you do, what
+you own, and what you are still learning. This is what stops Claude from
+explaining things you already know and assuming things you don't.
+
+Worth stating explicitly if true:
+
+- Which parts of your work you own end-to-end, and which you only touch occasionally
+- Where you are strong and where you want the reasoning spelled out (e.g.
+  "comfortable with the domain, newer to git — explain terminal steps in plain
+  English")
+- Whether this is a work context, a personal one, or both
+
+# Tone
+
+**TODO:** tone. e.g. "warm, direct, a little sharp — dry wit welcome" or "plain
+and businesslike". Say what you actually want; the default is neutral.
+
+# My machine
+
+**TODO — add your machine details:** OS and hardware, your editor, how you lay
+out your workspace (where repositories live, where scratch work lives), and
+anything unusual (a second machine, a VPN requirement, a directory that must stay
+local). `/onboard` fills in what it can by reading your system rather than asking.
+
+# Toolkit policy
+
+How Claude works with you by default is not in this file. It lives in the toolkit
+checkout at `policy/CLAUDE.md` and loads in every session through one import line
+that `/onboard` adds to `~/.claude/CLAUDE.md`, so updating the toolkit updates it.
+This file may adjust anything that policy calls a default (tone, working
+preferences), and may add stops of its own; to change more than that, turn the
+import off and carry your own policy.

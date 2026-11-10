@@ -1,0 +1,13 @@
+{
+  "_comment": [
+    "What a plugin cannot carry: plugins honour only `agent` and `subagentStatusLine`,",
+    "so the statusLine stays here. install.sh substitutes __HOME__.",
+    "Hooks live in each profile plugin's hooks/hooks.json (plugin/ for core, plugin-*/ for the rest)."
+  ],
+  "statusLine": {
+    "type": "command",
+    "command": "__HOME__/.local/bin/claude-usage-line",
+    "refreshInterval": 30,
+    "padding": 0
+  }
+}

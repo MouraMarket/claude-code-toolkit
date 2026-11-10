@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""SessionEnd hook: record what a build cost, without anyone remembering to ask.
+
+`claude-build-cost` is also a manual command (`/build` Phase 5), but a record
+that depends on someone remembering to run it at the end of a long build ends
+up with almost no rows. The hook is the trigger; the accounting is shared.
+
+Records only sessions that look like builds: at least one subagent whose
+agentType is in `build_cost.qualifying_agent_types` (default executor,
+task-reviewer, workflow-subagent, code-reviewer, architect-reviewer). Without
+that gate every one-line chat that dispatched a single research agent lands in
+the ledger and the dataset stops meaning anything.
+
+**The review-lane types are in the default because of a measured blind spot.**
+With only executor and task-reviewer qualifying, a session that ran a `/build`
+review gate and wrote no code recorded NOTHING — so the ledger under-sampled
+exactly the review-heavy sessions every cost argument is about. One real
+instance: a review-heavy build with two Plan Review rounds, absent
+from the dataset entirely.
+
+The cost of the fix is dilution — `workflow-subagent` is *any* workflow agent, not
+just a `/build` lens, and nothing in the metadata distinguishes them (a workflow
+agent's `.meta.json` carries agentType, spawnDepth and model, and no description).
+So the row records `qualified_by`: which of the wanted types were actually present.
+A reader filters on it instead of averaging a build and a gate-only session
+together, which is the mistake this field exists to make visible.
+
+Best-effort by contract: any unexpected input exits 0 and writes nothing. A
+broken hook must never cost someone a prompt.
+"""
+
+import datetime
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))  # realpath: symlinked
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))), "lib"))
+
+def ledger_path(config):
+    # Moved into cost_lib when the dispatch advisory became a third caller, so
+    # the default lives in one place. Imported locally rather than at module
+    # level to keep this hook's import cost on the path that actually needs it
+    # — the early returns above it must stay cheap.
+    import cost_lib
+    return cost_lib.ledger_path(config)
+
+
+def stored_growth_key(path, session_id):
+    """The largest `cost_lib.ledger_growth_key` already recorded for this
+    session, or None.
+
+    Idempotence used to be first-write-wins, which was wrong in the direction
+    that loses data: SessionEnd fires more than once per session id, and a session resumed the next morning recorded
+    its first afternoon and never its work. A qualifying repeat-fire
+    session would have stored a truncated row, with nothing marking it partial.
+
+    So the rule is supersede-on-growth: a later firing appends a new row only
+    when the session has actually grown — more output, or the same output and
+    more prompt-side tokens. The ledger stays append-only and the reader
+    collapses per session_id by the same key.
+
+    Unreadable ledger -> None: better a possible duplicate than a silently
+    skipped record, since a duplicate is visible in the data and a miss is not.
+
+    A line is skipped unless it parses AND is a dict. `json.loads` returns None
+    for a line reading `null`, and `None.get` is an AttributeError, not a
+    ValueError. The ledger is append-only and long-lived, so it will eventually
+    contain something unexpected; a reader of it must degrade per line.
+    """
+    if not session_id or not os.path.exists(path):
+        return None
+    import cost_lib
+    largest = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("session_id") != session_id:
+                    continue
+                key = cost_lib.ledger_growth_key(row)
+                if largest is None or key > largest:
+                    largest = key
+    except OSError:
+        return None
+    return largest
+
+
+def main():
+    raw = sys.stdin.buffer.read()
+    if not raw.strip():
+        return 0
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        return 0
+
+    # A SessionEnd firing inside a subagent would record one row per agent and
+    # attribute all of them to the parent session. PostToolBatch was assumed
+    # main-loop-only in this repo and was not; this guard costs nothing.
+    if payload.get("agent_id"):
+        return 0
+
+    transcript = payload.get("transcript_path")
+    if not transcript or not os.path.exists(transcript):
+        return 0
+
+    import cost_lib
+    try:
+        import toolkit_config as config
+    except ImportError:
+        config = None
+
+    # Matches the idiom in tools/session-claim/claude-session-claim. Absent key
+    # means enabled: a tool nobody configured should still work.
+    if config is not None:
+        try:
+            if config.get("build_cost", "enabled", default=True) is False:
+                return 0
+        except Exception:
+            pass
+
+    ledger = ledger_path(config)
+
+    # `agent_path`, not `path`: a Python for-loop target leaks into the enclosing
+    # scope, so reusing `path` here would rebind the ledger path to the last
+    # agent transcript and append_ledger below would write a ledger record into
+    # a real session file under ~/.claude. The loop always runs before the
+    # append (the qualifying gate cannot pass otherwise), so it would be silent
+    # and total.
+    #
+    # Kept ahead of `analyze` deliberately: `analyze` is affordable against this
+    # hook's declared 15s timeout — but a non-build session must still cost nothing, so the cheap gate runs
+    # first regardless.
+    wanted = cost_lib.qualifying_agent_types(config)
+    observed = cost_lib.agent_types(transcript)
+    qualified_by = cost_lib.qualifies(observed, wanted)
+    if not qualified_by:
+        return 0
+
+    report = cost_lib.analyze(transcript)
+    record = dict(cost_lib.summarize(report))
+
+    # Supersede-on-growth, not first-write-wins: a later firing appends a new
+    # row only when the session has actually grown. Strictly greater so an
+    # identical repeat firing writes nothing and only real growth supersedes.
+    stored = stored_growth_key(ledger, payload.get("session_id"))
+    if stored is not None and cost_lib.ledger_growth_key(record) <= stored:
+        return 0
+
+    record["timestamp"] = datetime.datetime.now().isoformat(timespec="seconds")
+    record["label"] = os.path.basename(payload.get("cwd") or "")
+    record["transcript"] = os.path.basename(transcript)
+    record["session_id"] = payload.get("session_id", "")
+    record["reason"] = payload.get("reason", "")
+    # TWO fields, answering two different questions, and conflating them was a
+    # real defect caught in review.
+    #
+    # `agent_types` is what actually ran — a fact about the session, independent
+    # of anyone's config. It is what `--ledger` classifies `build` vs `gate`
+    # from, and it has to be the config-independent one: anyone who drops
+    # `executor` from `qualifying_agent_types` would otherwise have every build
+    # labelled `gate`, because the executor was never in the
+    # intersection.
+    #
+    # `qualified_by` is why this row exists at all — the intersection with the
+    # configured wanted set. That is an audit trail for the recording gate, and
+    # deliberately NOT a classification input.
+    #
+    # Both sorted: a set's iteration order is not stable, and an unstable field
+    # makes two identical sessions differ in a diff.
+    record["agent_types"] = observed
+    record["qualified_by"] = qualified_by
+    cost_lib.append_ledger(ledger, record)
+    return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        sys.exit(main())
+    except Exception as error:  # noqa: BLE001 — best-effort by contract
+        print("claude-build-cost-record: %s" % error, file=sys.stderr)
+        sys.exit(0)

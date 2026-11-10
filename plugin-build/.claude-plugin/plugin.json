@@ -1,0 +1,10 @@
+{
+  "name": "toolkit-build",
+  "description": "The /build workflow and its executor, task-reviewer and code-reviewer agents, plus an optional architect-reviewer.",
+  "author": {
+    "name": "mouramarket"
+  },
+  "dependencies": [
+    "toolkit-core"
+  ]
+}

@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""PreToolUse (Agent): refuse a dispatch that would silently inherit the model.
+
+An `Agent` call with no `model` runs on the session's. With `opus[1m]` as the
+default that pays Opus rates for transcription and quietly defeats the
+Opus-architect / Sonnet-executor split. Nothing in the transcript says so; the
+only signal today arrives in `claude-build-cost` long after the money is spent.
+
+DEFINITION-AWARE, not a blanket refusal — the maintainer's call, 2026-08-27. An agent
+whose own definition pins a concrete model is already explicit, and making the
+call site repeat it would train the rule to read as ceremony. So the guard fires
+only where the dispatch would ACTUALLY fall back to the session model.
+
+`model: inherit` is not a pin. It is a real value, it is common in plugin agent
+definitions, and it means exactly the thing being guarded against. See
+`guard_lib.NOT_A_PIN`.
+
+Deliberately thin: read the payload, resolve one string off disk, call one pure
+function, print JSON, exit 0. Every judgement lives in `guard_lib.decide`, which
+takes no clock and no paths.
+
+DENY, not ASK. `ask` would put a permission prompt in front of every dispatch on
+a machine whose entire permission philosophy exists to remove them, and it
+cannot be answered on a surface with no prompt UI. A denial is self-correcting:
+the reason reaches Claude, which re-dispatches naming a model. See
+`docs/decisions.md` if this is ever revisited.
+
+FAIL OPEN. Any exception lets the dispatch proceed and exit code is ALWAYS 0,
+but a crash is reported rather than silent: one JSON object on stdout carrying
+a systemMessage for the human and additionalContext for Claude, with no
+permissionDecision. Ordinary malformed input stays a silent allow. A broken
+guard must never cost a dispatch — and unlike the worktree guard, a stall here
+is not evidence of anything, so there is no narrow refuse-on-timeout exception
+to make.
+"""
+import json
+import os
+import sys
+
+GUARD = "claude-model-guard"
+NOUN = "dispatch"
+
+
+def _crash_report(exc):
+    # A crashed guard allows (house rule: fail open), but it must not look
+    # like a guard that checked and allowed. Two channels: systemMessage for
+    # the human, additionalContext for Claude -- which reaches Claude on every
+    # surface, so Claude can tell the human where the warning does not render.
+    # permissionDecision is OMITTED: "allow" would bypass other rules.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". This guard's check did not run; "
+                                 "other guards and permission rules still "
+                                 "apply. Tell the user this guard is broken.",
+        },
+    }
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink and
+    # abspath does not resolve one — it lands on /Users and the import fails at
+    # runtime while passing every test.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+    import guard_lib as guard
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        return
+    except Exception as exc:
+        print(json.dumps(_crash_report(exc)))
+        return
+    if not isinstance(payload, dict):
+        return
+
+    # Checked BEFORE any config read or disk walk. An override that only works
+    # when the config file happens to parse is not an override.
+    if os.environ.get("MODEL_GUARD_ALLOW") == "1":
+        return
+
+    if not _enabled(here):
+        return
+
+    tool_input = payload.get("tool_input")
+    subagent_type = tool_input.get("subagent_type") \
+        if isinstance(tool_input, dict) else None
+
+    verdict = guard.decide(
+        payload.get("tool_name"),
+        tool_input,
+        _pinned_model(guard, subagent_type, payload.get("cwd")),
+    )
+    if verdict.allowed:
+        # Emit NOTHING, rather than permissionDecision "allow". "allow" bypasses
+        # every other permission rule, which is not this guard's business — the
+        # same rule `claude-usage-dispatch` follows, and the reason an empty
+        # hookSpecificOutput is never printed here either.
+        return
+
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": verdict.reason,
+        },
+    }))
+
+
+def _pinned_model(guard, subagent_type, cwd):
+    """The concrete model this agent's definition pins, or None.
+
+    ONE call over ONE ordered list — see `guard_lib.search_path`. This was two
+    calls (project+user, then plugins on a None) and that broke the invariant
+    `read_pinned_model` documents: None means both "no file" and "file found,
+    pins nothing", so the second call answered a question the first had already
+    settled and could resurrect a pin from a definition the harness would never
+    consult.
+    """
+    return guard.read_pinned_model(
+        subagent_type,
+        guard.search_path(subagent_type, cwd, os.path.expanduser("~")))
+
+
+def _enabled(here):
+    """Whether the guard is on. Absent config means ON.
+
+    The stricter direction for the absent case, per this repo's config rule: a
+    machine with no config gets the guard, rather than silently getting nothing.
+    Any failure reading config also returns True for the same reason — a broken
+    config must not be a way to disarm a guard. That is the one place this tool
+    fails strict rather than open, and it is about CONFIG, never about a
+    dispatch.
+    """
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(here)), "lib"))
+        import toolkit_config as config
+        value = config.get("model_guard", "enabled")
+    except Exception:
+        return True
+    if value is None:
+        return True
+    return bool(value)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception as exc:
+        # Still fails open and exits 0, but reports the crash on both channels.
+        # The JSON object is the only stdout: a traceback there would be parsed
+        # as the hook's output, and one on stderr is noise in every transcript.
+        print(json.dumps(_crash_report(exc)))
+    sys.exit(0)

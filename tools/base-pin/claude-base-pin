@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit hook: say when origin/<default> is ahead of this worktree.
+
+Fires only in a LINKED worktree. The primary checkout sits on the default
+branch, where being behind is not drift and `claude-repo-freshness` already
+reports it — duplicating that here would produce two notices for one fact.
+
+Deduped on the observed `origin/<default>` sha, so it speaks once per move and
+re-speaks the next time main moves. Prints nothing on every failure path.
+
+Escape hatch: BASE_PIN_ALLOW=1 silences it for a session.
+"""
+
+import json
+import os
+import sys
+
+
+def main():
+    if os.environ.get("BASE_PIN_ALLOW") == "1":
+        return
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    cwd = payload.get("cwd")
+    session = payload.get("session_id")
+    if not cwd or not isinstance(cwd, str) or not session:
+        return
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+    # `realpath`, never `abspath`: this file is reached through a
+    # ~/.local/bin symlink, and abspath would resolve to ~/.local/bin and
+    # find neither the lib beside it nor lib/ above it.
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import base_pin_lib as pin
+
+    # Test seam. Absent in normal use; it exists so the hook can be exercised
+    # as a real subprocess without touching the machine's own dedupe state.
+    if os.environ.get("BASE_PIN_STATE_PATH"):
+        pin.DEFAULT_STATE_PATH = os.environ["BASE_PIN_STATE_PATH"]
+
+    if not pin.is_enabled():
+        return
+
+    # One git call, and the cheapest possible exit for the common case: most
+    # prompt submits happen somewhere that is not a linked worktree.
+    dirs = pin.git_dirs(cwd)
+    # `dirs_are_linked` rather than an inline `git_dir == common_dir`, so the
+    # branch production takes is the one the tests assert. The inline version
+    # left the tested predicate with no production caller.
+    if pin.dirs_are_linked(dirs) is not True:
+        return
+    git_dir, _common_dir = dirs
+
+    branch = pin.default_branch(cwd)
+
+    # Refresh for the NEXT prompt regardless of whether this one reports, and
+    # before the count is taken rather than after: the count must come from
+    # refs already on disk, so a fetch that has just been spawned must not be
+    # something this invocation waits on or reads.
+    #
+    # The age is read from `git_dir`, which is where `git -C cwd fetch` writes
+    # FETCH_HEAD — it is a PER-WORKTREE pseudo-ref. Reading it from the common
+    # dir instead meant the hook's own fetch never advanced the clock it
+    # checked, so this spawned a network fetch on every prompt submit forever.
+    # If you change either side, change both; see seconds_since_fetch.
+    if pin.should_fetch(pin.seconds_since_fetch(git_dir),
+                        pin.fetch_interval()):
+        pin.spawn_background_fetch(cwd)
+
+    count = pin.behind_count(cwd, branch)
+    if not count or count <= 0:
+        return
+
+    sha = pin.origin_sha(cwd, branch)
+    if not sha:
+        # No sha means no dedupe key. Staying silent is the only safe option:
+        # reporting without recording would repeat the notice on every prompt
+        # submit for as long as the condition held.
+        return
+
+    checkout = os.path.realpath(cwd)
+    state = pin.prune_state(pin.load_state())
+    if pin.already_reported(state, session, checkout, sha):
+        return
+
+    # In a linked worktree `--git-dir` is `<common>/worktrees/<name>`, so the
+    # basename is git's own name for this worktree.
+    notice = pin.render(
+        count, branch,
+        os.path.basename(git_dir.rstrip(os.sep)) or checkout,
+        pin.current_head(cwd),
+        pin.new_commits(cwd, branch, pin.max_commits_listed()))
+    if not notice:
+        return
+
+    # PRINT before recording, and the original comment here had the reasoning
+    # backwards. It said recording first was safe because "if the write fails
+    # the notice still goes out" — true, but true in either order, since
+    # `save_state` catches everything and returns False rather than raising.
+    # So that was not an argument for the order it defended.
+    #
+    # What recording first actually adds is a suppression path: stdout is
+    # buffered and flushed at interpreter shutdown, so a broken pipe or a kill
+    # on the hook's timeout after `save_state` records the sha as announced
+    # while the notice is never seen for that sha in that session again.
+    # Printing first can only ever cost a repeat.
+    sys.stdout.write(notice)
+    sys.stdout.flush()
+    pin.save_state(pin.record_reported(state, session, checkout, sha))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        # A broken hook must never cost someone a prompt.
+        pass
+    sys.exit(0)

@@ -1,0 +1,7 @@
+# Every text file is checked out with LF endings, on every OS.
+#
+# Without this, a Windows clone with git's default core.autocrlf=true rewrites
+# every script to CRLF, and a CRLF shebang (`#!/usr/bin/env bash\r`) fails with
+# "bad interpreter" -- inside WSL too, when the clone was made from Windows.
+# lib/tests/test_gitattributes.py pins it.
+* text=auto eol=lf

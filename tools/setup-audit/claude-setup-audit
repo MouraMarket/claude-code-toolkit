@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""What is already on this machine, versus what the toolkit manages.
+
+    claude-setup-audit               human summary, read-only
+    claude-setup-audit --json        the full report as JSON
+    claude-setup-audit snapshot      copy the current setup aside
+    claude-setup-audit apply-safe    remove only byte-identical duplicates
+
+See audit_lib.py for the report shape and every subcommand's contract.
+"""
+
+import os
+import sys
+
+# realpath, not abspath: this runs through a ~/.local/bin symlink and abspath
+# does not resolve one.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+
+import audit_lib  # noqa: E402
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(audit_lib.main(sys.argv[1:]))

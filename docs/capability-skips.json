@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "skips": [
+    {
+      "suite": "ci/tests/test_local_checks.py",
+      "test": "setUpClass (TestLocalChecksUnmodified)",
+      "python": "any",
+      "reason": "Opt-in: the full unmodified-copy sweep runs only with LOCAL_CI_FULL=1."
+    },
+    {
+      "suite": "lib/tests/test_path_surface_matrix.py",
+      "test": "TestAsciiPaths.test_positive_control_unquoted_root_fails_where_the_path_has_a_space",
+      "python": "any",
+      "reason": "Paired path-matrix class: this positive control applies only where the path has a space."
+    },
+    {
+      "suite": "lib/tests/test_path_surface_matrix.py",
+      "test": "TestMixedPaths.test_status_line_unchanged_where_home_needs_no_quoting",
+      "python": "any",
+      "reason": "Paired path-matrix class: this check applies only where HOME needs no quoting."
+    },
+    {
+      "suite": "lib/tests/test_path_surface_matrix.py",
+      "test": "TestOkinaPaths.test_positive_control_unquoted_root_fails_where_the_path_has_a_space",
+      "python": "any",
+      "reason": "Paired path-matrix class: this positive control applies only where the path has a space."
+    },
+    {
+      "suite": "lib/tests/test_path_surface_matrix.py",
+      "test": "TestSpacePaths.test_status_line_unchanged_where_home_needs_no_quoting",
+      "python": "any",
+      "reason": "Paired path-matrix class: this check applies only where HOME needs no quoting."
+    },
+    {
+      "suite": "lib/tests/test_uninstall_live_cli.py",
+      "test": "UninstallLiveCli.test_install_then_uninstall_round_trip",
+      "python": "any",
+      "reason": "Opt-in: runs against the real claude CLI only with TOOLKIT_LIVE_CLI=1."
+    },
+    {
+      "suite": "tools/build-lens/tests/test_build_lens.py",
+      "test": "TestAgentFrontmatterIsValidYaml.test_frontmatter_parses_as_yaml_with_expected_keys",
+      "python": "any",
+      "reason": "PyYAML is not installed; the toolkit is standard-library only, and a stdlib structural test covers this file."
+    },
+    {
+      "suite": "tools/codex-review/tests/test_codex_review.py",
+      "test": "TestPositiveControl.test_reads_a_block_from_the_real_sessions_tree",
+      "python": "any",
+      "reason": "Reads the real Codex sessions tree, which a disposable HOME does not have."
+    },
+    {
+      "suite": "tools/context-growth/tests/test_growth_lib.py",
+      "test": "TestConsolidationModeContract.test_frontmatter_parses_as_yaml",
+      "python": "any",
+      "reason": "PyYAML is not installed; the toolkit is standard-library only, and a stdlib structural test covers this file."
+    }
+  ]
+}

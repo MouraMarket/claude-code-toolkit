@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""SubagentStart: tell each dispatched subagent the headroom it shares with
+the session that dispatched it.
+
+Surface: wherever SubagentStart fires. Verified: unverified live; subprocess
+tests only.
+
+Claude Code hands live `rate_limits` to exactly one surface, the status line
+(see claude-usage-line). This hook reads the cache that surface writes and,
+when the binding bucket is at or above the notice threshold, tells the
+dispatched subagent what it owes — before it starts work it cannot finish.
+
+This hook INFORMS, it never blocks a dispatch. The decision not to dispatch
+belongs to the architect model: a hook refusing dispatches would fight that
+judgement and would fail closed on stale cache data. Dedupe keys on
+`agent_id`, not `session_id` — each dispatched subagent must be told once,
+and keying on the session would silence every executor after the first in a
+multi-task build dispatching several in a row.
+
+Exit code is ALWAYS 0.
+"""
+import json
+import os
+import sys
+import time
+
+
+def main():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import usage_lib as usage
+    import estimate_lib as estimator
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    event = payload.get("hook_event_name") or "SubagentStart"
+    # No fallback id on purpose. A constant like "unknown-agent" collapses every
+    # dispatch in the session onto one dedupe key, so only the FIRST subagent is
+    # ever told its headroom — the exact silencing this hook keys on agent_id to
+    # avoid, reintroduced through the back door. Absent id means skip dedupe and
+    # always tell: SubagentStart fires once per dispatch, so the dedupe here is
+    # belt-and-braces rather than load-bearing, and being told twice costs a
+    # sentence while not being told costs the whole protection.
+    agent_id = payload.get("agent_id")
+    agent_type = payload.get("agent_type")
+
+    if not usage.is_enabled() or not usage.subagent_context_enabled():
+        return
+
+    now = time.time()
+    # read_cache_status, not read_cache: `read_cache` discards a PARTIAL
+    # reading whole, which is right for a caller that needs the binding
+    # constraint and wrong for this one. During a five_hour rollover a
+    # seven_day window sitting at 90% is still a true, actionable fact, and
+    # dropping it replaced a real GATE warning to a dispatched worker with
+    # silence — silence reading as headroom, which is the premise this whole
+    # tool exists to deny. Whatever windows are visible, report on them.
+    buckets = usage.read_cache_status(now)[1]
+    if not buckets:
+        # NO READING AT ALL — the normal state on every surface without a
+        # status line, which is the VS Code extension and the desktop app.
+        # This hook said nothing there, and to a dispatched worker silence is
+        # indistinguishable from headroom. Fall back to the estimate, clearly
+        # labelled as one. Gated on the estimate switch: absent means off.
+        if not estimator.is_estimate_enabled():
+            return
+        try:
+            found = estimator.current_estimate(now)
+        except Exception:
+            return
+        if found is None or found.pct is None:
+            return
+        text = usage.estimated_subagent_message(found.pct, found.resets_at,
+                                                now)
+        if not text:
+            return
+        # Deduped on the same key as a real reading, so a worker is told once
+        # either way. `resets_at` comes from the estimate's own window, which
+        # is the same window a reading would name.
+        if agent_id and usage.already_announced(agent_id, "five_hour",
+                                                found.resets_at,
+                                                usage.TIER_NOTICE):
+            return
+        if agent_id:
+            usage.record_announcement(agent_id, "five_hour", found.resets_at,
+                                      usage.TIER_NOTICE, now)
+        print(usage.hook_output(event, text))
+        return
+
+    found = usage.binding(buckets)
+    if found is None:
+        return
+    name, pct, resets_at = found
+
+    notice, gate, halt = usage.thresholds()
+    tier = usage.tier_for(pct, notice, gate, halt)
+    if tier == usage.TIER_NONE:
+        return
+
+    if agent_id and usage.already_announced(agent_id, name, resets_at, tier):
+        return
+
+    text = usage.subagent_message(name, pct, resets_at, now, agent_type=agent_type)
+    if not text:
+        return
+
+    if agent_id:
+        usage.record_announcement(agent_id, name, resets_at, tier, now)
+    print(usage.hook_output(event, text))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass

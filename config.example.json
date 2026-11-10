@@ -1,0 +1,1209 @@
+{
+  "//": [
+    "Copy this to ~/.config/claude-code-toolkit/config.json and edit. `install.sh` does",
+    "that for you if the file does not exist yet. Nothing here is committed —",
+    "the config lives outside the repo so it cannot leak and survives a re-clone.",
+    "",
+    "Every key is optional. Omit one and the tool falls back to a documented",
+    "default; omit the whole file and everything still runs, with the danger",
+    "guard in its STRICTEST mode (see workspace_root below).",
+    "",
+    "Paths may use ~, $VAR and ${VAR}. In the guards' keys, a path naming an unset",
+    "variable is ignored (treated as absent), so it can never widen what is trusted."
+  ],
+
+  "//owner_name": "Your first name, e.g. \"owner_name\": \"Sam\". Named when the guard tells Claude to hand a command back to you. Absent means 'the human'; /onboard and ./install.sh --setup fill it in. Deliberately not set here: install.sh copies this file verbatim on a no-TTY install, and a placeholder would become a live name.",
+
+  "//profiles": [
+    "Which toolkit profiles (plugins) this machine installs, e.g. [\"continuity\", \"builder\"].",
+    "The five: core, continuity, builder, maintainer, mac. Not set in the live",
+    "keys: absent is the normal state. `core` is always implied. Default when",
+    "absent: the registry's default profiles, core + continuity (see",
+    "claude/profiles.json). Selecting maintainer brings builder, because the",
+    "registry's `requires` pulls it in. A present list replaces the default set",
+    "(core and anything a listed profile requires stay implied), so leaving out",
+    "continuity means install.sh does not install it, and install.sh warns.",
+    "Dropping a profile the last install selected uninstalls its plugin on the",
+    "next install (--check says it would), unless another installed plugin",
+    "depends on it; a toolkit plugin you enabled yourself is never touched. A",
+    "broken config file, null, a value that",
+    "is not a list, or an unknown name makes install.sh and --check exit 1.",
+    "lib/setup_config.py --profiles <list> writes this key (core added, requires",
+    "closure applied); choosing mac also sets caffeinate.enabled: true unless the",
+    "same call passes --disable caffeinate."
+  ],
+
+  "//update": [
+    "Where ./install.sh --update may update from, e.g. \"update\": {\"origin\":",
+    "\"https://github.com/you/claude-code-toolkit\"}. Not set in the live keys:",
+    "absent means the toolkit's public repository,",
+    "https://github.com/mouramarket/claude-code-toolkit. --update compares every",
+    "URL git would fetch origin from (insteadOf rewrites applied) with this one",
+    "and refuses before contacting origin when any differs, because the installer",
+    "runs whatever code an update brings. On github.com, https, ssh and git@",
+    "spellings of one owner/repo are the same repository; on any other host the",
+    "transport, port and path must all match. Set it when you run a fork, with",
+    "lib/setup_config.py <config> <checkout> --update --set update.origin=<url>. A",
+    "present value that is not a non-empty string makes --update refuse rather",
+    "than fall back to the public URL. ./install.sh --version shows whether",
+    "origin matches."
+  ],
+
+  "workspace_root": null,
+  "//workspace_root": [
+    "The single tree your work lives in, e.g. \"~/Work\". Left null here so a",
+    "copy of this file keeps the strict default; setup writes the one you",
+    "choose, after checking it. The danger guard treats deletions",
+    "inside it as ordinary and deletions outside it as suspect.",
+    "NO DEFAULT, on purpose: unconfigured means the guard trusts nothing but",
+    "~/.claude, ~/bin and the temp dirs, so it errs strict rather than guessing",
+    "a root and silently widening what may be deleted."
+  ],
+
+  "auto_memory": {
+    "unify": true,
+    "//unify": [
+      "ON by default (absent = on; only literal false turns it off).",
+      "install.sh writes autoMemoryDirectory into ~/.claude/settings.json,",
+      "pointing EVERY session (repos, worktrees) at workspace_root's memory",
+      "folder. Skipped with a warning until a session has run in workspace_root.",
+      "false removes it again, but only if it still holds the toolkit's value."
+    ]
+  },
+
+  "team_policy": {
+    "import": true,
+    "//import": [
+      "ON by default (absent = on; only literal false turns it off).",
+      "/onboard adds one line to ~/.claude/CLAUDE.md that imports this",
+      "checkout's policy/CLAUDE.md, so the toolkit policy loads in every",
+      "session and updates on git pull. install.sh --check and /onboard",
+      "verify warn when it is missing or dangling. false = the toolkit stops",
+      "managing and checking the import (say, when your own CLAUDE.md already",
+      "carries the policy): ensure writes",
+      "nothing and --status reports opted-out. It does NOT remove an",
+      "import line already there; delete the two marked lines in",
+      "~/.claude/CLAUDE.md for that."
+    ]
+  },
+
+  "permissions": {
+    "baseline_opt_out": [],
+    "//baseline_opt_out": [
+      "Absent or empty = every rule in claude/permissions.baseline.json applies.",
+      "List exact `ask` rule strings from that file (e.g. \"Bash(git push *)\") to",
+      "stop install.sh re-adding them. `deny` rules cannot be opted out.",
+      "Nothing is removed from settings.json: delete the rule there by hand too.",
+      "This is personal policy; the shipped baseline stays as it is."
+    ]
+  },
+
+  "danger_guard": {
+    "extra_safe_roots": [],
+    "//extra_safe_roots": "Additional trees where `rm` is routine. Never add a cloud-synced folder (Google Drive, Dropbox, iCloud) — a local delete there propagates everywhere.",
+
+    "extra_protected_paths": [],
+    "//extra_protected_paths": "Exact directories that must never be the rm target themselves, even though work happens inside them. Your repo roots belong here. `/`, $HOME, the workspace root, ~/.claude, ~/bin, ~/Documents, ~/Desktop and ~/Downloads are always protected and need no entry. Must be a list of paths that resolve: anything else (a single string, an unset $VAR) makes the guard refuse deletions until it is fixed, rather than silently dropping the protection."
+  },
+
+  "local_ci": {
+    "max_concurrent": 2,
+    "//max_concurrent": [
+      "How many claude-local-ci check runs may execute at once on this",
+      "machine, across every repo. A run that finds every slot taken prints",
+      "that it is waiting and blocks in the foreground until one frees up.",
+      "Slots are flock()ed files under ~/.cache/claude-local-ci/slots/, and",
+      "the kernel releases one the moment its holder exits, so a killed run",
+      "never strands a slot. Default 2 when absent or not a positive integer:",
+      "a third concurrent run on a small machine adds little throughput and",
+      "can produce a false red. Raise it on a bigger machine."
+    ]
+  },
+
+  "worktree_guard": {
+    "canonical_root": null,
+    "//canonical_root": [
+      "The parent directory holding your canonical, one-folder-per-project",
+      "checkouts -- the ones ordinary edits should never land in directly,",
+      "because a parallel Claude Code session (or you, later) may be relying",
+      "on them staying put on their default branch.",
+      "",
+      "This key switches on Rule C ONLY: blocking Edit/Write/MultiEdit/",
+      "NotebookEdit, commit, rebase, non-fast-forward merge, history-rewriting",
+      "push and remote-branch delete on the default branch of a checkout",
+      "directly under this root. Rule A (cross-checkout reach) and Rule B",
+      "(branch switching under concurrency) do not read it and still apply",
+      "everywhere regardless.",
+      "",
+      "UNSET IS INACTIVE, NOT LENIENT, AND THERE IS NO FALLBACK. Rule C is",
+      "off unless THIS key names an existing directory. It is deliberately",
+      "NOT derived from workspace_root: turning a refusal ON is a decision",
+      "its owner makes, and deriving it would start blocking edits and",
+      "commits on the default branch of every checkout under a workspace",
+      "root set purely for the danger guard's benefit. A guessed root is",
+      "also worse than none for a guard: one naming a directory that is not",
+      "there is inactive and silent, which looks exactly like a guard with",
+      "nothing to say.",
+      "",
+      "An older personal copy of this toolkit DID infer it, from",
+      "<workspace_root>/repos (or the workspace root when that was absent),",
+      "so a config carried over from it had Rule C on without this key. Run",
+      "`lib/setup_config.py <config> <repo> --report`: it shows the root",
+      "that copy would have used and the two commands, keep it",
+      "(--update --set worktree_guard.canonical_root=<root>) or leave Rule C",
+      "off (--update --set worktree_guard.canonical_root=null). Nothing is",
+      "written until you run one. Setup writes an explicit null, which is",
+      "how the report tells a decided config from an inherited one.",
+      "",
+      "So: set this key explicitly, or Rule C does nothing. Rules A and B are",
+      "unaffected and need no configuration at all."
+    ]
+  },
+
+  "thread_handover": {
+    "enabled": true,
+    "//enabled": "Set false to turn off both the SessionStart pending-handover announcement and the UserPromptSubmit context watcher (claude-thread-deliver and claude-thread-watch). Defaults to true; absent means on. The /handover slash command itself is unaffected — this only silences the two background hooks that announce and nudge.",
+
+    "handover_dir": null,
+    "//handover_dir": "Where /handover writes documents, and where the sweep retires them into archive/handovers/. Give it its own directory — the sweep moves files here. Setup writes <workspace_root>/handovers. null falls back to ~/.claude/handovers, where Claude Code asks before every write and a non-interactive session cannot write at all.",
+
+    "arm_cap": 250000,
+    "urgent_cap": 700000,
+    "//caps": "Context in tokens at which the watcher starts suggesting a handover, and at which it stops waiting for a natural boundary. Both are applied as min(cap, window x fraction), so a 200k-window model arms at 70k regardless. Lower arm_cap if a session usually ends before a natural boundary arrives.",
+
+    "sweep_grace_sessions": 3,
+    "sweep_grace_days": 7,
+    "//sweep_grace": [
+      "How long an ATTACHED handover stays in the handover directory before the",
+      "sweep ARCHIVES it into archive/handovers/ — it is moved, never deleted. Both",
+      "gates must clear: that many distinct other sessions must have started AND",
+      "that many days must have passed since it was attached. Defaults to 3 and 7;",
+      "absent means those defaults, and a non-numeric value falls back to them too.",
+      "",
+      "With several sessions open in one tree the session count is spent within",
+      "minutes (SessionStart fires per window and per /clear), so in practice",
+      "sweep_grace_days IS the grace period. It is exact wall clock: 3 means 72",
+      "hours from the attachment; at 7 a Friday-afternoon handover stays until the",
+      "following Friday, at 3 it is eligible on Monday. Lower it if handovers",
+      "linger too long for you, raise it if you want them to stay put longer.",
+      "",
+      "Archiving moves the file into archive/handovers/ and keeps its name, so a",
+      "premature sweep costs a look in one more directory, not the document.",
+      "",
+      "Do not set either key to 0 expecting to turn the sweep off; use",
+      "enabled: false for that. sweep_grace_days: 0 drops the day gate, so the",
+      "sweep archives as soon as the session count clears. sweep_grace_sessions: 0",
+      "is unpredictable rather than lenient: a record that was already seen by",
+      "another session is archived at the day floor, while one that never was is",
+      "kept forever.",
+      "",
+      "A handover nobody ever attaches is never swept at all, and neither is one",
+      "whose index record cannot be dated. Clutter is the deliberate trade."
+    ]
+  },
+
+  "spec_archive": {
+    "enabled": true,
+    "//enabled": "Set false to make claude-spec-archive a no-op. Defaults to true; absent means on. This now also gates the SessionStart hook (--hook): false means the hook exits 0 silently and does nothing, same as an unset specs_dir.",
+
+    "specs_dir": null,
+    "//specs_dir": [
+      "The directory of planning specs to manage, e.g. \"~/Work/specs\" (null",
+      "here, so a copy of this file moves nothing). THERE IS NO COMPILED DEFAULT:",
+      "absent means the tool prints 'not configured' and exits 0 having done",
+      "nothing. A tool that moves files must not guess which directory to move",
+      "them in, so the absent case is the inert one.",
+      "",
+      "This is normally the same directory as thread_handover.handover_dir, and",
+      "the two tools coexist there deliberately. They never touch the same file:",
+      "spec-archive refuses anything matching the handover filename pattern, even",
+      "when it carries an archivable status, because that file belongs to the",
+      "handover sweep's own lifecycle — grace gates, an index row, a consuming",
+      "session. Two owners of one file is how a document gets lost. Both tools",
+      "now archive rather than delete (the sweep stopped deleting 2026-08-26),",
+      "and they still must not overlap: the sweep files into archive/handovers/,",
+      "which spec-archive skips along with the rest of archive/."
+    ],
+
+    "min_age_days": 14,
+    "//min_age_days": [
+      "How old a spec must be before a declared shipped/superseded status makes",
+      "it archivable. Defaults to 14; a non-numeric value falls back to that.",
+      "Compared strictly (age > min_age_days), so a file exactly at the boundary",
+      "is kept — the strict side is the default.",
+      "",
+      "Unlike the handover sweep's grace gates, this floor is a convenience, not",
+      "a safety mechanism. The tool moves files into <specs_dir>/archive/ and",
+      "never deletes, so a wrong call costs a `mv` back. Lower it freely.",
+      "",
+      "What actually protects a spec is its own front matter. A .md spec declares",
+      "`status: live | shipped | superseded` and `subject:` (the archive folder",
+      "slug); `live` is never archived at any age, and anything undeclared,",
+      "unparseable, or missing a subject is REPORTED and left alone rather than",
+      "filed under a guess. Paths that cannot carry front matter — directories,",
+      ".json, .py — declare instead in <specs_dir>/.spec-status.json, keyed by",
+      "basename. Front matter is read only for .md and the manifest only for",
+      "non-.md: they are non-overlapping by design, neither a fallback for the",
+      "other, so a break in one can never quietly cover for a break in the other."
+    ],
+
+    "stale_flip_days": 0,
+    "//stale_flip_days": [
+      "How many days a status: live spec must sit with its mtime unchanged, and",
+      "its 'Waiting on a human' section not open, before claude-spec-archive",
+      "--hook or --flip-stale flips it to status: shipped. Compared strictly",
+      "(age > stale_flip_days), same as min_age_days above. Unticked task boxes",
+      "(- [ ]) and open Backlog table rows also block the flip.",
+      "",
+      "Defaults to 0; absent also means 0, and 0 means the flip is OFF — the",
+      "strict side is the default here, unlike min_age_days. Auto-archive (this",
+      "tool moving a spec someone already declared shipped/superseded) runs for",
+      "everyone regardless of this key; the flip is the one piece that is off",
+      "in the shipped default, because it rewrites the status line of a live",
+      "spec you never asked to have rewritten, where auto-archive only",
+      "ever moves a file someone already marked done. 21 is a reasonable",
+      "working value.",
+      "",
+      "The write is narrow and recoverable: it changes only the front-matter",
+      "status: line (appending an auto-flipped marker), leaves every other byte",
+      "untouched, and resets the file's mtime on purpose — a freshly-flipped",
+      "spec then sits the ordinary min_age_days floor before archive will move",
+      "it. Set status: live back in the file to undo a wrong flip; it then",
+      "waits another stale_flip_days days before flipping again."
+    ],
+
+    "hook_deadline_seconds": 4,
+    "//hook_deadline_seconds": [
+      "How many seconds the SessionStart hook (--hook) waits for its flip-and-",
+      "archive pass to finish before giving up and exiting 0 anyway. Defaults",
+      "to 4; a non-numeric or non-positive value falls back to 4 too.",
+      "",
+      "This is a budget inside the hook's own declared timeout of 10 seconds in",
+      "plugin-build/hooks/hooks.json: the work runs on a daemon worker thread and",
+      "the main thread joins it with this deadline, so a stalled syscall is",
+      "bounded even though the worker thread itself cannot be killed. On",
+      "timeout the hook prints a 'did not finish' notice naming what already",
+      "completed and exits immediately, rather than letting Claude Code's own",
+      "kill at the declared timeout fire with no explanation."
+    ]
+  },
+
+  "repo_freshness": {
+    "enabled": true,
+    "//enabled": "Set false to silence the session-start notice that this repo is behind origin, and to stop the background fetch entirely. Defaults to true; absent means on.",
+
+    "fetch_interval_seconds": 14400,
+    "//fetch_interval_seconds": "How stale the last `git fetch` may be before a new one is spawned in the background. Defaults to 14400 (4 hours). The fetch NEVER blocks the prompt — the notice is rendered from refs already on disk, so the only cost of a longer interval is finding out about an update one session later.",
+
+    "watch": [],
+    "//watch": [
+      "Repos to check besides claude-code-toolkit itself, which is always checked",
+      "(it is the repo the hook lives in, so it is found rather than configured).",
+      "Entries may be a bare repo name, resolved under <workspace_root>/repos/, or",
+      "a full path. An entry that is not a git checkout is skipped",
+      "silently, so listing a repo you have not cloned costs nothing.",
+      "Empty (the default) means the toolkit only.",
+      "",
+      "Adding a repo is cheap because a repo is only ever reported when its HEAD is",
+      "ON its default branch. On a feature branch, being behind origin/main is not",
+      "staleness — it is what having a branch open means — so the notice stays quiet",
+      "until you switch back. That is what keeps a repo you actively develop in from",
+      "producing a daily warning nobody can act on.",
+      "One exception: a toolkit checkout pinned by ./install.sh --rollback is always",
+      "named, with the command that returns it."
+    ],
+
+    "sync": {
+      "enabled": false,
+      "//enabled": "Set true to let this hook run `git pull --ff-only` against every eligible repo under repo_root at session start (throttled by throttle_hours below). Defaults to false, and ONLY a literal JSON `true` turns it on -- the string \"true\", the number 1, or any other truthy-but-not-boolean value all still read as OFF, so a value that merely LOOKS like an opt-in can never become one by accident. A hook that rewrites working trees unattended must never arrive by upgrade.",
+
+      "repo_root": null,
+      "//repo_root": "Where to look for repos to sync -- immediate subdirectories containing a .git are candidates; never recursed into. NO default, and nothing is derived from workspace_root: null, absent, or a path that is not an existing directory all mean the sync phase finds nothing to do. A tool that pulls working trees unattended never guesses which directory to pull in.",
+
+      "gh_owner": null,
+      "//gh_owner": "The GitHub account or org to discover NEW repos from (`gh repo list <gh_owner>`), cloning any not already present under repo_root. Has NO default -- absent means clone discovery is skipped entirely, with zero `gh` calls made. This is deliberate, not merely lenient: an owner is never inferred from an existing remote, git config, or `gh auth status`, because a personal `gh` login can often also see an organization it belongs to, and a guessed owner would risk sweeping a whole organization into someone's workspace unannounced.",
+
+      "throttle_hours": 20,
+      "//throttle_hours": "How often the sync phase (pull plus clone discovery) may run again, in hours. Defaults to 20; a non-integer value or one <= 0 also falls back to 20, so a bad value can never mean \"every session\"."
+    }
+  },
+
+  "tooling_digest": {
+    "enabled": true,
+    "//enabled": "Set false to stop injecting the tooling digest at session start. Defaults to true; absent means on. While it is on and no map file exists, every session starts with a one-line notice saying so and naming the command that turns it off: false is the quiet opt-out, a missing file is not.",
+
+    "path": null,
+    "//path": [
+      "Your personal tooling/access map — what we use, how Claude reaches it,",
+      "and whether it currently works. null (the default) resolves to",
+      "<workspace_root>/TOOLING.md, which is what makes this portable: set",
+      "a workspace root and the feature works without naming a path.",
+      "",
+      "The file is DELIBERATELY outside this repo. It describes one machine and",
+      "one set of accounts — which CLIs are installed, which account `gh` is",
+      "logged in as, which MCP connectors are authorized — so it is personal",
+      "config, not shared behaviour. Anything documented elsewhere stays",
+      "canonical there, and the map links to it rather than copying it.",
+      "",
+      "Start from TOOLING.md.template in this repo. Only the marker-delimited",
+      "block is injected; everything else is read on demand. If neither this",
+      "key nor workspace_root is set, or the file does not exist or cannot be",
+      "read, the hook prints a one-line notice instead of a digest. Set",
+      "enabled to false to opt out quietly.",
+      "",
+      "EITHER MARKER PAIR IS ACCEPTED: <!-- DIGEST:START --> / <!-- DIGEST:END -->",
+      "or <!-- CORE:START --> / <!-- CORE:END -->. They behave identically.",
+      "DIGEST predates the name and is what the template still ships; CORE is",
+      "the name the context contract uses. Accepting both is what makes the",
+      "contract landable without a migration.",
+      "",
+      "The EARLIEST complete pair in the file wins, whichever kind it is — and",
+      "an empty pair is skipped in favour of the next populated one. Position",
+      "rather than marker kind, because a marker NAMED IN THE BODY (a code",
+      "fence documenting this very contract, for instance) must not be able to",
+      "outrank the file's real block. Precedence by kind was tried and let",
+      "exactly that happen. Carry ONE pair per file: two is ambiguous, and the",
+      "hook says so in its output rather than picking silently."
+    ],
+
+    "max_lines": 60,
+    "//max_lines": "Cap on injected digest lines. Defaults to 60. Over the cap the block is WITHHELD ENTIRELY and the overage is printed in its place — the session gets no map at all until the block is trimmed. That is deliberate: until 2026-09-14 the block was trimmed to the cap with a note appended, and the live map bled its tail because a trimmed block reads exactly like a complete one. Losing one session's map is loud; losing its tail is not. Trim the block rather than raising this number — it is paid for in every session.",
+
+    "stale_after_days": 90,
+    "//stale_after_days": "Days without an edit before the digest carries a 'treat these statuses as unverified' warning. Defaults to 90; 0 disables the check. An unreadable timestamp counts as fresh, so the hook never nags about a file it cannot actually assess. This exists because a stale registry is worse than no registry — it still gets trusted."
+  },
+
+  "memory_lint": {
+    "enabled": true,
+    "//enabled": [
+      "Set false to stop noticing when MEMORY.md's hooks have drifted into a",
+      "second copy of the memories. Defaults to true; absent means on. Costs",
+      "nothing if you keep no memory directory — it only ever prints advice.",
+      "",
+      "MEMORY.md is injected into every session while the memory files behind",
+      "it are read lazily, so the index is the only part with a standing token",
+      "price. The drift is specific and it recurs: a correction gets appended",
+      "to the HOOK instead of to the file the hook points at. Each append is",
+      "individually reasonable and invisible. Left alone, the",
+      "index keeps growing, and a single hook can end up longer than the",
+      "file it points at.",
+      "",
+      "Silent on a healthy index, like memory-routing next door. It measures",
+      "two independent things: hook LENGTH (drift, scale-free) and the index's",
+      "TOTAL SIZE IN CHARACTERS (a hard ceiling in the harness). See both",
+      "thresholds below — they fire for different reasons and neither",
+      "substitutes for the other."
+    ],
+    "max_hook_chars": 200,
+    "//max_hook_chars": [
+      "A single hook longer than this is reported. Defaults to 200; absent",
+      "means 200. Deliberately well above the 120-160 routing target a hook",
+      "should sit at, because precision matters more than recall here: a",
+      "notice that fires on an ordinary session trains you to skip it.",
+      "",
+      "Hook length is scale-free: it stays silent on a healthy corpus that",
+      "simply got bigger, and fires on a small one full of bloated hooks. It",
+      "names the thing you can fix.",
+      "",
+      "CORRECTED 2026-09-14. This note used to end 'a flat byte cap would fire",
+      "on a healthy corpus that simply got bigger' and leave it there, which",
+      "read as an argument that no total-size cap should exist. The harness",
+      "imposes one regardless of what we think of it — see max_index_chars —",
+      "so a big tidy index is NOT healthy past that point, it is quietly",
+      "losing its last rows. The two thresholds are complementary, and this",
+      "file asserting otherwise is how the gap survived."
+    ],
+    "max_index_chars": 24000,
+    "//max_index_chars": [
+      "The whole index's budget, in CHARACTERS. Defaults to 24000; absent",
+      "means 24000; 0 or negative reads as unset, never as a cap everything",
+      "exceeds.",
+      "",
+      "This one is not a style preference — it is a hard limit in the harness.",
+      "MEMORY.md is truncated at the TAIL, silently, with no error anywhere:",
+      "the last rows simply do not arrive in the session. The unit is",
+      "CHARACTERS, not bytes: the harness reports sizes as characters/1024",
+      "(KB), and it names its own limit '24.4KB', i.e. 25,000/1024 = 24.41,",
+      "so the constant is INFERRED to be 25,000 from that rounding while the",
+      "UNIT is observed.",
+      "",
+      "24000 sits below the whole inferred band, so you are told while there",
+      "is still room to act rather than after a row has already gone missing.",
+      "Raising it toward 25,000 spends exactly that warning.",
+      "",
+      "Measure with len(text), never `wc -c`: an index carries a multi-byte",
+      "em dash on EVERY row by format, so the byte count reads high —",
+      "enough to put a session on the wrong side of this threshold.",
+      "",
+      "The fix when it fires depends on the layout memory-lint detects.",
+      "FLAT (no memory/topics/): retire a ROW, not shorten hooks — trimming",
+      "every hook to its target buys only a few rows, while deleting one that",
+      "duplicates a CLAUDE.md rule buys one outright. A file can keep existing without a row — put 'routed: false'",
+      "in its frontmatter and it stops being reported as an orphan.",
+      "TWO-LEVEL (memory/topics/ exists): move leaf rows out of MEMORY.md into",
+      "their topic files; MEMORY.md keeps only its Always rows and one row per",
+      "topic. 'routed: false' exempts nothing there — every file must be",
+      "reachable from Always or a nominated topic file.",
+      "",
+      "ALSO read at edit time by context_growth's PostToolUse notice on",
+      "memory/MEMORY.md — one number for both tools, so they cannot disagree.",
+      "The harness also cuts at 200 LINES; that axis is max_index_lines below.",
+      "context_growth.overrides does not apply to MEMORY.md — it is a line map.",
+      "",
+      "A value at or above 25000 is CLAMPED to 24999, for both tools: a cap",
+      "the index cannot cross before rows are already being dropped would",
+      "silence the only warning that the tail is being lost."
+    ],
+    "max_index_lines": 190,
+    "//max_index_lines": [
+      "The whole index's budget, in LINES as the harness counts them. Defaults",
+      "to 190; absent means 190; 0 or negative reads as unset.",
+      "",
+      "The harness cuts MEMORY.md at 200 lines as well as ~25,000 chars,",
+      "whichever comes first, dropping the tail silently. READ from the 2.1.280",
+      "binary (2026-09-29): it trims the text, counts newlines + 1, and cuts",
+      "only past 200, so blank lines at either end do not count. memory-lint",
+      "counts the same way (lint_lib.harness_line_count), never splitlines().",
+      "With typical row lengths the character cap binds first; this catches an",
+      "index of many short rows.",
+      "",
+      "190 leaves room to act before the cut. A value at or above 200 is",
+      "CLAMPED to 199, for the same reason as max_index_chars. Read by",
+      "memory-lint and by context_growth's edit-time notice — one key, both",
+      "tools."
+    ],
+    "max_mean_hook_chars": 170,
+    "//max_mean_hook_chars": [
+      "Reported when the MEAN hook length exceeds this. Defaults to 170;",
+      "absent means 170. Catches the case no single hook triggers — uniform",
+      "creep across the whole index, which is what drift actually looks like",
+      "before any one hook becomes an outlier.",
+      "",
+      "Structural faults (an orphaned memory file, a hook pointing at a file",
+      "that does not exist, a [[wikilink]] resolving to no memory, a row that",
+      "does not parse) are always reported regardless of these two numbers.",
+      "Those are defects rather than drift: an orphaned file is invisible to",
+      "every future session. Each category names at most 3 items and then",
+      "counts the rest, so one bad edit cannot turn the notice into a wall.",
+      "",
+      "Setting either threshold to 0 does NOT disable it — 0 is treated as",
+      "unset and the default applies. Taken literally it would be the exact",
+      "opposite of what someone reaching for it wants: every hook exceeds 0,",
+      "so the whole index would be reported at every session start. Use",
+      "\"enabled\": false above to turn the notice off."
+    ]
+  },
+
+  "context_lint": {
+    "max_lines": 800,
+    "//max_lines": [
+      "A staged CLAUDE.md over this many lines blocks the commit. Defaults to",
+      "800; absent means 800. THE one cap — since 2026-09-15 it applies to",
+      "every repo, because the shipped per-repo overrides below were deleted.",
+      "CLAUDE.md.template and policy/CLAUDE.md count too — they are what a new install gets.",
+      "",
+      "800 is ~4x Anthropic's published guidance ('target under 200 lines per",
+      "CLAUDE.md file'; code.claude.com/docs/en/memory). That is a knowing",
+      "trade, not an oversight: per-repo caps set tight to current size made",
+      "every legitimate new rule a cut-or-raise negotiation. The structural fix",
+      "is path-scoped rules (.claude/rules/ with paths: frontmatter), which",
+      "load only when Claude touches matching files and cost nothing at",
+      "session start; until those land, 800 buys room without pretending the",
+      "attention cost is zero. The only limit Claude Code enforces is 4 MiB,",
+      "above which a CLAUDE.md is SKIPPED ENTIRELY.",
+      "",
+      "Also checked by ci/local-checks.sh (the `context lint` check), not just",
+      "at commit time: the hook cannot catch a MERGE RACE (two PRs from one",
+      "base, each legitimately at cap, their sum over it).",
+      "",
+      "This runs at COMMIT time, from the global pre-commit hook, not at",
+      "session start. That chain already carries several hooks, so",
+      "latency matters, and this check is irrelevant to the vast majority of sessions,",
+      "which never touch a CLAUDE.md. Growth happens in a commit; that is",
+      "where the signal belongs and where the trade can still be made.",
+      "",
+      "It exists because adding a rule is free at write time and paid forever:",
+      "the file is injected into every session that loads it, and a file cut",
+      "hard grows straight back when the session adding to it has no signal",
+      "that a budget exists.",
+      "",
+      "Fails OPEN, unlike the secret scanner sharing the same hook: a missed",
+      "size check costs a few dozen lines and is caught next commit, while a",
+      "line-counting tool wedging every commit on the machine costs",
+      "everything. git commit --no-verify is the documented override."
+    ],
+    "overrides": {},
+    "//overrides": [
+      "Per-file caps for a repo that genuinely needs a different number than",
+      "max_lines above. Empty by default; an unmatched key gets max_lines.",
+      "",
+      "Matched EXACTLY against two candidate keys in order:",
+      "  1. <remote-owner>/<repo-name>/<path-within-repo>   (preferred)",
+      "  2. <repo-name>/<path-within-repo>                  (fallback)",
+      "The repo name comes from git's --git-common-dir, so a linked worktree",
+      "keys the same as the primary checkout and the same commit cannot pass",
+      "or fail depending on where it was made. The owner comes from origin's",
+      "URL (SSH and HTTPS spellings both resolve to the same owner); a repo",
+      "with no origin has only the bare key.",
+      "",
+      "WHY THE OWNER: a bare name cannot tell two CLONES apart. Two clones",
+      "of different repos that share a name would share one bare key, so a",
+      "cap meant for one lands on the other, and since this runs through a",
+      "global core.hooksPath it really is enforced there. Prefer the",
+      "qualified form; use the bare form only when you MEAN any clone by",
+      "that name. Where both are present the qualified one wins. The bare",
+      "form still matches, deliberately: dropping it would not error, it",
+      "would silently stop matching and hand the file the default.",
+      "",
+      "TWO RULES. A lowered cap blocks the commit staging the file it",
+      "targets, including a PARTIAL cut, so it cannot land ahead of the cut",
+      "that earns it. RULE 1: a lowered cap moves in the SAME COMMIT as the",
+      "cut. RULE 2: it lands ABOVE the cut, never AT it. A cap equal to the",
+      "post-cut size is a wall on day one.",
+      "",
+      "Exact, never a suffix: a suffix cannot tell a repo NAMED tools from",
+      "any repo that merely CONTAINS a directory of that name, and this",
+      "runs through a global core.hooksPath against every repo on the machine.",
+      "An unmatched key is not an error — it is a repo we have no opinion",
+      "about, and it gets the default above.",
+      "",
+      "An override is a RATCHET, not an exemption. Size each just above",
+      "its file's current length so the check fires on GROWTH rather than",
+      "on a state nobody can fix in one commit; lower it as the file is",
+      "cut. A check that fires constantly is a check that gets ignored,",
+      "which is the same as no check at all.",
+      "",
+      "An unversioned file (a workspace CLAUDE.md outside any repo) has no",
+      "repo component, so it cannot be keyed here. The context_growth",
+      "section below covers it, keyed by absolute path — a separate map,",
+      "deliberately, because the two key shapes cannot share one table."
+    ],
+    "core_max_lines": 80,
+    "//core_max_lines": [
+      "A staged Core block over this many lines blocks the commit. Defaults to",
+      "80; absent means 80.",
+      "",
+      "A Core is the marker-delimited block at the top of a context file — the",
+      "part GUARANTEED to be read, and authoritative on its own: if Core and",
+      "body disagree, Core wins. So it is paid in full in every session that",
+      "loads the file, while the body is skimmed at best.",
+      "",
+      "That is why its cap is SEPARATE from max_lines above and much tighter.",
+      "A 600-line file with an 80-line Core is fine; a 200-line file whose",
+      "Core is 150 lines is not, and one cap cannot express both."
+    ],
+    "core_overrides": {},
+    "//core_overrides": [
+      "Per-file CORE caps, keyed and matched exactly as overrides above, and a",
+      "RATCHET for the same reason. Empty by default; an unmatched key gets",
+      "core_max_lines.",
+      "",
+      "Deliberately empty rather than pre-populated: sizing a ratchet is a",
+      "judgment call against a file that has already been cut, and no real",
+      "file carries Core markers yet."
+    ],
+    "core_files": [
+      "CLAUDE.md",
+      "CLAUDE.md.template",
+      "TOOLING.md",
+      "TOOLING.md.template"
+    ],
+    "//core_files": [
+      "Filenames the two CORE checks apply to — the blocking size cap and the",
+      "advisory self-sufficiency check. Defaults to the four listed; absent",
+      "means those four.",
+      "",
+      "THIS LIST IS SEPARATE FROM THE FILES max_lines APPLIES TO, on purpose.",
+      "The whole-file cap covers CLAUDE.md and CLAUDE.md.template only. This",
+      "list adds the tooling map, because TOOLING.md is the only file that",
+      "carries a Core today — leaving it out exempted the one file the Core",
+      "contract was written for from the one cap that enforces it.",
+      "",
+      "Conflating the two lists is the mistake to avoid: a large TOOLING.md",
+      "runs to thousands of lines whole-file, so putting it under the",
+      "CLAUDE.md whole-file cap would report it far over on every single",
+      "edit. A notice that fires constantly is a notice nobody reads.",
+      "",
+      "Matched on BASENAME, and checked BEFORE the file is read. In --staged",
+      "the reader forks `git show :<path>` once per staged file, and this hook",
+      "runs through a global core.hooksPath on every repo on the machine, so a",
+      "check scoped on 'does this file contain a Core block' would have to read",
+      "every staged path to find out — turning a lockfile bump into one git",
+      "subprocess per file."
+    ]
+  },
+
+  "context_budget": {
+    "readings_path": "~/.claude/context-budget/readings.jsonl",
+    "//readings_path": "Where `claude-context-budget --record` appends its one-line-per-day instruction reading, and where `--report` reads the log back from to compute a growth rate. Defaults to ~/.claude/context-budget/readings.jsonl. Absent means the default is used -- there is no way to opt out of the log entirely short of disabling the SessionStart hook itself, since a missing log just reads as 'no readings yet' rather than a fault.",
+
+    "memory_dir": null,
+    "//memory_dir": [
+      "Overrides `claude-context-budget`'s own resolver for which",
+      "~/.claude/projects/<slug>/memory directory holds this workspace's",
+      "MEMORY.md. null (the default) means the resolver derives the slug from",
+      "workspace_root itself and refuses if that directory has no MEMORY.md.",
+      "",
+      "REQUIRED when `autoMemoryDirectory` is set in",
+      "<root>/.claude/settings.json or <root>/.claude/settings.local.json",
+      "(project or local level): the harness's precedence between those two",
+      "isn't reproduced here, so with the key present at that level the",
+      "resolver refuses to guess and the MEMORY.md row reports itself",
+      "unreadable until this is set explicitly. A USER-level value (in",
+      "~/.claude/settings.json, the one install.sh's auto_memory.unify",
+      "writes) is resolved automatically instead -- this override is only",
+      "needed there if that value doesn't resolve to an existing directory."
+    ],
+
+    "always_on_budget": null,
+    "//always_on_budget": [
+      "The ceiling `--report`'s budget line compares the always-on",
+      "instruction total against (unit v2: sentences, plus 1 per Always",
+      "row). null (the default) prints \"not set\" and leaves the",
+      "edit-time notice off. Set, the context-growth hook notices when",
+      "an edit to an always-on surface raises the total past it, naming",
+      "claude-md-distill's Consolidation mode. Nothing blocks.",
+      "",
+      "There is deliberately no shipped default: Anthropic's only",
+      "documented anchor (\"under 200 lines per CLAUDE.md\") translates to",
+      "fewer sentences than policy/CLAUDE.md alone measures, so a",
+      "default set at the anchor could never pass. Set it from a measured",
+      "adherence sweep, not a picked number.",
+      "",
+      "Only a positive JSON integer is accepted -- anything else (a bool,",
+      "a float, a string, zero or negative, a list) prints \"invalid\"."
+    ]
+  },
+  "context_growth": {
+    "enabled": true,
+    "//enabled": [
+      "Set false to stop the growth notice. Defaults to true; absent means on.",
+      "",
+      "A PostToolUse hook, so it cannot block and does not try to — the point",
+      "is attribution, not refusal. It says nothing at all unless a count ROSE",
+      "past its cap in this session, or a new cross-reference appeared inside",
+      "a Core."
+    ],
+    "memory_max_lines": 280,
+    "//memory_max_lines": [
+      "The whole-file line cap for a memory/ entry (any file matching",
+      "memory/<name>.md, excluding MEMORY.md and memory/history/). Defaults to",
+      "280; absent means 280.",
+      "",
+      "WHOLE-FILE ONLY. A memory entry gets NO Core cap — its Core half is",
+      "always None, never context_lint.core_max_lines' 80. A memory file",
+      "carries YAML frontmatter, not a CORE:START block, so a stray marker",
+      "pasted into one (from a pasted code fence, say) must not start billing",
+      "it against the CLAUDE.md family's Core budget, which is a different",
+      "contract for a different file. Do not add a memory core_max_lines key —",
+      "there is nothing for it to cap.",
+      "",
+      "THE NOTICE FIRES AT THIS LIMIT, NEVER AT A FRACTION OF IT. There is no",
+      "percentage anywhere in this mechanism, and none belongs here. A file",
+      "that has just been distilled can still sit close under the cap, and a",
+      "fractional threshold (80% of 280 is 224) would fire on it: a notice",
+      "about a file that is already at a healthy size and not worth",
+      "distilling again. To choose your own cap, distill a few of your largest",
+      "memory files and see where they land; the cap belongs above that floor,",
+      "and the notice at the cap itself.",
+      "",
+      "Per-file ratchets for individual memory files use the EXISTING",
+      "context_growth.overrides map above, keyed by absolute path — there is",
+      "no second map for memory. A memory file is outside git exactly like the",
+      "context files that map already serves, so it is consulted the same way",
+      "context_growth.core_overrides is NOT: a Core override keyed to a memory",
+      "file's path must not reintroduce a Core cap for one."
+    ],
+    "rules_max_lines": 200,
+    "//rules_max_lines": [
+      "The whole-file line cap for any .md under a .claude/rules/ directory,",
+      "versioned or not. Defaults to 200; absent means 200.",
+      "",
+      "WHOLE-FILE ONLY, no Core cap — same shape as memory_max_lines above,",
+      "and for the same reason: a rules file carries no CORE:START block, so",
+      "a stray marker inside one must not start billing it against the",
+      "CLAUDE.md family's Core budget.",
+      "",
+      "200 is this toolkit's own default for a rules file, borrowed from",
+      "Anthropic's under-200-lines guidance for a CLAUDE.md file -- Anthropic",
+      "sets no per-rules-file limit. Chosen over 800 (the CLAUDE.md default)",
+      "and 120 (too aggressive for a file that may cover a real topic).",
+      "",
+      "The missing-paths: notice below fires regardless of this value — it is",
+      "not a size check, and applies even to a rules file well under this cap.",
+      "",
+      "Per-file ratchets use the EXISTING context_growth.overrides map above,",
+      "keyed by absolute path — there is no second map for rules files either."
+    ],
+    "overrides": {},
+    "//overrides": [
+      "Per-file WHOLE-FILE caps for context files that are in NO git repo,",
+      "keyed by ABSOLUTE PATH. Empty by default; an unmatched file falls back",
+      "to context_lint.max_lines.",
+      "",
+      "A SEPARATE MAP from context_lint.overrides, and they must not be",
+      "merged: that one is keyed <repo-name>/<path-within-repo>, this one by",
+      "absolute path, and the two key shapes cannot coexist in one table.",
+      "context_lint's cap resolver returns the default BEFORE consulting",
+      "overrides whenever the key is null — which it is, by construction, for",
+      "every file outside a repo — so without this map no per-file cap was",
+      "expressible for the very files this hook exists to reach.",
+      "",
+      "Consulted ONLY for files outside a repo. A versioned file already has a",
+      "working ratchet in context_lint.overrides and does not get a second",
+      "one, or the two maps silently compete over the same file.",
+      "",
+      "Keys are ~-expanded and realpath'd on BOTH sides before comparing.",
+      "Both sides because on macOS /var is a symlink to /private/var, so",
+      "resolving one side makes the key match nothing, silently. ~-expanded",
+      "because config reads of a MAP do not expand paths — only scalar path",
+      "reads do — so a key written the way a human writes it arrives verbatim.",
+      "",
+      "A RATCHET, not an exemption, exactly as in context_lint.overrides. Size",
+      "each entry just above its file's current length so the check fires on",
+      "GROWTH rather than on a state nobody can fix in one edit, and lower it",
+      "as the file is cut."
+    ],
+    "core_overrides": {},
+    "//core_overrides": [
+      "The same, for CORE caps on files outside any repo. Empty by default.",
+      "An unmatched file falls back to context_lint.core_max_lines — except",
+      "the tooling map, whose Core cap is tooling_digest.max_lines.",
+      "",
+      "TWO CORE CAPS, DELIBERATELY. A CLAUDE.md's Core is capped by",
+      "context_lint.core_max_lines; the tooling map's by",
+      "tooling_digest.max_lines, which already exists and is the number past",
+      "which the digest hook WITHHOLDS the injected block entirely (it",
+      "trimmed to it until 2026-09-14). Do not unify",
+      "them: a second number for the same file is a second number to drift.",
+      "",
+      "The map's TEMPLATE resolves through the same digest budget, not",
+      "core_max_lines: a template is capped by what it germinates into, since",
+      "/onboard copies its Core into a real map."
+    ],
+    "state_path": null,
+    "//state_path": [
+      "Where the hook records last-seen counts per file. null (the default)",
+      "resolves to ~/.claude/context-growth-state.json.",
+      "",
+      "WHY IT EXISTS AT ALL: the hook fires on GROWTH, and growth is not",
+      "visible in a single post-edit snapshot. PostToolUse receives the tool",
+      "input, not the pre-edit content, so the prior size has to be recorded",
+      "somewhere. Without it the check degrades to a STATE check — over cap or",
+      "not — which fires on every edit to a file that is already over,",
+      "including the edits that shrink it. A notice that fires constantly is a",
+      "notice nobody reads, which is the failure this whole contract exists to",
+      "remove.",
+      "",
+      "One entry per absolute path, holding its last-seen line count, Core",
+      "count and dangling-reference list. Growth is bounded by dropping",
+      "entries whose file no longer exists on each write; that is the whole",
+      "pruning policy. Writes are atomic (temp file in the target's own",
+      "directory, then a rename) and there is deliberately NO LOCK: two",
+      "sessions may edit at once, a lost update costs one missed advisory",
+      "notice, and a lock in a best-effort hook can wedge an editor for a",
+      "message nobody is blocked on.",
+      "",
+      "CLAUDE_CONTEXT_GROWTH_STATE overrides this, ahead of config. It exists",
+      "for the test suite: a suite that mutates the real state file is the",
+      "ambient-state defect in another costume."
+    ]
+  },
+  "memory_routing": {
+    "enabled": true,
+    "//enabled": [
+      "Set false to stop nudging when a write to a memory/ entry looks like it",
+      "records a config fact that belongs in TOOLING.md instead. Defaults to",
+      "true; absent means on. Costs nothing if you don't keep a TOOLING.md —",
+      "it only ever prints advice, never blocks a write.",
+      "",
+      "It is a NUDGE, not a gate, and deliberately so. Preventing the write",
+      "would need a PreToolUse deny driven by a keyword heuristic, and a guard",
+      "that rejects legitimate memory writes gets switched off — at which point",
+      "it protects nothing.",
+      "",
+      "Tuned for PRECISION over recall. A reminder that fires on ordinary memory writes",
+      "trains you to skip it, which is worse than silence. If you widen the",
+      "signal list in routing_lib.py, re-measure against your own memory corpus",
+      "before shipping, since a broad list mostly fires on noise."
+    ]
+  },
+
+  "caffeinate": {
+    "enabled": false,
+    "//enabled": [
+      "Hold a macOS sleep assertion while a Claude Code turn is actually",
+      "running, so a long build survives being walked away from. Defaults to",
+      "FALSE, and absent means off — unlike every other feature here.",
+      "Inheriting a machine that stops sleeping is a surprise nobody asked",
+      "for, and the cost of it being off is one interrupted build rather than",
+      "a laptop that runs hot in a bag.",
+      "",
+      "The screensaver is NOT what breaks a long run — processes run fine",
+      "behind it. SYSTEM SLEEP is, and the stock settings make them look",
+      "linked: the display sleeps on its idle timer and the system follows a",
+      "minute later. `pmset -g custom` shows both numbers for your machine.",
+      "",
+      "Work pushes a deadline out. A hold ends when its session's `claude`",
+      "process exits — `caffeinate -w` does that in the kernel, so no hook has",
+      "to fire and a crashed session cannot leak one. Power assertions are",
+      "additive, so the machine sleeps once the LAST session has gone.",
+      "",
+      "It never prevents DISPLAY sleep — the screen still goes dark, only the",
+      "machine stays up. And closing the lid sleeps it regardless."
+    ],
+
+    "require_ac": true,
+    "//require_ac": [
+      "Only hold the assertion while plugged in. Defaults to true. Set false",
+      "to keep a build alive on battery too, which drops `-s` and holds only",
+      "`-i` — the man page says `-s` is valid on AC power alone, so asking",
+      "for it on battery is asking for nothing.",
+      "",
+      "`/caffeinate on` and `/caffeinate off` write this key, which is the",
+      "whole reason that command exists. `on` also sets `enabled` to true,",
+      "because setting only this one on a machine that never opted in would",
+      "report success and hold nothing.",
+      "",
+      "Unplugging mid-session RELEASES the running hold at the next hook,",
+      "rather than merely declining to renew it. Otherwise the answer would",
+      "depend on whether you unplugged before or after the turn started.",
+      "",
+      "Note that closing the lid sleeps the Mac no matter what this says.",
+      "Clamshell sleep ignores both flags; only `pmset disablesleep` blocks",
+      "it, which this deliberately does not touch."
+    ],
+
+    "battery_override_hours": 24,
+    "//battery_override_hours": [
+      "How long `/caffeinate on` lasts before lapsing back to wall-power-only.",
+      "Defaults to 24. Set 0 to make it permanent until `/caffeinate off`.",
+      "Negative and non-numeric fall back to 24.",
+      "",
+      "THE CLOCK RESTARTS ON USE, not on the command: any hold actually taken",
+      "on battery pushes it out again. So working unplugged every day keeps it",
+      "alive indefinitely, and a day without unplugging retires it. That rule",
+      "rests on forgetting the setting and not using it being the same",
+      "event — a fixed 24 hours from the",
+      "command would retire it mid-trip for anyone who actually works on",
+      "battery. Working on WALL POWER never refreshes it, because that is not",
+      "using the override.",
+      "",
+      "A lapse RELEASES holds already running, it does not merely decline to",
+      "take new ones. Otherwise a session open at the moment of expiry would",
+      "keep the machine awake indefinitely, which is the whole failure this",
+      "exists to stop.",
+      "",
+      "The clock lives in the state directory (battery-override.json), NOT in",
+      "this file, because the refresh-on-use rule means a HOOK maintains it and",
+      "a hook that edits this file — from every concurrent session, to record a",
+      "routine event — is a risk not worth taking for a convenience. Deleting",
+      "that file costs one fresh 24-hour window, never your configuration.",
+      "",
+      "This does NOT touch `enabled`. Wall-power holding is unaffected by the",
+      "lapse; only the battery override retires."
+    ],
+
+    "battery_floor_percent": 20,
+    "//battery_floor_percent": [
+      "Release the hold when the battery falls to this, and decline to take a",
+      "new one until it charges past. Defaults to 20. Set 0 to disable the",
+      "floor entirely. Consulted only on battery — on wall power there is",
+      "nothing to run flat, so a low charge there is simply a laptop charging.",
+      "",
+      "ZERO IS MEANINGFUL here, unlike the *_seconds keys where it falls back:",
+      "'no floor' is a thing you can want, a zero deadline is not. Values",
+      "outside 0-100 fall back to 20 rather than clamping, because a floor of",
+      "150 is a typo and honouring it would release every hold instantly —",
+      "indistinguishable from the feature being broken.",
+      "",
+      "This exists because `require_ac: false` is machine-wide and persistent.",
+      "Every window left open then holds on battery until its session exits,",
+      "and a laptop left open overnight is the case that costs something. The",
+      "trade is real and worth knowing: a long unattended build on battery",
+      "DIES here rather than running the machine flat."
+    ],
+
+    "settle_seconds": 300,
+    "//settle_seconds": [
+      "How long an UNBOUND hold lasts after a turn ends. Defaults to 300",
+      "(5 minutes). Non-numeric, zero and negative all fall back to that.",
+      "",
+      "Read that first word carefully, because this key is narrower than it",
+      "looks. A hold bound to a live `claude` process is NOT shortened when a",
+      "turn ends — it lasts as long as the session, which is why a",
+      "background job that outlives its turn does not freeze. This window applies only when the",
+      "walk up to the `claude` process failed and the hold has no `-w` to",
+      "release it, so its deadline is the only bound it has.",
+      "",
+      "That makes this a fallback rather than the main path. If you want an",
+      "idle session sleeping sooner, lower hold_seconds instead — that is the",
+      "ceiling a normal, bound hold actually ends on."
+    ],
+
+    "hold_seconds": 7200,
+    "//hold_seconds": [
+      "Ceiling on a hold that nothing refreshes. Defaults to 7200 (2 hours).",
+      "Zero, negative and non-numeric all fall back to 7200: a zero deadline",
+      "would expire before it is recorded, so the ceiling can be raised but",
+      "never removed.",
+      "",
+      "Work pushes this deadline out — every prompt and every tool batch, and",
+      "batches inside dispatched subagents count — so a session doing anything",
+      "at all never reaches it. What it bounds is a session doing NOTHING: two",
+      "unbroken hours with no activity and the machine sleeps, even though the",
+      "session is still open and `-w` has not fired.",
+      "",
+      "That ceiling is deliberate, not an oversight. A session idle that long",
+      "is one you walked away from. Raise it if you disagree — it is the right",
+      "knob for 'let an idle window hold longer'. Do not set it absurdly high",
+      "in place of removing it: a hold with neither a live process nor a",
+      "deadline is the mistake nobody notices."
+    ],
+
+    "state_dir": "~/.claude/caffeinate",
+    "//state_dir": [
+      "One small json file per session recording which assertion belongs to",
+      "it, and which `claude` process that assertion was bound to. Defaults to",
+      "~/.claude/caffeinate.",
+      "",
+      "Deleting the directory is nearly harmless. A BOUND assertion carries",
+      "`-w` and dies with its session whether or not anything on disk points",
+      "at it — measured 2026-08-27, it releases in ~0s even when the session is",
+      "SIGKILLed, because the kernel does that and no hook is involved.",
+      "",
+      "An UNBOUND one is the exception, and it is the only hold on the machine",
+      "with no kernel backstop: the walk to the `claude` process can fail, and",
+      "that hold has only its `hold_seconds` deadline. Delete its record and",
+      "nothing sweeps the `caffeinate` process it named, so at worst the machine",
+      "stays awake until that deadline expires. Nothing is corrupted either way:",
+      "the next prompt in each session writes a fresh record and rebinds."
+    ]
+  },
+
+  "build_cost": {
+    "enabled": true,
+    "//enabled": "Set false to stop the SessionEnd hook recording anything. Absent means enabled. This is the only supported off switch: install.sh merges the whole SessionEnd event as a unit, so removing the hook from ~/.claude/settings.json by hand is undone on the next install.",
+
+    "ledger_path": "~/.claude/build-costs.jsonl",
+    "//ledger_path": "Where one line per session is appended, split four ways (main, executor, review, other). A session, not a build: a long session can span several builds, and a resumed session appends a superseding row rather than a duplicate. Written by the `claude-build-cost-record` SessionEnd hook, and by `claude-build-cost` itself unless you pass --no-record. Defaults to ~/.claude/build-costs.jsonl. The file is only ever appended to, never rewritten, so it is safe to point at something you keep.",
+
+    "qualifying_agent_types": ["executor", "task-reviewer", "workflow-subagent", "code-reviewer", "architect-reviewer"],
+    "//qualifying_agent_types": "Which subagent agentTypes make a session worth recording at SessionEnd. A session with none of these wrote no build worth measuring, so no ledger row is appended. Defaults to executor, task-reviewer, workflow-subagent, code-reviewer and architect-reviewer when the key is absent or is not a list of strings; an empty list falls back to the same default rather than recording nothing. A name matches with or without the `toolkit-build:` plugin prefix. The two review-lane types are in the default because without them a session that ran a /build review gate and wrote no code records nothing at all, so the ledger under-samples exactly the review-heavy sessions a cost argument needs. architect-reviewer is in it for the same reason: a session that ran only that optional reviewer would otherwise record nothing. Each row carries TWO fields, answering different questions. `agent_types` is every agentType observed — a fact about the session, config-independent — and is what `--ledger` derives its `build`/`gate` kind column from; classifying off the config-dependent field instead meant anyone who dropped `executor` from this list got every build of theirs labelled `gate` with no symptom. `qualified_by` is the intersection with THIS list, i.e. why the row exists at all — an audit trail for the recording gate, never a classification input. Note `workflow-subagent` is any workflow agent, not a /build lens specifically, so `gate` means the session wrote no code, NOT that it ran a /build gate."
+  },
+
+  "session_claim": {
+    "enabled": true,
+    "//enabled": "Set false to stop claiming checkouts entirely. Defaults to true; absent means on. On is the stricter setting here — the risk it prevents is a PR containing another session's work, and the cost of a misfire is one momentary block that the circuit breaker below bounds.",
+
+    "max_blocks": 3,
+    "//max_blocks": "Blocks per session before the guard stands down for the rest of that session. A CORRECT block happens once — you relocate to a worktree and nothing contends again — so repeated blocks mean relocation is not working. Defaults to 3. Setting 0 disables the breaker, which also removes the only bound on what a bug in this tool can cost you."
+  },
+
+  "session_titler": {
+    "enabled": true,
+    "//enabled": "Set false to stop titling sessions at SessionEnd entirely — no worker forked, no model call, no custom-title record, no index row. Defaults to true; absent means on. When on, each ended session with at least two real user messages costs one `claude -p --model haiku` call, run detached so it never delays the session's exit. The title is a short outcome phrase with no prefix; an answer that reads as prose is discarded, leaving the session untitled.",
+
+    "index_path": "~/.claude/session-index.tsv",
+    "//index_path": "Where `csearch` keeps its searchable index of past session titles."
+  },
+
+  "usage_watch": {
+    "enabled": true,
+    "//enabled": "Set false to turn the whole feature off — no status-line cache write, no tier warnings, no subagent headroom, no postmortem handover. Defaults to true; absent means on.",
+
+    "notice_pct": 70,
+    "gate_pct": 85,
+    "halt_pct": 95,
+    "//thresholds": "Utilisation percentages at which the notice/gate/halt tiers start (inclusive). Defaults are 70/85/95. If you set them out of order, they are SORTED rather than obeyed — a halt below a gate would make the halt tier unreachable, and the strictest configured number should still bite.",
+
+    "cache_path": "~/.claude/usage-budget.json",
+    "//cache_path": "Where claude-usage-line writes the budget snapshot it renders. Defaults to ~/.claude/usage-budget.json. This is the ONLY file that writes here; do not point it at the same path as state_path below.",
+
+    "state_path": "~/.claude/usage-budget-state.json",
+    "//state_path": "Where the hooks record what tier they have already announced, so a session isn't nagged on every tool batch. Defaults to ~/.claude/usage-budget-state.json. Kept separate from cache_path on purpose — the status line rewrites its file every 30s, which would race a hook's write to a shared file.",
+
+    "stale_after_seconds": 900,
+    "//stale_after_seconds": "How old the cached snapshot may be before a hook treats it as absent. Defaults to 900 (15 minutes). An expired rate-limit WINDOW is already discarded by resets_at; this catches the other case — a cache whose window hasn't reset yet but whose reading predates a laptop sleep or a long gap with no status-line refresh, so it can no longer be trusted as current. Being treated as absent is no longer the same as being ignored: see unknown_reannounce_seconds.",
+
+    "unknown_reannounce_seconds": 43200,
+    "//unknown_reannounce_seconds": "How long a session goes before it is told AGAIN that the budget cannot be read at all. Defaults to 43200 (12 hours), which is once per working session in practice; a value of 0 or less falls back to that default rather than meaning 'every turn'. An hourly cadence assumes unknown is a transient state worth re-checking; on any surface without a status line it is PERMANENT, so hourly is a permanent nag, and a warning that repeats without being actionable is what teaches a reader to skim it. Keep any replacement value FINITE: the expiry shares the resets_at slot a real window uses so the state file's pruning collects it, and a never-expiring bucket is the one entry that would grow that file without bound. An unreadable budget is the normal state on any surface without a status line — the VS Code extension and the desktop app both render none — and the hooks now say so instead of going quiet, because silence is indistinguishable from having headroom. Unknown is a standing condition rather than an event, so unlike a tier crossing it is deduped on BOTH UserPromptSubmit and PostToolBatch; repeating it every turn is how a warning teaches its reader to skim past it. TWO CASES WHERE THE NOTICE WILL NEVER CLEAR, and you want 'enabled': false instead of a longer window: you kept a custom statusLine that does not pipe through claude-usage-line, and API-key authentication, where rate-limit data never reaches any surface at all. A momentary five-hour ROLLOVER is not one of these — an incomplete reading in an otherwise healthy session is handled separately and never spends this window.",
+
+    "subagent_context": true,
+    "//subagent_context": "Set false to stop telling each dispatched subagent its budget headroom on SubagentStart. Defaults to true; absent means on.",
+
+    "postmortem_handover": true,
+    "//postmortem_handover": "Set false to stop writing a handover document when a turn dies with reason rate_limit or billing_error. Defaults to true; absent means on.",
+
+    "transcript_root": "~/.claude/projects",
+    "//transcript_root": "Where Claude Code writes transcript JSONL, which the budget estimator reads to count output tokens. Defaults to ~/.claude/projects; exists mainly so tests never touch the real corpus.",
+
+    "estimate": false,
+    "//estimate": "Set true to enable the transcript-based budget estimate. DEFAULTS TO FALSE; absent means OFF. Anchor it: run `claude-usage-anchor <pct> --resets-in <duration>` (e.g. `45 --resets-in 4h20m`) with the 5-hour figure and reset time from the Account & Usage panel, or let a terminal status line record one. It adds this machine's output tokens since that reading (de-duplicated by message.id, subagents included) as a drift: ONE figure, labelled an estimate and a floor, since other machines and the web app spend the same budget unseen. No idle-gap or phase inference: with no live anchor it reports nothing. A percentage needs a ratio, measured from two readings in one window 5+ points apart, or default_ratio below; else tokens only. Wherever there is no real reading, on any surface, it fires the notice/gate/halt tiers with the same obligations as a real reading.",
+
+    "dispatch_advisory": false,
+    "//dispatch_advisory": "Set true to forecast a dispatch against the usage budget: a PreToolUse hook on Agent|Workflow that reports headroom, what this lane has historically cost, and whether it fits. DEFAULTS TO FALSE; absent means OFF, because this is the only hook that can return permissionDecision \"ask\" and interrupt a human. PreToolUse fires before the tool RUNS, not before the model DECIDES, so below halt the forecast informs your NEXT dispatch; only the \"ask\" at halt stops the call it fires on. It asks at halt on a real reading or an anchored estimate (see `estimate`, a separate switch); with neither it says nothing. If the hook crashes it prints a crash report saying the dispatch was NOT checked. Cost history comes from `build_cost.ledger_path` (5 sessions per lane before a figure shows). A real reading gates on whichever of the 5-hour and 7-day windows binds; an estimate covers the 5-hour window only.",
+
+    "anchor_path": "~/.claude/usage-anchors.json",
+    "//anchor_path": "Where anchor readings are recorded for the estimator: the latest reading, the first reading of the same window, and the measured ratio. Written by `claude-usage-anchor <pct> --resets-in <duration>` and by a terminal status line. Deliberately a different file from state_path: two hooks doing read-modify-write on one file would drop each other's writes. Defaults to ~/.claude/usage-anchors.json.",
+
+    "default_ratio": null,
+    "//default_ratio": "Optional, and null on purpose: output tokens per 1% of the 5-hour window, used only until this machine has measured its own from two readings in one window at least 5 points apart. NO DEFAULT SHIPS, because the figure depends on your plan and account and nobody publishes it. Set it only if you have worked yours out (output tokens counted the way estimate_lib.scan_usage counts them, divided by the percentage points they moved the Account & Usage panel). A measured ratio still wins over it, and an estimate that uses it says so. Set it with `--set usage_watch.default_ratio=<whole number>`; the setter takes integers only. Null, absent, boolean, non-numeric, zero or negative all mean no ratio. If the counting ever changes, a ratio fitted to the old counting is wrong too: re-derive it, never rescale it.",
+
+    "codex_low_gates": 15,
+    "//codex_low_gates": "Announces once per session, on UserPromptSubmit, when the estimated Codex review-gate budget falls to this many gates left or below. An estimate needs a fitted per-gate cost for your plan, window and model, and this toolkit ships none (see tools/codex-review/codex_review_lib.py, CALIBRATIONS), so until you fit one the Codex notice instead fires once the window passes 90% used and again at 100%. Defaults to 15; absent means 15. 0 means only the 100% notice. Silent when there is no Codex rollout log to read (no ~/.codex/sessions, or CODEX_HOME set to an empty tree). Bool, non-integer or negative values fall back to 15 rather than erroring."
+  },
+
+  "base_pin": {
+    "enabled": true,
+    "//enabled": "Set false to silence the mid-session notice that origin/<default> is ahead of the worktree you are working in, and to stop its background fetch. Defaults to true; absent means on. This is the companion to repo_freshness, not a duplicate: that hook's repo-behind notice fires at session start and only when you are ON the default branch (bar a toolkit checkout pinned by ./install.sh --rollback, which it always names), so it is silent for the entire life of a feature branch. This one fires only in a LINKED WORKTREE, which is exactly where that gap matters — every worktree of a repo shares one set of origin/* refs, so another session merging moves your base without touching your files.",
+
+    "fetch_interval_seconds": 14400,
+    "//fetch_interval_seconds": "How stale the last `git fetch` may be before a new one is spawned in the background. Defaults to 14400 (4 hours). The fetch NEVER blocks the prompt — the count is taken from refs already on disk — so a longer interval only means finding out one prompt later. The clock is PER-WORKTREE, not per-repo: FETCH_HEAD is a per-worktree pseudo-ref, so the age is read from the same place this tool's own fetch writes it. That is the invariant that matters — an earlier version read the repo's common dir while fetching into the worktree, so the clock never advanced and it spawned a fetch on EVERY prompt submit, forever, with no output. The cost of getting it right is that N worktrees each fetch once per interval instead of one between them, which is a few cheap calls; a shared clock would mean deriving a primary-checkout path by stripping a component off --git-dir, and that guesses wrong under --separate-git-dir.",
+
+    "max_commits_listed": 5,
+    "//max_commits_listed": "How many of the new commits to name in the notice, newest first. Defaults to 5. Set 0 to report only the count. The subject lines are what make the notice actionable rather than merely true — \"3 commits ahead\" is a number, \"#78, #79, #80\" is a reason to merge.",
+
+    "state_path": "~/.claude/base-pin-state.json",
+    "//state_path": "Where the dedupe table lives. Defaults to ~/.claude/base-pin-state.json. Keyed by session and checkout, holding the last origin/<default> sha announced there, so the notice speaks once per move and re-speaks the next time the default branch moves. Records older than 7 days are pruned on read. Deliberately a different file from usage_watch state_path: two hooks doing read-modify-write on one file would drop each other's writes. Deleting it is harmless — it costs one repeated notice per live session."
+  },
+
+  "model_guard": {
+    "enabled": true,
+    "//enabled": "Set false to stop claude-model-guard refusing an Agent dispatch that names no model. Defaults to true; ABSENT MEANS ON, and a config file that will not parse also leaves it on — a broken config must not be a way to disarm a guard. What it refuses: an `Agent` call with no `model` runs on the session's model, so on an Opus session it pays Opus rates for work that is usually Sonnet's, and nothing in the transcript says so. It is DEFINITION-AWARE, so an agent whose own frontmatter pins a concrete model dispatches cleanly with no argument at the call site; only a dispatch that would genuinely fall back to the session model is refused. Note that `model: inherit` in a definition is NOT a pin — it means 'use the session model', which is the case being guarded against, and it is common in plugin agent definitions. `Workflow` is deliberately never judged: its per-agent models live inside a JavaScript string, and denying one would be a denial on a guess. To bypass it, re-run the session with MODEL_GUARD_ALLOW=1 set — that is a launch-time, session-wide switch, not a per-call override, because a PreToolUse hook can only read the environment it inherited from the Claude Code process."
+  },
+
+  "wrap_up": {
+    "repos_root": null,
+    "//repos_root": "Where your git checkouts live. claude-wrap-up-survey surveys the immediate subdirectories containing a working tree (never recursed into; bare repos are skipped because they cannot hold unsaved work), and claude-backup leaves this folder out of the workspace copy, since each checkout's remote holds it. ~ and $VARS are expanded. null, absent or \"\" means <workspace_root>/repos. A value that is not an absolute path after expansion (relative, or naming an unset variable) is refused, never replaced by the default. No workspace_root and no value, a refused value, or a path that does not exist all produce `surveyed: false` with a reason -- never an empty result. That distinction is the whole point: /wrap-up reports whether it is safe to shut down, so 'looked and found nothing' and 'never looked' must never render the same way. A typo here would otherwise certify a machine as clean while examining nothing.",
+
+    "//note": "This tool takes no thresholds and writes nothing. It is read-only by construction -- it shells out only to `git` with read-only verbs, never fetches, and never calls `gh`. Resolving whether a branch ahead of the default branch is actually unmerged is left to the caller precisely because that needs the network, and a squash merge makes git alone answer wrongly."
+  },
+
+  "toolkit_integrity": {
+    "enabled": true,
+    "//enabled": "Set false to silence claude-toolkit-integrity entirely — BOTH halves, including the one that tells you a guard has gone dark, plus the guard-coverage and SessionStart canary checks. Defaults to true; absent means on. Think twice: Claude Code silently SKIPS a hook it cannot execute, so a dangling ~/.local/bin/claude-danger-guard is indistinguishable from a guard that simply had nothing to say. If the drift notice is what bothers you, turn off drift_notice below instead and keep this one.",
+
+    "drift_notice": true,
+    "//drift_notice": "Set false to keep the integrity check and drop only the notice that the toolkit's HEAD moved mid-session. Defaults to true; absent means on. Split from `enabled` on purpose, because the two halves are not worth the same: the integrity half catches a dark guard, this half is a convenience telling you the tooling around your work changed while your own branch and edits did not. The notice is already path-filtered to tools/, agents/, skills/, lib/, every plugin's hooks/hooks.json (plugin/ and plugin-*/) and claude/profiles.json, so a docs-only or tests-only merge says nothing — an unfiltered version on a checkout that moves often fires constantly and teaches you to skim past it.",
+
+    "state_path": "~/.claude/toolkit-integrity-state.json",
+    "//state_path": "Where the dedupe table lives. Defaults to ~/.claude/toolkit-integrity-state.json. Keyed by session, holding the last set of problems announced, the last toolkit HEAD seen, and the last canary result, so each half speaks when its subject CHANGES and never repeats on an unchanged one — a second link breaking mid-session is a new notice, not a suppressed duplicate. Records older than 7 days are pruned on read. Deliberately a different file from base_pin state_path even though the shape is identical: one on-disk format shared between two tools means a schema change in either can break the other after only one was read. Deleting it is harmless — it costs one repeated notice per live session."
+  },
+
+  "build": {
+    "review": "economical",
+    "//review": [
+      "Which reviewer `/build`'s four gates dispatch: \"economical\" (one",
+      "blinded Claude reviewer per gate) or \"full-power\" (Codex). Claude",
+      "builds in both modes; this picks only the gate reviewer. \"full\" and",
+      "\"full power\" are accepted aliases of \"full-power\". Absent,",
+      "unrecognised or any non-string value falls back to \"economical\" —",
+      "safe on availability (no Codex needed) and on cost (one reviewer).",
+      "",
+      "Consumers: `claude-build-route --review-mode` reads this key through",
+      "toolkit_config.build_review_mode() and prints the resolved mode;",
+      "`/build`'s gates branch on its output. See skills/builder/build/SKILL.md and",
+      "tools/build-lens/{design,plan,code,merge}-review.md."
+    ],
+
+    "enable_workflows": false,
+    "//enable_workflows": [
+      "Set true and install.sh writes \"enableWorkflows\": true to your user",
+      "settings (~/.claude/settings.json). That turns on Claude Code's Workflow",
+      "tool in every session, so `/build`'s economical gates run their",
+      "reviewer as a Workflow.",
+      "",
+      "Applies only with the builder profile selected. It never overwrites a",
+      "value already in your settings: if the key is there, yours stays.",
+      "",
+      "Turn it back to false and re-run ./install.sh to remove the value the",
+      "toolkit set. `/build` works without it. Absent or any non-boolean value",
+      "means false."
+    ]
+  },
+
+  "prompt_optimizer": {
+    "enabled": false,
+    "//enabled": [
+      "Set true to remind Claude, right before it dispatches a subagent, to",
+      "sharpen that subagent's instructions with the prompt-optimizer skill.",
+      "A subagent starts with none of the conversation's context, so a vague",
+      "dispatch prompt fails silently instead of asking a follow-up question.",
+      "Defaults to false; absent means off, and only a literal JSON true turns",
+      "it on. It is a nudge, not a guard, so the default is silence.",
+      "",
+      "The reminder needs the prompt-optimizer skill installed. Enabled with no",
+      "skill, the hook prints nothing, and ./install.sh and ./install.sh --check",
+      "say the reminder is enabled but inert. It reminds; it never runs the",
+      "skill or claims that optimization happened."
+    ]
+  },
+
+  "codex_review": {
+    "models": {"code": null, "merge": null, "plan": null, "design": null},
+    "//models": [
+      "Which Codex model each full-power review gate runs on. null keeps the",
+      "toolkit's default (code: gpt-5.6-terra; merge, plan, design:",
+      "gpt-6-astra). Set one when your Codex account does not serve a",
+      "default: claude-codex-review exits 4 and names the gate. A value is a",
+      "model name: a non-empty string with no whitespace, not starting with",
+      "'-'. Anything else, or a key that is not one of the four gates, makes",
+      "claude-codex-review refuse (exit 2) before it dispatches. Only read",
+      "under build.review = \"full-power\"."
+    ]
+  },
+
+  "harness_check": {
+    "enabled": false,
+    "//enabled": [
+      "Set true to let claude-harness-check's PostToolBatch/UserPromptSubmit",
+      "hook (--hook) advise when the running Claude Code binary has not yet",
+      "been re-verified against the memory behaviour this toolkit relies on",
+      "(MEMORY.md cut at 200 lines and at 25,000 characters, each probed on",
+      "its own, topic files not injected,",
+      "path-scoped rules loading only on a matching read, archive files never",
+      "loading, and auto memory loading from the configured directory).",
+      "Defaults to false; absent means off, and the hook exits 0",
+      "before reading any of its own state while this is unset or not literal",
+      "true — a config typo can never turn it on by accident.",
+      "",
+      "The notice, when on, names claude-harness-check: run it by hand (no",
+      "flag) to re-verify the current version. That costs three Haiku runs",
+      "against a throwaway fixture project, about a minute, and records a",
+      "pass/partial/fail per version; pass and partial both stop the notice,",
+      "and partial means user-level memory resolution was not verified.",
+      "",
+      "Off by default because it is a maintainer's check: run",
+      "claude-harness-check after a Claude Code upgrade if you change the",
+      "toolkit itself; otherwise leave this false and never see the notice."
+    ]
+  },
+
+  "backup": {
+    "destination": null,
+    "//destination": [
+      "Where claude-backup copies your machine-local files: the workspace root",
+      "(minus wrap_up.repos_root), every Claude Code auto-memory directory, this",
+      "config file and Claude Code's settings.json. NO DEFAULT, on purpose: null",
+      "or absent means the tool refuses (exit 2) rather than guess a folder.",
+      "The folder must already exist; the tool never creates it. A folder your",
+      "cloud storage syncs (for example ~/Library/CloudStorage/<provider>/...)",
+      "takes the copy off this machine; the tool does not check that it does.",
+      "Binary files are never copied (they cannot be scanned for secrets), so",
+      "keep those somewhere else that is backed up."
+    ],
+
+    "keep": 8,
+    "//keep": "How many backups to retain per machine. Defaults to 8; absent, non-numeric or below 1 means 8.",
+
+    "max_age_days": 7,
+    "//max_age_days": "--status reports a backup older than this as stale (exit 1), and /wrap-up then takes a new one. Defaults to 7; absent, non-numeric or below 1 means 7.",
+
+    "extra_paths": [],
+    "//extra_paths": "Further paths to back up on top of the built-in set. Defaults to []; absent means nothing extra.",
+
+    "exclude": [],
+    "//exclude": "Glob patterns to skip on top of the built-in excludes (.venv*, node_modules, .git, .env, *.pem, *.key and similar), matched against each file or folder name and against its path inside the backed-up item. Defaults to []; absent means built-in excludes only."
+  }
+}

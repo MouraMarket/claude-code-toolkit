@@ -1,0 +1,9 @@
+[
+  {"prompt": "In this toolkit repo, add a new SessionStart hook that warns when the current repo has no AGENTS.md, with tests, its hooks.json registration and an install.sh --check line.", "expect": "toolkit-build:build", "control": "positive"},
+  {"prompt": "Build a command-line tool that merges a folder of dated CSV exports into one file sorted by date, with a test suite and a README section.", "expect": "toolkit-build:build"},
+  {"prompt": "Refactor the cost ledger so the lane mapping lives in one shared module used by both the SessionEnd recorder and the report script, and update both test suites.", "expect": "toolkit-build:build"},
+  {"prompt": "Last month: 1,200 signups from 9,800 visits. The month before: 1,050 signups from 8,900 visits. What changed, and what should we look at first?", "forbid": "toolkit-build:build"},
+  {"prompt": "Write a one-paragraph announcement that the library's opening hours change next month.", "forbid": "toolkit-build:build"},
+  {"prompt": "Turn these notes into a three-bullet recap: release moved to Friday, two bugs still open, the docs page has no owner yet.", "forbid": "toolkit-build:build"},
+  {"prompt": "Fix the off-by-one in this function: def last_n(items, n): return items[-n-1:]", "forbid": "toolkit-build:build"}
+]

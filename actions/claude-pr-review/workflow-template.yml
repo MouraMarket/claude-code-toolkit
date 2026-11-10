@@ -1,0 +1,52 @@
+# Claude PR review. Copy this file to .github/workflows/claude-pr-review.yml.
+#
+# Setup: run `claude setup-token` and save the result as the repository secret
+# CLAUDE_CODE_OAUTH_TOKEN. Nothing else is needed.
+#
+# There is deliberately no `synchronize` trigger: that would run a paid review on
+# every push. A review runs when a pull request is opened or marked ready for
+# review. To review again, run this workflow by hand (Actions > Claude PR review
+# > Run workflow) and enter the pull request number.
+#
+# Pull requests from forks are not reviewed: the job needs the repository secret,
+# which GitHub does not give to fork runs.
+#
+# Green means a review in the required shape was posted by this run, about the
+# pull request's head commit. It cannot prove the review was good: a well-formed
+# review written without reading the diff still passes. Red means no verified
+# review exists; the pull request comment links the run that says why.
+#
+# When you upgrade the toolkit, bump the tag after the `@` in `uses:` below.
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to review
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+
+jobs:
+  review:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: mouramarket/claude-code-toolkit/actions/claude-pr-review@v0.1.0
+        with:
+          pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: opus

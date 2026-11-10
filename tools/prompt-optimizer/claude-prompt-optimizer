@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""PreToolUse hook: remind the parent agent to optimize a subagent's dispatch
+prompt before it is spawned.
+
+Registered by the builder plugin's hooks/hooks.json (PreToolUse, matcher
+`Agent`).
+
+Fires in the PARENT agent's context, just before a subagent is dispatched.
+The tool payload arrives on stdin (JSON); the reminder is fixed and does not
+depend on it, so it is read and discarded. That keeps stdin drained, which
+matters when several hooks are wired to the same event.
+
+Enabled only by `prompt_optimizer.enabled: true`; absent config means OFF.
+Silent when no prompt-optimizer skill is installed, because a reminder to use
+a skill that is not there would only add noise.
+
+Best-effort by construction: prints nothing and exits 0 on any failure at
+all, because a broken hook must never cost someone a prompt.
+"""
+
+import json
+import os
+import sys
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+    # realpath, not abspath: this can run through a symlink, and abspath would
+    # resolve the lib path against the link's directory and fail at runtime
+    # while passing every test.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import prompt_optimizer_lib
+
+    # Bytes, not text: the payload is read only to drain stdin, and an ambient
+    # locale must not decide whether that read raises.
+    try:
+        json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "null")
+    except Exception:
+        pass
+
+    notice = prompt_optimizer_lib.build()
+    if notice:
+        sys.stdout.write(notice + "\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit + PostToolBatch: inject the usage-budget tier into the
+main loop.
+
+Surface: every surface that fires UserPromptSubmit and PostToolBatch. Real tiers
+need a reading a terminal status line cached; elsewhere it says UNKNOWN or gives
+an anchored estimate. Verified: UserPromptSubmit in the VS Code extension,
+2.1.306; other surfaces unverified.
+
+Claude Code hands live `rate_limits` to exactly one surface, the status line
+(see claude-usage-line). This hook reads the cache that surface writes and,
+when the binding bucket crosses a tier threshold, tells Claude — not just the
+human — what it owes at that tier. One file handles both events because the
+decision logic is identical; only the echoed `hookEventName` differs.
+
+`PostToolBatch` fires inside subagents too, carrying the DISPATCHING session's
+`session_id` but the subagent's own `agent_id` (verified against the v2.1.228
+binary). If this hook did not check for that, a worker's tool batch would
+silently consume the architect's dedupe slot — the architect is never
+warned — and hand the worker main-loop wording about raising an
+AskUserQuestion and running /handover, neither of which it has. So: a
+non-empty `agent_id` means this loop belongs to `claude-usage-subagent`
+instead, and this hook emits nothing at all.
+
+Dedupe applies only to `PostToolBatch`, which fires after every tool batch and
+would otherwise nag. `UserPromptSubmit` fires once per turn and is the
+boundary the spec names as the natural place to raise a stop/continue
+decision — deduping it means that after HALT is announced once, typing "ok,
+do the next task" gets silence for the rest of a five-hour window.
+
+The Codex budget line (see `_codex_line`/`main`, below) is deduped on
+UserPromptSubmit even though tier crossings above are not. That is not an
+inconsistency: it is a STANDING CONDITION about a separate budget, exactly
+like the unknown notice above, which this same hook already dedupes on both
+events. A tier crossing is a one-off event worth re-raising every prompt;
+"Codex review budget is low" stays true for as long as the window stays low,
+and repeating it every turn is how a warning teaches its reader to skim past
+it.
+
+Exit code is ALWAYS 0. PostToolBatch exit 2 stops the agentic loop, and the
+spec rejects that outright: this hook can fire between two edits of a single
+refactor, and killing the loop mid-edit is a worse failure than a missed
+warning.
+"""
+import json
+import os
+import sys
+import time
+
+# Bound by main() before _main_body or _codex_line run, so neither takes
+# them as a parameter -- see main()'s own comment for why the import itself
+# still lives inside main() rather than at module level (hooks exit 0 on
+# unexpected input, and an import failure at module level would escape the
+# bottom-of-file try/except that normally guarantees that).
+usage = None
+estimator = None
+
+
+def _main_body(payload, emit):
+    """Everything this hook decides once stdin has been parsed, apart from
+    the Codex budget line, which `main` computes separately and delivers
+    through `emit` before and after this function runs. `emit(event, text)`
+    replaces every direct `print(usage.hook_output(event, text));
+    sys.stdout.flush()` pair that used to live here -- `main` is the only
+    place this hook prints, which is what lets it attach the Codex line to
+    whichever print happens to fire, or deliver it alone when nothing else
+    does.
+    """
+    agent_id = payload.get("agent_id")
+    if isinstance(agent_id, str) and agent_id:
+        return
+
+    event = payload.get("hook_event_name") or "UserPromptSubmit"
+    session = payload.get("session_id") or "unknown"
+
+    if not usage.is_enabled():
+        return
+
+    now = time.time()
+    # read_cache_status, not read_cache: the two reasons for a thin reading
+    # need opposite handling, and read_cache deliberately cannot tell them
+    # apart. READING_PARTIAL is a window mid-rollover in a HEALTHY session and
+    # clears itself within seconds; READING_NONE is a feed that is not there.
+    # ONE read, shared by every question below. These used to be three
+    # separate opens of a file another process rewrites on every prompt, so a
+    # status line landing between them paired a verdict from the old file with
+    # an age from the new one -- silently, and in both directions. See
+    # usage_lib.cache_report for the two failure shapes.
+    report = usage.cache_report(now)
+    status, buckets = report.status, report.buckets
+
+    if status == usage.READING_NONE:
+        # No reading is NOT no news. Returning quietly here is what let a
+        # session run into its 5-hour limit with nothing said: the tiers had
+        # been silent for two days because the cache went stale, and silence
+        # is indistinguishable from "plenty of headroom" to the party reading
+        # it. Say the budget is unreadable instead, once per session.
+        #
+        # Deduped on BOTH events, unlike the tier path below. A tier crossing
+        # is an event worth re-raising at every prompt; an unreadable budget
+        # is a standing condition, and repeating it every turn is how it gets
+        # skimmed past. That slot is exactly why READING_PARTIAL must not land
+        # here: spending it on a five-second rollover would silence a status
+        # line that genuinely died a minute later.
+        #
+        # The slot was once one hour and is now ~12h — once per
+        # working session, because on a surface with no status line the
+        # condition is permanent and an hourly cadence is a permanent nag.
+        # Read that as making this paragraph MORE load-bearing, not less: a
+        # slot mis-spent on a rollover used to cost an hour of warnings and now
+        # costs the rest of the session's. Not "12x worse" — the harm is
+        # min(slot, session remaining), so the multiplier is the session's
+        # length, not the slot ratio. What matters is that the ceiling moved
+        # from "an hour" to "everything left", which is why the separation
+        # below must not be relaxed.
+        # WHICH SURFACE. On one that never renders a status line, UNKNOWN is
+        # structural and permanent rather than a fault, so the notice keeps its
+        # truth half for Claude and drops the instruction to relay it to a human
+        # who cannot act on it. `None` — an entrypoint we do not recognise —
+        # keeps the relay, because "cannot tell" is not "no".
+        surface = usage.status_line_surface()
+
+        # ONE scan, shared by the clause and the tier below.
+        estimate_on = estimator.is_estimate_enabled()
+        unknown_spent = usage.unknown_announced(session, now)
+        est = None
+        if estimate_on:
+            try:
+                est = estimator.current_estimate(now)
+            except Exception:
+                est = None
+        if est:
+            clause = estimator.estimate_sentence(est, now)
+        elif estimate_on:
+            clause = estimator.unanchored_sentence()
+        else:
+            clause = ""
+
+        # THE TIER is deliberately NOT behind the unknown dedupe: the unknown
+        # notice is a standing condition said once per ~12h, an estimate
+        # crossing a threshold is an event. It fires on any surface here.
+        tier = usage.TIER_NONE
+        tier_text = ""
+        if est and est.pct is not None:
+            notice_pct, gate_pct, halt_pct = usage.thresholds()
+            tier = usage.tier_for(est.pct, notice_pct, gate_pct, halt_pct)
+            if tier != usage.TIER_NONE and not (
+                    event == "PostToolBatch" and usage.already_announced(
+                        session, usage.ESTIMATE_BUCKET, est.resets_at, tier)):
+                tier_text = usage.estimate_tier_message(
+                    tier, est.pct,
+                    usage.threshold_for(tier, notice_pct, gate_pct, halt_pct),
+                    clause)
+
+        # Both signals, not just the age: a cache that will not parse has no
+        # age either, and on age alone the notice tells someone whose status
+        # line is running fine that none was ever installed — then suggests
+        # switching the tool off.
+        unknown_text = ""
+        if not unknown_spent:
+            unknown_text = usage.unknown_message(
+                report.age, presence=report.presence, surface=surface,
+                estimate_on=estimate_on)
+            # The estimate is ADVISORY and additive HERE: within the unknown
+            # notice it changes the text and nothing else.
+            if unknown_text and clause:
+                unknown_text = unknown_text + " " + clause
+
+        text = unknown_text
+        if tier_text:
+            # The tier carries its own provenance when it travels alone —
+            # otherwise a session whose unknown slot is already spent would read
+            # "estimated 71-88%" with nothing saying it is an estimate from
+            # transcript tokens, counted on one machine. That caveat is not
+            # decoration; it is the difference between a derived number and a
+            # reading, which is the failure this whole tool exists to prevent.
+            text = (text + " " + tier_text) if text else tier_text
+        # Spend the slot only once the notice is actually OUT, and flushed —
+        # which means INSIDE this branch, not after it. This hook is declared
+        # `"timeout": 5` and the clause above scans transcripts; recording first
+        # meant a scan that overran the harness timeout cost the notice AND
+        # suppressed it for the rest of the slot — silence reading as headroom,
+        # which is the failure this module was rewritten for. Recording only
+        # after a successful print, a killed scan costs one notice and the next
+        # prompt retries.
+        #
+        # `record_unknown` once sat outside the `if`, which left one path doing
+        # exactly what the paragraph above forbids: both of
+        # `unknown_message`'s empty returns are exception handlers, so an
+        # internal failure produced no text, printed nothing, and still spent the
+        # slot. Low probability, and it survived review twice because the timeout
+        # case it was written for IS handled correctly — the ordering was right
+        # and the scope was wrong.
+        #
+        # Same amplification as the paragraph above the branch: the slot is
+        # ~12h rather than an hour, so a slot spent silently costs
+        # the session's ONLY warning rather than an hour of them.
+        #
+        # The same ordering now covers the estimate tier, and for a sharper
+        # version of the same reason: its dedupe key is the estimate's `resets_at`,
+        # so a slot spent without printing is silent until the window rolls.
+        # Each half records only if its OWN text made it into the output — a
+        # tier printed while the unknown slot was already spent must not mark
+        # the unknown notice as delivered, and vice versa.
+        if text:
+            emit(event, text)
+            if unknown_text:
+                usage.record_unknown(session, now)
+            if tier_text:
+                usage.record_announcement(session, usage.ESTIMATE_BUCKET,
+                                          est.resets_at, tier, now)
+        return
+
+    # READING_PARTIAL falls through to the tier logic on the windows that ARE
+    # visible. A window that has just reset is good news about that window, so
+    # silence costs little; a window still visible at 95% is a true fact worth
+    # acting on, and discarding it to say "unknown" would trade a real alarm
+    # for a vaguer one. If nothing visible crosses a tier this stays quiet,
+    # and the reading either completes on the next API response or ages into
+    # READING_NONE, which does announce.
+
+    # The tier pass is a closure so anchoring can run AFTER it on every path,
+    # including its early returns. Both requirements are real and they pull in
+    # opposite directions if the anchor block is written inline: it must
+    # survive the early returns (no binding bucket, no tier crossed, an
+    # already-announced dedupe), because a quiet window still needs
+    # calibrating and the dedupe that suppresses repeat warnings must not
+    # suppress calibration — but it must not run BEFORE the print, because
+    # anchoring scans transcripts inside a hook declared `"timeout": 5`, and
+    # an overrun there would drop a real GATE or HALT taken from a real
+    # reading. Below the call site satisfies both; above `usage.binding()`
+    # satisfied only the first.
+    def announce_tier():
+        found = usage.binding(buckets)
+        if found is None:
+            return
+        name, pct, resets_at = found
+
+        notice, gate, halt = usage.thresholds()
+        tier = usage.tier_for(pct, notice, gate, halt)
+        if tier == usage.TIER_NONE:
+            return
+
+        # Dedupe applies only to PostToolBatch, which fires after every tool
+        # batch. UserPromptSubmit fires once per turn and must always emit —
+        # see the module docstring — so it never consults already_announced.
+        if event == "PostToolBatch" and usage.already_announced(
+                session, name, resets_at, tier):
+            return
+
+        # Record only once the tier is actually OUT -- the same ordering, and
+        # the same reason, as the unknown notice above. tier_message returns
+        # "" only from its own except-branch, and a slot spent without
+        # printing silences this tier until resets_at.
+        text = usage.tier_message(tier, name, pct, resets_at, now)
+        if text:
+            emit(event, text)
+            usage.record_announcement(session, name, resets_at, tier, now)
+
+    announce_tier()
+
+    # A terminal session has the only real reading on this machine. Spend it:
+    # anchoring here is what lets every VS Code session estimate at all.
+    # Read the five_hour bucket DIRECTLY. `usage.binding()` returns the
+    # TIGHTEST window, so on every prompt where seven_day is the higher
+    # percentage it answers "seven_day" and no anchor gets written at all --
+    # even though the 5h reading is sitting in the same payload. That is not a
+    # rare case: right after a 5h reset the 5h figure is near zero while 7d is
+    # whatever the week has accumulated, so 7d binds for much of every window.
+    # It would have suppressed anchoring exactly across the early window, which
+    # is where `record_anchor`'s earliest-and-latest retention needs a sample.
+    if status == usage.READING_OK and estimator.is_estimate_enabled():
+        five_hour = buckets.get("five_hour") if isinstance(buckets, dict) else None
+        pct = five_hour.get("used_percentage") if isinstance(five_hour, dict) else None
+        resets = five_hour.get("resets_at") if isinstance(five_hour, dict) else None
+        if isinstance(pct, (int, float)) and isinstance(resets, (int, float)):
+            try:
+                # The cache's own SIGNED age, not `now`: a stale or
+                # future-stamped reading must not anchor. See
+                # estimate_lib.ANCHOR_MAX_READING_AGE.
+                estimator.write_anchor(now, float(pct), float(resets),
+                                       report.reading_age)
+            except Exception:
+                pass
+
+
+def _codex_line(event, agent_id, session, now):
+    """The Codex budget line's `(text, tier, key)`, or `("", None, None)`
+    when there is nothing to say -- computed BEFORE `_main_body` runs, so
+    `main`'s `emit` can attach it to whichever print happens to fire first.
+
+    Only computed when `event` is `UserPromptSubmit`, `agent_id` is empty,
+    and `usage.is_enabled()` -- a separate, narrower gate than
+    `_main_body`'s own (which also handles PostToolBatch and knows nothing
+    about this budget at all).
+
+    Never raises: any failure here -- a missing sibling tool, a corrupt
+    rollout log, a malformed config value -- collapses to "no line", same as
+    a genuinely empty or unreadable budget reading. A Codex-specific failure
+    must not cost this hook its own, unrelated job.
+    """
+    if event != "UserPromptSubmit":
+        return "", None, None
+    if isinstance(agent_id, str) and agent_id:
+        return "", None, None
+    if not usage.is_enabled():
+        return "", None, None
+
+    try:
+        # Sibling tool's lib, imported defensively -- a missing or broken
+        # tools/codex-review/ must not cost this hook its own job. realpath,
+        # not abspath, per the repo rule: this hook runs through a
+        # ~/.local/bin symlink and abspath does not resolve one.
+        sys.path.insert(0, os.path.realpath(os.path.join(
+            os.path.dirname(os.path.realpath(__file__)), "..",
+            "codex-review")))
+        import codex_review_lib
+    except Exception:
+        return "", None, None
+
+    try:
+        path, block = codex_review_lib.snapshot_meter(
+            codex_review_lib.default_sessions_root())
+        result = codex_review_lib.gates_left(
+            block, now, codex_review_lib.CODEX_MODEL)
+        if result is None:
+            return "", None, None
+
+        threshold = 15
+        if usage._config is not None:
+            try:
+                threshold = usage._config.get(
+                    "usage_watch", "codex_low_gates", default=15)
+            except Exception:
+                threshold = 15
+        if (isinstance(threshold, bool) or not isinstance(threshold, int)
+                or threshold < 0):
+            threshold = 15
+
+        used_percent = result["used_percent"]
+        low = result.get("low")
+        tier = None
+        if used_percent >= 100:
+            tier = usage.TIER_HALT
+        elif (low is not None and threshold > 0 and low <= threshold) or (
+                low is None and threshold > 0 and used_percent >= 90):
+            tier = usage.TIER_NOTICE
+        if tier is None:
+            return "", None, None
+
+        # Rounded UP to the hour (never to the nearest hour) -- the rollout
+        # log's `resets_at` jitters between snapshots, which would re-arm an exact-match dedupe, and rounding up is what keeps
+        # the key from ever landing BEFORE resets_at itself:
+        # record_announcement's prune drops any record whose resets_at is
+        # <= now, so a key rounded down could be pruned on the very write
+        # that created it. Residual: a reset within the jitter AFTER an exact
+        # hour boundary can still re-announce once (accepted).
+        key = codex_review_lib.window_key(result["resets_at"])
+        if usage.already_announced(session, "__codex__", key, tier):
+            return "", None, None
+
+        text = codex_review_lib.format_gates_left(
+            result, codex_review_lib.mtime_or_none(path))
+        if not text:
+            return "", None, None
+        text += "."
+        if tier == usage.TIER_HALT:
+            text += (" The snapshot only refreshes when Codex runs, so an "
+                     "early reset would not show here.")
+        elif tier == usage.TIER_NOTICE and low is not None:
+            text += " Each full-power /build gate spends about one."
+        return text, tier, key
+    except Exception:
+        return "", None, None
+
+
+def main():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    global usage, estimator
+    import usage_lib as usage
+    import estimate_lib as estimator
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    event = payload.get("hook_event_name") or "UserPromptSubmit"
+    session = payload.get("session_id") or "unknown"
+    agent_id = payload.get("agent_id")
+    now = time.time()
+
+    codex_text, codex_tier, codex_key = _codex_line(
+        event, agent_id, session, now)
+    codex_sent = False
+
+    def emit(ev, text):
+        # The ONE printing function in this hook. When the Codex line is
+        # still pending, it rides along on whichever print _main_body makes
+        # first; the dedupe record is written only once it has actually gone
+        # out, never before a successful print.
+        nonlocal codex_sent
+        pending = bool(codex_text) and not codex_sent
+        out = (text + " " + codex_text) if pending else text
+        print(usage.hook_output(ev, out))
+        sys.stdout.flush()
+        if pending:
+            usage.record_announcement(session, "__codex__", codex_key,
+                                      codex_tier, now)
+            codex_sent = True
+
+    try:
+        _main_body(payload, emit)
+    finally:
+        # _main_body printed nothing at all (a quiet, healthy prompt with no
+        # tier crossing and no unknown notice due) -- a pending Codex line
+        # still has to go out on its own, with no leading space from the
+        # concatenation `emit` would otherwise apply.
+        if codex_text and not codex_sent:
+            print(usage.hook_output(event, codex_text))
+            sys.stdout.flush()
+            usage.record_announcement(session, "__codex__", codex_key,
+                                      codex_tier, now)
+            codex_sent = True
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass

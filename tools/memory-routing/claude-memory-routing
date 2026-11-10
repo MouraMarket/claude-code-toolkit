@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""PostToolUse hook: nudge when a memory write looks like a TOOLING.md fact.
+
+Fires after the write, so nothing is blocked — see routing_lib for why this is
+a nudge rather than a gate. Emits nothing at all unless the written text carries
+a concrete config-fact signal and does not read as a rule.
+
+Best-effort by construction: every failure path prints nothing and exits 0,
+because a broken hook must never cost someone a prompt.
+"""
+
+import json
+import os
+import sys
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath would not resolve it.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import routing_lib
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+
+    try:
+        import toolkit_config
+
+        if toolkit_config.get("memory_routing", "enabled", default=True) is False:
+            return
+    except Exception:
+        # No config, or a config helper that moved: default to on. This hook
+        # only ever prints advice, so failing toward enabled costs nothing worse
+        # than one extra line.
+        pass
+
+    notice = routing_lib.build(payload.get("tool_input"))
+    if not notice:
+        return
+
+    sys.stdout.write(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext": notice,
+        }
+    }))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

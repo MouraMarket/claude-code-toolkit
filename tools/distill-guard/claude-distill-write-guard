@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""PreToolUse (Write): refuse a whole-file rewrite over an existing, in-scope
+context file.
+
+`distill_guard.py install` is the only write path that (a) refuses when the
+target changed since it was read and (b) appends the pre-rewrite text to a
+verbatim archive. A plain `Write` tool call over the same file skips both, and
+nothing else stopped it -- this hook does. See `write_guard_lib` for the
+judgement itself; this file is deliberately thin, matching
+`claude-model-guard` and `claude-context-growth`: read the payload, resolve
+config, call one pure function, print JSON, exit 0.
+
+Reads config the way `claude-context-growth` does (`import toolkit_config`,
+any exception -> `None`) but reads NO enable key -- unlike growth, refusing a
+write is not an advisory a session can ignore, so there is no
+`context_growth.enabled`-shaped off switch here.
+
+Fails open, always: the write proceeds and the exit code is ALWAYS 0. A broken
+guard must never cost someone a Write. But a crash is reported rather than
+silent, in the shared guard crash contract (toolkit CLAUDE.md, pinned by
+`lib/tests/test_guard_crash_reports.py`): one JSON object on stdout carrying a
+systemMessage for the human and additionalContext for Claude, with no
+permissionDecision. Only ordinary malformed input -- a payload that is not
+JSON, or JSON that is not an object -- stays a silent allow.
+
+Out of scope, named not built: a rewrite via Bash (`cat >`, `python
+open('w')`, `mv`/`cp` over the file). Detecting those means parsing command
+text, which is its own backlog row.
+"""
+import json
+import os
+import sys
+
+GUARD = "claude-distill-write-guard"
+NOUN = "write"
+
+
+def _crash_report(exc):
+    # A crashed guard allows (house rule: fail open), but it must not look
+    # like a guard that checked and allowed. Two channels: systemMessage for
+    # the human, additionalContext for Claude -- which reaches Claude on every
+    # surface, so Claude can tell the human where the warning does not render.
+    # permissionDecision is OMITTED: "allow" would bypass other rules.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". This guard's check did not run; "
+                                 "other guards and permission rules still "
+                                 "apply. Tell the user this guard is broken.",
+        },
+    }
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink and
+    # abspath does not resolve one -- it lands on /Users and the import fails
+    # at runtime while passing every test.
+    root = os.path.dirname(os.path.dirname(here))
+    for path in (here,
+                 os.path.join(root, "lib"),
+                 os.path.join(root, "tools", "context-growth")):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+    import write_guard_lib
+    import growth_lib
+    import distill_guard
+
+    # Malformed input (ValueError, which includes invalid UTF-8) is a silent
+    # allow. Anything else -- a pathologically nested payload's RecursionError,
+    # say -- propagates to the crash report below, as in the other guards.
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    config = None
+    try:
+        import toolkit_config
+
+        config = toolkit_config
+    except Exception:
+        # No config, or a config helper that moved: default to the shipped
+        # in_scope/install_safe behaviour.
+        pass
+
+    def install_safe(p):
+        # `is_rules_file(p)` alone misses a target like
+        # `.claude/rules/CLAUDE.md.template` -- it requires a `.md` suffix,
+        # which `.template` is not, while `is_claude_md` matches it by
+        # basename regardless of directory. So the segment itself is checked
+        # directly, and the ARCHIVE `install` would produce -- via
+        # `distill_guard.history_path_for` -- is checked too: an install-safe
+        # basename whose computed archive would still land in the rules or
+        # topic tree must not offer that route either.
+        if not ((growth_lib.is_memory_file(p)
+                 or growth_lib.is_memory_index(p)
+                 or growth_lib.is_claude_md(p))
+                and not (growth_lib.is_rules_file(p)
+                         or growth_lib.is_topic_file(p))):
+            return False
+        if "/.claude/rules/" in str(p).replace(os.sep, "/"):
+            return False
+        archive = distill_guard.history_path_for(p)
+        if growth_lib.is_rules_file(archive) or growth_lib.is_topic_file(archive):
+            return False
+        return True
+
+    verdict = write_guard_lib.decide(
+        payload.get("tool_name"),
+        payload.get("tool_input"),
+        os.path.isfile,
+        lambda p: growth_lib.in_scope(p, config),
+        install_safe,
+        os.path.join(here, "distill_guard.py"),
+    )
+    if verdict.allowed:
+        # Emit NOTHING, rather than permissionDecision "allow" -- "allow"
+        # bypasses every other permission rule, which is not this guard's
+        # business.
+        return
+
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": verdict.reason,
+        },
+    }))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception as exc:
+        # Still fails open and exits 0, but reports the crash on both channels.
+        # The JSON object is the only stdout: a traceback there would be parsed
+        # as the hook's output, and one on stderr is noise in every transcript.
+        print(json.dumps(_crash_report(exc)))
+    sys.exit(0)

@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "What scripts/setup-plugins.sh adds and installs. marketplaces: name, GitHub",
+    "owner/repo, and whether to turn on Claude Code's background updates for it",
+    "(off by default for every marketplace but Anthropic's own). plugins: a",
+    "`required` plugin that is not installed and enabled at user scope fails the",
+    "run; an `optional` one is only reported. Edit this file to add your own",
+    "marketplace or plugins; the script never removes or disables anything."
+  ],
+  "marketplaces": [
+    {"name": "claude-plugins-official", "source": "anthropics/claude-plugins-official", "auto_update": false}
+  ],
+  "plugins": [
+    {"tier": "optional", "id": "claude-md-management@claude-plugins-official", "why": "audit and improve CLAUDE.md files, including this toolkit's template."},
+    {"tier": "optional", "id": "frontend-design@claude-plugins-official", "why": "visual design guidance for building or reshaping UI."},
+    {"tier": "optional", "id": "remember@claude-plugins-official", "why": "session history and continuity notes across threads."},
+    {"tier": "optional", "id": "context7@claude-plugins-official", "why": "current library and framework docs on demand, instead of answering from a stale training cutoff."},
+    {"tier": "optional", "id": "superpowers@claude-plugins-official", "why": "upstream process skills (brainstorming, test-driven development, plan writing). Nothing in this toolkit needs it."},
+    {"tier": "optional", "id": "figma@claude-plugins-official", "why": "read designs from Figma and push designs back. Skip if you never touch design files."}
+  ]
+}

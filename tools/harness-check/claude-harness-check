@@ -1,0 +1,256 @@
+#!/usr/bin/env python3
+"""Re-verify a Claude Code version against the memory design's harness
+assumptions, per version, with an advisory notice while it is unverified.
+
+Three modes: `--hook` is a UserPromptSubmit/PostToolBatch hook that
+decides whether to print a notice for the version the calling session is
+running -- off by default (`harness_check.enabled` must be `true` in the
+toolkit config, or the hook exits 0 before reading any of its own state).
+No flag runs the three-Haiku-run probe fixture and records a
+pass/partial/fail per Claude Code version. `--status` prints the recorded
+state without running anything.
+"""
+
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+def _hook_output(event_name, context):
+    """The JSON a hook prints so Claude Code injects `context` for the model.
+
+    A local 3-line copy of `usage_lib.hook_output`'s shape rather than an
+    import across tools — this tool does not otherwise depend on
+    `usage-watch`, and the shape is small enough that duplicating it is
+    cheaper than adding a cross-tool import.
+    """
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": event_name, "additionalContext": context}})
+
+
+def run_hook():
+    """`--hook`: read a hook payload from stdin, print a notice or nothing.
+
+    Never raises past `main`'s wrapper, and never writes the results file —
+    only `mark_noticed`/`save_json` against the noticed file, and only when
+    there is text to print. See `harness_lib`'s module docstring for why the
+    two files have exactly one writer each.
+    """
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    # `realpath`, never `abspath`: reached through a ~/.local/bin symlink.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import toolkit_config as config
+    import harness_lib as lib
+
+    enabled = config.get("harness_check", "enabled", default=False) is True
+    if not enabled:
+        return
+
+    session_id = payload.get("session_id")
+    if not session_id or not isinstance(session_id, str):
+        return
+
+    transcript_path = payload.get("transcript_path")
+    agent_id = payload.get("agent_id")
+    event = payload.get("hook_event_name") or "UserPromptSubmit"
+
+    results_path = os.path.expanduser(os.environ.get(
+        "HARNESS_CHECK_STATE_PATH", "~/.claude/harness-check-results.json"))
+    noticed_path = os.path.expanduser(os.environ.get(
+        "HARNESS_CHECK_NOTICED_PATH", "~/.claude/harness-check-noticed.json"))
+
+    results = lib.load_json(results_path, {})
+    noticed = lib.load_json(noticed_path, {})
+
+    version = lib.transcript_version(transcript_path)
+    text = lib.decide_notice(results, noticed, session_id, version, enabled,
+                             agent_id)
+    if not text:
+        return
+
+    # Print BEFORE saving. stdout is buffered and flushed at interpreter
+    # shutdown, so a kill on the hook's timeout after the write would record
+    # the notice as delivered while it was never seen. Printing first can
+    # only ever cost a repeat, never a silent drop.
+    sys.stdout.write(_hook_output(event, text))
+    sys.stdout.flush()
+
+    doc = lib.mark_noticed(noticed, session_id, version)
+    lib.save_json(noticed_path, doc)
+
+
+def _import_lib():
+    """`harness_lib`, importable whether this file is run directly (tests)
+    or through the `~/.local/bin` symlink -- `realpath`, never `abspath`,
+    per the toolkit's hard rule on `__file__`-relative imports.
+    """
+    here = os.path.dirname(os.path.realpath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    lib_dir = os.path.join(os.path.dirname(os.path.dirname(here)), "lib")
+    if lib_dir not in sys.path:
+        sys.path.insert(0, lib_dir)
+    import harness_lib as lib
+    return lib
+
+
+def _resolve_binary():
+    """`$CLAUDE_CODE_EXECPATH` if it names an executable file (VS Code,
+    M3/M4), else `claude` on `PATH` (a terminal session), else `None`.
+    """
+    execpath = os.environ.get("CLAUDE_CODE_EXECPATH")
+    if execpath and os.access(execpath, os.X_OK):
+        return execpath
+    return shutil.which("claude")
+
+
+def run_check():
+    """(no flag): build a fixture, run the probes against the resolved
+    binary, print one PASS/PARTIAL/FAIL/VOID/SKIP line per probe plus the
+    recorded version, save the result when there is one to save, and exit the
+    aggregate code (0 pass or partial, 1 any FAIL, 2 VOID/cannot run).
+    """
+    lib = _import_lib()
+
+    binary = _resolve_binary()
+    if not binary:
+        print("cannot find a claude binary")
+        sys.exit(2)
+
+    calling_session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    parent_dir = tempfile.gettempdir()
+    env_base = dict(os.environ)
+
+    fx, r1, r2, calling, r3 = lib.run_probes(binary, parent_dir,
+                                             calling_session_id, env_base)
+    version, results = lib.evaluate(fx, r1, r2, calling, r3)
+    status, failures, exit_code = lib.aggregate(version, results)
+
+    for probe in results:
+        print("{0} {1}  {2}".format(probe.id, probe.status, probe.reason))
+    print("version {0}: {1}".format(
+        version if version is not None else "unknown",
+        status if status is not None else "not recorded"))
+    if status == "partial":
+        h5 = [p for p in results if p.id == "H5"]
+        text = h5[0].reason if h5 else ""
+        marker = "NOT VERIFIED ("
+        detail = text[text.index(marker) + len(marker):].rstrip(")") if marker in text else text
+        print("user-level memory resolution NOT verified ({0}); run from a "
+              "terminal session on this same Claude Code version to complete "
+              "it".format(detail))
+
+    if status is not None:
+        results_path = os.path.expanduser(os.environ.get(
+            "HARNESS_CHECK_STATE_PATH", "~/.claude/harness-check-results.json"))
+        state = lib.load_json(results_path, {})
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        if status == "partial":
+            state = lib.record_result(state, version, status, [], now_iso,
+                                      unverified=failures)
+        else:
+            state = lib.record_result(state, version, status, failures, now_iso)
+        saved = lib.save_json(results_path, state)
+        if not saved:
+            # The verdict above already printed, but it was never stored --
+            # an unrecorded result must never look like a normal aggregate
+            # exit. Loud on stderr, exit 2, whatever the verdict was.
+            sys.stderr.write(
+                "ERROR: could not record the result to {0}; the verdict "
+                "above is NOT stored\n".format(results_path))
+            sys.exit(2)
+
+    sys.exit(exit_code)
+
+
+def run_status():
+    """`--status`: print the recorded state, one line per version, then the
+    version the resolved binary itself reports. Exits 0 unconditionally --
+    this mode only reads, it never runs a probe.
+    """
+    lib = _import_lib()
+
+    results_path = os.path.expanduser(os.environ.get(
+        "HARNESS_CHECK_STATE_PATH", "~/.claude/harness-check-results.json"))
+    state = lib.load_json(results_path, {})
+    versions = state.get("versions") if isinstance(state, dict) else None
+    versions = versions if isinstance(versions, dict) else {}
+
+    for v in sorted(versions.keys()):
+        record = versions[v]
+        if not isinstance(record, dict):
+            continue
+        failures = record.get("failures") or []
+        unverified = record.get("unverified") or []
+        legacy = ("" if lib._is_current_rev(record) else
+                  ", legacy rev {0} \u2014 not verified by the current check".format(
+                      record.get("rev", "none")))
+        print("{0}: {1} (checked_at={2}, failures={3}{4}{5})".format(
+            v, record.get("result"), record.get("checked_at"),
+            ", ".join(failures) if failures else "none",
+            ", unverified={0}".format(", ".join(unverified)) if unverified else "",
+            legacy))
+
+    binary = _resolve_binary()
+    version_output = "unavailable (no claude binary found)"
+    if binary:
+        try:
+            proc = subprocess.run([binary, "--version"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, timeout=30)
+            version_output = proc.stdout.decode("utf-8", "replace").strip()
+        except Exception:
+            version_output = "unavailable"
+    print("this binary: {0}".format(version_output))
+    sys.exit(0)
+
+
+def _usage_exit():
+    sys.stderr.write(
+        "usage: claude-harness-check [--status] [--hook]\n")
+    sys.exit(2)
+
+
+def main():
+    argv = sys.argv[1:]
+    mode = argv[0] if argv else None
+
+    if mode == "--hook":
+        try:
+            run_hook()
+        except Exception:
+            # A broken hook must never cost someone a prompt.
+            pass
+        sys.exit(0)
+
+    if mode == "--status":
+        run_status()
+        return
+
+    if mode is None:
+        run_check()
+        return
+
+    _usage_exit()
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    main()

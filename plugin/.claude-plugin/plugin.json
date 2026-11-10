@@ -1,0 +1,7 @@
+{
+  "name": "toolkit-core",
+  "description": "The toolkit's guards, integrity checks and onboarding: the hooks that protect a machine, plus /onboard and /autonomy-permissions.",
+  "author": {
+    "name": "mouramarket"
+  }
+}

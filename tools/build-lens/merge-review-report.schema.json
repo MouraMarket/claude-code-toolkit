@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "required": [
+    "recommendation",
+    "executed",
+    "findings"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "recommendation": {
+      "type": "string",
+      "enum": [
+        "APPROVE",
+        "REQUEST_CHANGES",
+        "COMMENT"
+      ]
+    },
+    "executed": {
+      "type": "object",
+      "required": [
+        "ran",
+        "commands",
+        "why_not"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "ran": {
+          "type": "boolean"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Exactly what was run, verbatim, so the claim is checkable in one command."
+        },
+        "why_not": {
+          "type": "string",
+          "description": "If ran is false, why — no suite in this repo, docs-only diff, or it could not be run. If ran is true, what you falsified by hand in addition."
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "where",
+          "defect",
+          "consequence",
+          "severity",
+          "evidence"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "where": {
+            "type": "string"
+          },
+          "defect": {
+            "type": "string"
+          },
+          "consequence": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "BLOCKING",
+              "IMPORTANT"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "description": "The failing test, repro command, or surviving mutation that demonstrates this. Empty string if you did not demonstrate it."
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "toolkit-maintainer",
+  "description": "Toolkit maintenance skills: /review-pr-ci and /skill-builder.",
+  "author": {
+    "name": "mouramarket"
+  },
+  "dependencies": [
+    "toolkit-core",
+    "toolkit-build",
+    "skill-prompt-optimizer"
+  ]
+}

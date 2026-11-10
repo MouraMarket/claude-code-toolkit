@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Print the local git state a wrap-up needs, as JSON.
+
+Usage:
+  claude-wrap-up-survey [--root <dir>]
+
+`--root` overrides the configured repos root; it exists for tests and for
+surveying a tree that is not the configured one. With no config and no --root,
+this reports `surveyed: false` with a reason rather than an empty result — an
+empty list and "could not look" must never be the same output.
+"""
+
+import os
+import sys
+
+# `realpath`, not `abspath`: this runs through a ~/.local/bin symlink and
+# `abspath` does not resolve one, so the import below would land on /Users and
+# fail at runtime while passing every test.
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(HERE)), "lib"))
+
+import wrap_up_lib  # noqa: E402
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(wrap_up_lib.main(sys.argv[1:]))

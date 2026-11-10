@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""SessionStart + UserPromptSubmit hook: is the installed toolkit still intact?
+
+Two checks, deliberately not merged (plus SessionStart canaries, below).
+
+**Integrity (loud).** Anything `~/.claude/settings.json` is configured to run
+that cannot run, plus any dangling symlink in the install directories. Claude
+Code silently skips a hook it cannot execute, so a dark guard and a quiet one
+look identical from the outside. Runs every invocation regardless of whether
+anything moved -- a link can go dangling from a `mv`, a deleted worktree, or an
+interrupted install, none of which touch git.
+
+**Canaries (loud, SessionStart only).** Presence is not protection, so on
+SessionStart danger-guard and model-guard are run on harmless deny/allow
+payloads, and worktree-guard, distill-write-guard and session-claim on a
+throwaway temp fixture (removed afterwards, session-claim with sandboxed claim
+state); the result is reported when a guard does not refuse what it must, or
+when session-claim cannot tell which session is calling it. Spends one short
+subprocess per probe (plus the fixture's few git calls), bounded by the run's
+deadline; the rest of the integrity half spends none.
+
+**Hook-fires audit (SessionStart only).** Earlier sessions whose transcripts
+show shell commands ran, yet left no heartbeat record, are named once.
+
+**Drift (quiet).** The toolkit's HEAD moved and the change touched something a
+running session actually executes. Path-filtered, because an unfiltered notice
+on a checkout that moves often fires constantly and gets skimmed past.
+
+Both dedupe on the thing they are about -- the set of problems, the new sha --
+rather than on a boolean, so each speaks again when its subject changes and
+never repeats on an unchanged one.
+
+Escape hatch: TOOLKIT_INTEGRITY_ALLOW=1 silences both for a session.
+"""
+
+import json
+import os
+import sys
+import threading
+import time
+
+INTEGRITY_KEY = "integrity"
+CANARY_KEY = "canaries"
+DRIFT_KEY = "head"
+AUDIT_KEY = "fires-audit"
+
+# The host discards ALL of a hook's output when it kills it on timeout, so the
+# whole process is bounded by a watchdog rather than by the order things print
+# in. Interpreter start and imports run before the watchdog is armed, so the
+# budget plus this margin must fit the timeout declared in
+# plugin/hooks/hooks.json (`TestTimeoutBudget` enforces it).
+RUN_BUDGET_SECONDS = 6
+HOST_MARGIN_SECONDS = 3
+TIMEOUT_NOTICE = ("claude-toolkit-integrity ran out of time after %gs and did "
+                  "NOT finish checking the toolkit install.\n")
+
+
+def _run_budget():
+    # Test seam. It can only SHORTEN the budget: a longer one could outlive
+    # the host's timeout and put the silent failure back.
+    try:
+        wanted = float(os.environ.get("TOOLKIT_INTEGRITY_RUN_BUDGET", ""))
+    except ValueError:
+        return RUN_BUDGET_SECONDS
+    if wanted > 0:
+        return min(wanted, RUN_BUDGET_SECONDS)
+    return RUN_BUDGET_SECONDS
+
+
+def _start_watchdog(seconds):
+    def expire():
+        # os.write on fd 1, not sys.stdout: the main thread may be blocked
+        # holding the stdout lock or sitting in a read that never returns.
+        try:
+            os.write(1, (TIMEOUT_NOTICE % seconds).encode("utf-8"))
+        except OSError:
+            pass
+        os._exit(0)
+
+    timer = threading.Timer(seconds, expire)
+    timer.daemon = True
+    timer.start()
+
+
+def main():
+    if os.environ.get("TOOLKIT_INTEGRITY_ALLOW") == "1":
+        return
+
+    # Before the stdin read: a stdin that never closes must be bounded too.
+    budget = _run_budget()
+    armed = time.monotonic()
+    _start_watchdog(budget)
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    event = payload.get("hook_event_name") or "UserPromptSubmit"
+    session = payload.get("session_id")
+    if not session or not isinstance(session, str):
+        # Without a session there is no dedupe key, and a check that cannot
+        # dedupe would repeat itself on every prompt submit for as long as the
+        # condition held. Silence is the only safe option.
+        return
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+    # `realpath`, never `abspath`: this file is reached through a
+    # ~/.local/bin symlink, and abspath would resolve to ~/.local/bin and find
+    # neither the lib beside it nor lib/ above it.
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import toolkit_integrity_lib as integrity
+    # Git calls end before the watchdog fires, so none is left orphaned.
+    integrity.set_deadline(armed + budget)
+
+    # Test seams. Absent in normal use; they exist so the hook can be exercised
+    # as a real subprocess against a sandbox tree without touching the machine.
+    if os.environ.get("TOOLKIT_INTEGRITY_STATE_PATH"):
+        integrity.DEFAULT_STATE_PATH = os.environ["TOOLKIT_INTEGRITY_STATE_PATH"]
+    home = os.environ.get("TOOLKIT_INTEGRITY_HOME") or os.path.expanduser("~")
+    root_hint = os.environ.get("TOOLKIT_INTEGRITY_ROOT") or here
+
+    if not integrity.is_enabled():
+        return
+
+    state = integrity.prune_state(integrity.load_state())
+    out = []
+
+    # --- integrity (loud) --------------------------------------------------
+    #
+    # Runs FIRST and is written to stdout before the drift half's git calls.
+    # That is ordering, kept because it costs nothing, but it is NOT what
+    # protects the notice: the host discards ALL output when it kills a hook
+    # on timeout, printed or not. The watchdog started in main() is the
+    # protection -- it bounds the whole process under the host timeout and
+    # says so when it fires. (An earlier version collected both notices and
+    # printed them together at the end, behind two blocking git calls.)
+    #
+    # This half spends no subprocess at all (the canaries below are separate). `repo` is derived by walking up
+    # from this file rather than by asking git, deliberately -- the ownership
+    # test is a string prefix compare, exactly as install.sh does it, and it is
+    # not worth a fork on the path that must always get out.
+    # TOOLKIT_INTEGRITY_REPO is the same kind of test seam as the others: it
+    # points the guard-coverage check at a fixture checkout.
+    repo = (os.environ.get("TOOLKIT_INTEGRITY_REPO")
+            or os.path.dirname(os.path.dirname(here)))
+    problems = integrity.integrity_problems(home, repo=repo)
+    signature = integrity.problems_signature(problems)
+    if not integrity.already_reported(state, session, INTEGRITY_KEY, signature):
+        notice = integrity.render_integrity(problems, home)
+        if notice:
+            sys.stdout.write(notice)
+            sys.stdout.flush()
+        # Recorded even when the signature is empty. That is what makes a
+        # problem appearing LATER in the same session a change rather than a
+        # repeat, and a problem being FIXED reset the dedupe so its return is
+        # announced again.
+        state = integrity.record_reported(state, session, INTEGRITY_KEY,
+                                          signature)
+
+    # --- canaries (loud, SessionStart only) --------------------------------
+    #
+    # After the integrity notice and before the drift half's git calls. One
+    # subprocess per probe, bounded by the same deadline as git. Own dedupe key
+    # so a guard going dark mid-session is a change, not a repeat. The stateful
+    # guards (worktree, distill, session-claim) run on a throwaway fixture that
+    # stateful_canary_problems builds and removes itself.
+    if event == "SessionStart":
+        records = (integrity.canary_problems(repo, armed + budget, home)
+                   + integrity.stateful_canary_problems(repo, armed + budget,
+                                                        home))
+        canary_signature = integrity.canaries_signature(records)
+        if not integrity.already_reported(state, session, CANARY_KEY,
+                                          canary_signature):
+            notice = integrity.render_canaries(records)
+            if notice:
+                sys.stdout.write(notice)
+                sys.stdout.flush()
+            state = integrity.record_reported(state, session, CANARY_KEY,
+                                              canary_signature)
+
+        try:
+            notice, audit_state = integrity.fires_audit(
+                home, session, armed + budget, repo)
+        except Exception as exc:
+            notice, audit_state = "", None
+            signature = "crash:%s" % type(exc).__name__
+            if not integrity.already_reported(state, session, AUDIT_KEY,
+                                              signature):
+                sys.stdout.write("toolkit-integrity: the hook-fires audit crashed "
+                                 "(%s) and did not check.\n" % type(exc).__name__)
+                sys.stdout.flush()
+                state = integrity.record_reported(state, session, AUDIT_KEY,
+                                                  signature)
+        if notice:
+            sys.stdout.write(notice)
+            sys.stdout.flush()
+        if audit_state is not None:
+            integrity.save_fires_audit_state(home, audit_state)
+
+    # --- drift (quiet) -----------------------------------------------------
+    if integrity.drift_enabled():
+        pair = integrity.root_and_head(root_hint)
+        if pair:
+            root, head = pair
+            previous = integrity.last_reported(state, session, DRIFT_KEY)
+
+            if previous is None:
+                # First invocation this session -- SessionStart, normally.
+                # Nothing to compare against; record the baseline and say
+                # nothing. A notice here would be about commits that landed
+                # before the session existed.
+                state = integrity.record_reported(state, session, DRIFT_KEY,
+                                                  head)
+            elif previous != head:
+                # (status, path) pairs -- the status is what lets the
+                # notice separate "already live" from "added, not yet linked".
+                changed = integrity.changed_paths(root, previous, head)
+                if changed is None:
+                    out.append(integrity.render_drift(previous, head, [],
+                                                      undiffable=True))
+                else:
+                    notice = integrity.render_drift(
+                        previous, head, integrity.live_changes(changed))
+                    if notice:
+                        out.append(notice)
+                # Recorded either way, including on the silent docs-only case
+                # and on the undiffable one. Without this the same move would
+                # be re-diffed on every prompt submit for the rest of the
+                # session.
+                state = integrity.record_reported(state, session, DRIFT_KEY,
+                                                  head)
+
+    # PRINT before recording, here as above. stdout is buffered and flushed at
+    # interpreter shutdown, so a broken pipe or a kill on the hook's timeout
+    # after the write would record the notice as delivered while it was never
+    # seen. Printing first can only ever cost a repeat.
+    if out:
+        sys.stdout.write("".join(out))
+        sys.stdout.flush()
+
+    # ALWAYS, not only when something was printed. The silent paths are the
+    # ones that most need persisting: the drift BASELINE is recorded on a run
+    # that by design says nothing, and gating the write on output meant the
+    # baseline was recomputed from scratch every prompt and drift could never
+    # be detected at all. The same applies to an empty integrity signature.
+    integrity.save_state(state)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        # A broken hook must never cost someone a prompt.
+        pass
+    sys.exit(0)

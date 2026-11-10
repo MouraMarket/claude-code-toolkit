@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Record a real budget reading, or print the current estimate.
+
+Surface: any shell, including Claude's Bash tool on every surface. Verified:
+subprocess tests.
+
+    claude-usage-anchor 45 --resets-in 4h20m   # Account & Usage, right now
+    claude-usage-anchor --show                 # the estimate and its source
+
+The truth is visible to a human on every surface and to a hook on almost none.
+One reading plus its reset time anchors this 5-hour window; a second at least
+5 points higher measures this machine's tokens-per-percent ratio.
+
+Unlike the hooks in this directory, this is a command a person runs, so it
+exits nonzero on bad input rather than swallowing it.
+"""
+import os
+import re
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import estimate_lib as estimate  # noqa: E402
+
+USAGE = ("usage: claude-usage-anchor <pct 0-100> --resets-in <e.g. 4h20m>\n"
+         "       claude-usage-anchor --show")
+
+
+def parse_duration(text):
+    """`"4h"`, `"4h20m"`, `"35m"`, `"70m"` as seconds. None for anything else.
+
+    Strict: a mistyped duration becomes the window's reset time. Accepts one
+    minute to five hours inclusive; the panel cannot report a five-hour window
+    resetting further away than its own length.
+    """
+    if not isinstance(text, str):
+        return None
+    match = re.match(r"^(?:(\d{1,2})h)?(?:(\d{1,3})m)?$", text.strip())
+    if match is None:
+        return None
+    hours, minutes = int(match.group(1) or 0), int(match.group(2) or 0)
+    # "70m" alone is a fine way to say 1h10m; "4h70m" is a typo.
+    if match.group(1) is not None and minutes >= 60:
+        return None
+    total = hours * 3600 + minutes * 60
+    if total < 60 or total > estimate.FIVE_HOURS:
+        return None
+    return float(total)
+
+
+def main(argv):
+    import time
+    # One clock reading for the whole command.
+    now = time.time()
+
+    if not argv or len(argv) > 3:
+        print(USAGE)
+        return 1
+
+    if not estimate.is_estimate_enabled():
+        print("The budget estimator is off, so there is nothing to anchor.\n"
+              "Set usage_watch.estimate to true in "
+              "~/.config/claude-code-toolkit/config.json to enable it,\n"
+              "then run this again. What it can and cannot do is listed under\n"
+              "'//estimate' in config.example.json -- read that first.")
+        return 1
+
+    if argv[0] in ("--show", "-s"):
+        if len(argv) != 1:
+            print(USAGE)
+            return 1
+        print(estimate.estimate_sentence(estimate.current_estimate(now), now)
+              or estimate.unanchored_sentence())
+        return 0
+
+    try:
+        pct = float(argv[0].rstrip("%"))
+    except ValueError:
+        print(USAGE)
+        return 1
+    if not (0 <= pct <= 100):
+        print("percentage must be between 0 and 100")
+        return 1
+
+    if len(argv) == 1:
+        print(USAGE)
+        print("--resets-in is required: the anchor needs the window's reset "
+              "time, read from the Account & Usage panel.")
+        return 1
+    if len(argv) != 3 or argv[1] != "--resets-in":
+        print(USAGE)
+        return 1
+    resets_in = parse_duration(argv[2])
+    if resets_in is None:
+        print("--resets-in takes a duration between 1 minute and five hours, "
+              "like 4h20m — read it from the Account & Usage panel.")
+        return 1
+
+    # reading_age=0.0: the human read the panel just now.
+    ok, reason = estimate.write_anchor(now, pct, now + resets_in, 0.0)
+    if ok:
+        # Just written, so a missing estimate means the scan had nothing to
+        # read, not that the window is unanchored.
+        print("Anchored at {0:.0f}%. {1}".format(
+            pct, estimate.estimate_sentence(estimate.current_estimate(now), now)
+            or "No estimate yet: the transcript root {0} does not exist.".format(
+                estimate.transcript_root())))
+        return 0
+    print("Could not anchor: " + reason)
+    return 1
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main(sys.argv[1:]))

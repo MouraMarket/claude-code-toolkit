@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""claude-skill-trigger -- CLI entry point for the skill-trigger eval.
+
+Argument parsing and exit codes only; all logic (case loading, running
+cases, classification, control orchestration) lives in `skill_trigger_lib`.
+This tool measures which skill a prompt actually routes to, against
+*today's* loaded sibling set: the skills and plugins visible to this Claude
+Code session. A result is a measurement of this machine's session, not a
+durable fact -- the same prompt can route differently once a sibling skill
+is added, renamed, or removed from the plugin marketplace.
+
+Routing is STOCHASTIC: identical live runs of one untouched, explicit prompt
+can route differently. `--runs` (default 5) repeats each
+prompt and every control window, so every result here is a COUNT across
+`--runs` attempts, never a single yes/no.
+
+`--positive-control` gutters a real skill's description (in place, briefly,
+then restores it) to prove the instrument can see a description change at
+all; `--harness-control` proves it can see an ordinary Skill call at all.
+Neither is optional for a `PASS` verdict -- see `skill_trigger_lib.
+compute_verdict`'s truth table. Without both, this eval can only ever
+report INCONCLUSIVE.
+
+Exit codes:
+  0  PASS
+  1  FAIL, or the --json report could not be written
+  2  malformed input, or a positive control cannot be resolved -- nothing
+     further was run
+  3  INCONCLUSIVE
+  4  a positive control's restore could not be verified -- a real skill may
+     still be disarmed
+"""
+
+import argparse
+import json
+import os
+import sys
+
+# realpath, not abspath: this runs through a ~/.local/bin symlink, and
+# abspath does not resolve a symlink -- it lands on the symlink's own
+# directory (which has no skill_trigger_lib.py alongside it there) and the
+# import fails at runtime while passing every test that never goes through
+# a symlink (tools run through `~/.local/bin` symlinks, so resolve the real path).
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import skill_trigger_lib as lib  # noqa: E402
+
+
+def _parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="claude-skill-trigger",
+        description=(
+            "Measure which skill a prompt actually routes to. Routing is "
+            "stochastic -- the same prompt can flip between a skill call "
+            "and no skill call across identical runs -- so every result "
+            "here is a count across --runs attempts, never a single "
+            "yes/no."))
+    parser.add_argument(
+        "--cases", required=True,
+        help="Path to the JSON case file (see the module docstring for schema).")
+    parser.add_argument(
+        "--json",
+        help="Write the full report as JSON to this path.")
+    parser.add_argument(
+        "--timeout", type=int, default=120,
+        help="Per-case timeout in seconds (default 120). Must be a positive integer.")
+    parser.add_argument(
+        "--runs", type=int, default=5,
+        help="Number of times to run each prompt, and each control window "
+             "(default 5). Must be a positive integer.")
+    parser.add_argument(
+        "--positive-control", action="store_true",
+        help="Gut a real skill's description, prove the route collapses, "
+             "then restore it.")
+    parser.add_argument(
+        "--harness-control", action="store_true",
+        help="Prove the instrument can see an ordinary Skill call at all.")
+    args = parser.parse_args(argv)
+    if args.timeout < 1:
+        parser.error("--timeout must be a positive integer")
+    if args.runs < 1:
+        parser.error("--runs must be a positive integer")
+    if args.json:
+        # Validated up front with every sibling input check, before any
+        # case runs: as first built this ran the whole eval and only then
+        # failed to write, burning the entire run on an argument error.
+        parent = os.path.dirname(args.json) or "."
+        if not os.path.isdir(parent):
+            parser.error(
+                f"--json parent directory does not exist: {parent}")
+    return args
+
+
+def _write_report(report, json_path):
+    """Returns 0 on a successful (or absent) write, 1 on a write failure."""
+    if not json_path:
+        return 0
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2)
+    except OSError as exc:
+        sys.stderr.write(
+            f"claude-skill-trigger: failed to write --json report: {exc}\n")
+        return 1
+    return 0
+
+
+def main(argv=None):
+    args = _parse_args(sys.argv[1:] if argv is None else argv)
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+
+    # Step 2: the leftover-backup scan runs ALWAYS, whatever flags were
+    # passed -- a prior run's crash or SIGKILL can leave a real skill
+    # disarmed regardless of what this invocation asked for.
+    try:
+        restored = lib.scan_and_restore_leftover_backups(home=home)
+    except lib.LeftoverRestoreError as exc:
+        sys.stderr.write(f"claude-skill-trigger: {exc}\n")
+        return 4
+
+    if restored:
+        # A leftover was found (and successfully restored): run no cases.
+        controls = {"positive": None, "harness": None}
+        verdict, exit_code = lib.compute_verdict(
+            controls, [], leftover_backup=True)
+        print(f"verdict: {verdict}")
+        report = {
+            "claude_code_version": "",
+            "sibling_set": [],
+            "cases": [],
+            "controls": controls,
+            "verdict": verdict,
+        }
+        write_status = _write_report(report, args.json)
+        return write_status or exit_code
+
+    # Step 3: load and validate the case file.
+    try:
+        cases = lib.load_cases(args.cases)
+    except lib.CaseFileError as exc:
+        sys.stderr.write(f"claude-skill-trigger: {exc}\n")
+        return 2
+
+    # Step 3.5: a user's or project's own settings can
+    # set disableAllHooks: true. readonly_settings()'s False pin outranks it,
+    # so every eval child would silently re-enable hooks the user switched
+    # off. Refuse instead: loud, and the user decides.
+    disabled_by = lib.hooks_disabled_by(home, os.getcwd())
+    if disabled_by:
+        sys.stderr.write(
+            f"claude-skill-trigger: {disabled_by} sets disableAllHooks: "
+            "true -- a trigger-eval run would re-enable every hook you "
+            "disabled; unset it or run from another directory\n")
+        return 2
+
+    # Step 4: control validation, up front, before any `claude` run.
+    positive_case = None
+    positive_case_index = None
+    skill_md_path = None
+    if args.positive_control:
+        positive_indexed = [
+            (i, c) for i, c in enumerate(cases) if c["control"] == "positive"]
+        if not positive_indexed:
+            sys.stderr.write(
+                "claude-skill-trigger: --positive-control requires at "
+                "least one case with control: \"positive\"\n")
+            return 2
+        distinct_expects = sorted({c["expect"] for _, c in positive_indexed})
+        if len(distinct_expects) > 1:
+            sys.stderr.write(
+                "claude-skill-trigger: --positive-control cases must name "
+                "exactly one skill, got: " + ", ".join(distinct_expects) + "\n")
+            return 2
+        positive_case_index, positive_case = positive_indexed[0]
+        try:
+            skill_md_path = lib.resolve_skill_md(
+                positive_case["expect"], home=home, cwd=os.getcwd())
+            with open(skill_md_path, "rb") as f:
+                original_bytes = f.read()
+            lib.gut_description(original_bytes, skill_md_path)  # validate only
+        except lib.ControlError as exc:
+            sys.stderr.write(f"claude-skill-trigger: {exc}\n")
+            return 2
+        print(f"positive control will edit: {os.path.abspath(skill_md_path)}")
+
+    # Step 5: the harness control, before any case runs.
+    if args.harness_control:
+        harness_result = lib.run_harness_control(
+            timeout_s=args.timeout, runs=args.runs)
+    else:
+        harness_result = None
+
+    # Step 6: run every case, --runs times each (routing is stochastic,
+    # so one run per case measures nothing reliably).
+    cases_report = []
+    first_init = None
+    for index, case in enumerate(cases):
+        case_runs = [
+            lib.run_case(case["prompt"], timeout_s=args.timeout)
+            for _ in range(args.runs)]
+        if index == 0:
+            first_init = case_runs[0].init
+        cases_report.append(lib.build_case_report(case, case_runs))
+
+    # Step 7: the positive control, on the selected case. `baseline_matches`
+    # comes from that case's own report above -- no extra runs spent
+    # measuring the un-gutted baseline.
+    if args.positive_control:
+        baseline_matches = cases_report[positive_case_index]["matches"]
+        try:
+            positive_result = lib.run_positive_control(
+                positive_case, positive_case_index, skill_md_path,
+                timeout_s=args.timeout, runs=args.runs,
+                baseline_matches=baseline_matches)
+        except lib.ControlError as exc:
+            sys.stderr.write(f"claude-skill-trigger: {exc}\n")
+            return 2
+    else:
+        positive_result = None
+
+    sibling_set = list(first_init["skills"]) if first_init else []
+    claude_code_version = first_init["claude_code_version"] if first_init else ""
+
+    # Step 8: compute the verdict, print, write, return.
+    controls = {"positive": positive_result, "harness": harness_result}
+    verdict, exit_code = lib.compute_verdict(controls, cases_report)
+
+    report = {
+        "claude_code_version": claude_code_version,
+        "sibling_set": sibling_set,
+        "cases": cases_report,
+        "controls": controls,
+        "verdict": verdict,
+    }
+
+    for case_result in cases_report:
+        if case_result["forbidden"] is not None:
+            wanted = f"forbid={case_result['forbidden']!r}"
+        else:
+            wanted = f"expected={case_result['expected']!r}"
+        print(f"[{case_result['state']}] {case_result['prompt']!r} "
+              f"{wanted} "
+              f"observed={case_result['observed']!r}")
+    print(f"verdict: {verdict}")
+
+    write_status = _write_report(report, args.json)
+    return write_status or exit_code
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

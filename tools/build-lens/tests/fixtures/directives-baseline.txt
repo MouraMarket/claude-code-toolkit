@@ -1,0 +1,188 @@
+# source: skills/builder/build/SKILL.md and tools/build-lens/{plan,code,merge,design}-review.md
+# Every **bold** span (multi-line included) and every non-separator table
+# row from those files, whitespace-normalised, one per line, in file order,
+# captured when /build was ported into this repository. Do not regenerate
+# this from later text -- it exists to prove later versions against this
+# one, not against themselves. Declare a deliberate change in
+# SANCTIONED_REWRITES or SANCTIONED_RETIREMENTS in test_build_lens.py.
+**architect**
+**$ARGUMENTS**
+**Before every gate, check the resolver still prints the ledger's `mode:`, and say the quote and ledger it**
+**Append the ledger after every task**
+**Pass an explicit `model` on every subagent dispatch.**
+**Read `executed` before `findings`, and check every finding against the repo**
+**Write a `Miss:` line the moment a gate is shown to have missed something**
+**Every message asking the user to decide follows the message rule in `brainstorming.md`'s intro**
+**Write the PR body's `Plan:`, `Design:` and `Dosage:` lines from what actually ran**
+**After the merge, graduate any human work to the mission spec, then flip the plan's, design's and ledger's `status:`, then `git tidy --prune-worktrees`.**
+**Exit 3: ask the user where specs go**
+**Skip this phase only if you can name the design file and its front matter carries an `Approved:` line.**
+**classify the work out loud before you design it**
+**Spike**
+**Bounded**
+**already exists in this repo to read**
+**stop**
+**Architectural**
+**When in doubt take the heavier path. The ratchet is one-way:**
+**Red Flags — the rationalizations that defeat this classification.**
+**Before the first gate, decide one thing and write it down: would a defect in this build announce itself?**
+**Loud**
+**Skip Merge Review.**
+**Silent**
+**Run Merge Review.**
+**Every gate that runs applies its full checklist, whatever the shape.**
+**Record the call in the PR body, in one line, either way**
+**The declaration ratchets one way: loud may become silent mid-build, never the reverse.**
+**correct the `Dosage:` line in the PR body when you write it**
+**Read the gate's reference before dispatching. If it is not there, STOP — the `toolkit-build` plugin is not loaded; run `/reload-plugins` or start a new session.**
+**Do not proceed by inventing lenses**
+**Non-negotiable, and the load-bearing constraint of this command:**
+**acceptance criteria**
+**verification command**
+**Mark every premise the plan rests on as verified or inferred, in the plan text.**
+**Split a plan before you gate it, not after.**
+**Over roughly 800 lines or 8 tasks, split the build and gate each part.**
+**Write the plan to a stable path and leave it there:**
+**Open it with front matter**
+**The plan names its classification on its own line**
+**Work only a human can do does not go in the plan.**
+**Run this on every build that reaches Phase 2. Do not skip it to save time.**
+**in the plan text**
+**`/effort max` on your own session is a standing prohibition, not a footnote.**
+**Say the quote out loud before you dispatch a gate.**
+**your own measurement only**
+**your seat's ratio only**
+**How much one reviewer misses compared with several is UNMEASURED.**
+**Cost here means tokens, and tokens mean usage limits.**
+**your own seat's ratio**
+**counts this machine only**
+**floor**
+**Do not quote the `subagent_tokens` field a workflow returns.**
+**once**
+**One re-round, then execute. There is no third Plan Review pass.**
+**Dispatch each task twice: implement, then prove**
+**`toolkit-build:task-reviewer` is off by default**
+**Re-run one mutation yourself, the most load-bearing**
+**Never omit the model on any other dispatch.**
+**If the session is running `ultracode`, its standing "author a workflow for every substantive task" default stops here.**
+**Append to a sidecar beside the plan — `<specs_dir>/YYYY-MM-DD-<slug>-ledger.md`, same `status:` and `subject:` front matter — after every task.**
+**It is a separate file for one reason, and it is the reason that decides the design: the plan is a gate brief.**
+**the ledger is never passed to any gate, and never pasted into a `brief`.**
+**The failure this prevents is re-dispatch after a compaction.**
+**After any compaction, trust the ledger and `git log` over your own account of the build**
+**The `Ruling:` lines are the half that reaches the user.**
+**every one is read back in Phase 6**
+**A `Miss:` line is the only instrument that measures gate recall.**
+**one**
+**Skip Progress Check when every task is already complete.**
+**Do not size Code Review against a reviewer you have not confirmed is running.**
+**The merge surface belongs to Merge Review, below.**
+**What Code Review cannot see.**
+**merge**
+**G5 — run the suite on the merged tree.**
+**`--merge-with` is what makes the two gates different, not the diff:**
+**There is no second Merge Review pass, under any condition.**
+**mutation-test each fix against the specific property it claims to establish**
+**whatever the diff's size**
+**Read its dollar figures as a proxy, not a bill.**
+**Two things to record here that nothing else captures.**
+**The architect lane, named.**
+**Any defect that escaped a gate.**
+**the PR body carries the plan's path on its own line**
+**First: graduate any human work out of the plan before you retire it.**
+**a finished plan is a file nobody opens again.**
+**leaving the plan `live` is not an alternative to moving the rows.**
+**This covers the design spec too**
+**If the build did not ship**
+**You own every gate.**
+**Between gates, keep moving.**
+**Never accept an unverified claim.**
+**Report failures as failures.**
+**Plan text is yours to fix; code is not.**
+**This is not a licence for a second gate pass**
+**Dosage**
+**One rule that survives all of this: never let a gate's cost become a reason to skip the gate.**
+**A cheaper reviewer fails silently:**
+**Do not trade the reviewer down to save a gate's cost.**
+**All three are load-bearing. Do not drop one to simplify the prompt.**
+**Blind the reviewer.**
+**Invert the burden of proof.**
+**Effort asymmetry.**
+**A fourth mechanism, several blind readers with one lens each, is not used.**
+**How much one reader misses compared with several is UNMEASURED.**
+**`economical`**
+**If `Workflow` is not in your tools**
+**`full-power`**
+**Blinding is held by the wrapper, not by you:**
+**`-o` is REQUIRED, same as `--base` and `--repo`**
+**Always:**
+**Always, too:**
+**And these, every time**
+**open**
+**strict**
+**not**
+**`-o` is REQUIRED, same as `--base` and `--repo`.**
+**`claude-merge-brief` is not used on this path at all.**
+**Scratch lives inside the repo, never in `/tmp`**
+**Do not assemble this by hand.**
+**lazily**
+**once a PR closes, `refs/pull/<N>/merge` stops existing**
+**`blinded-review.js`**
+**file**
+**Budget several minutes for the suite, and say so when you dispatch.**
+**Read `executed` before you read `findings`.**
+**The cap itself is stated in `skills/builder/build/SKILL.md`, under `### Fix rounds — ONE ROUND, THEN SHIP`, and that is the copy to act on.**
+**Mutation-testing the fixes is the load-bearing half, not a formality.**
+**Where a second opinion is cheap, take it:**
+**The known limit, stated rather than papered over:**
+**Spot-check the named command on any finding that decides a merge.**
+**Where there is no suite, say so in `why_not`**
+**Blinding is held by the wrapper:**
+| Rationalization | Reality |
+| "Too simple to need a design" | Size is not evidence — under-specified plans are what this phase prevents. |
+| "I'll call it bounded and skip the spec" | No existing flow to change means it isn't bounded. |
+| "There's a handover or backlog row, so it's approved" | Only an `Approved:` line on a design file counts. |
+| | Design Review | Plan Review | Code Review | Merge Review |
+| **Loud** | architectural only | run | run | skip |
+| **Silent** | architectural only | run | run | run |
+| What you are about to run | Output tokens | % of a 5h window |
+| `economical` — one blinded reviewer | **your own measurement only**: run `claude-build-cost` after one gate; until you have, say "unknown" | **your seat's ratio only**, else "unknown on this seat" |
+| `full-power` — Codex | 0 Claude | Codex quota; the wrapper prints its share after each run |
+| Role | Agent | Model · effort |
+| Implement, or prove, one task | `toolkit-build:executor` | `sonnet` · medium |
+| Review one task's diff | `toolkit-build:task-reviewer` | `sonnet` · high |
+| Part | Shape |
+| Built | Two sentences, plus the verification's real output |
+| Gates | Table: gate · `Quote:` · actual (Phase 5, where measured) · findings · what you did |
+| Rulings | Table: every `Ruling:` line from the ledger · its cost if wrong. "Done" with none means they were swallowed |
+| Left out | Cuts, executor `Observations`, tasks that skipped `toolkit-build:task-reviewer` |
+| Changed how it works? | If yes, update the repo's `CLAUDE.md` — a trap or corrected belief, not a changelog |
+| | Design Review | Plan Review | Progress Check | Code Review | Merge Review |
+| **Loud**, under ~6 tasks | architectural | run | skip | run | skip |
+| **Loud**, ~6+ tasks | architectural | run | run | run | skip |
+| **Silent**, under ~6 tasks | architectural | run | skip | run | run |
+| **Silent**, ~6+ tasks | architectural | run | run | run | run |
+| key | prompt |
+| `ambiguity` | You are the executor who will implement one of these tasks and be blamed when it ships wrong. For each task, name every point where you would have to guess — a name, a path, a schema, an interface, a behaviour on empty input. Two readings that produce different code is a defect. |
+| `verification` | For each task, decide whether its verification command is *capable of failing* if the task were implemented wrong. Flag any that would pass on the unmodified repo, that assert only an exit code against code which swallows errors, or whose acceptance criteria restate the task instead of describing observable behaviour. |
+| `omission` | Compare the source requirements (the brief's `## Source requirements` section; when there is none, the plan's own stated goal) against the tasks. What do they ask for that no task delivers? What did the plan quietly drop, defer, or narrow without saying so? Missing work is the defect no per-task review can ever catch. |
+| `sequence` | Trace the task order. Flag any task that depends on a file, function, config key, or fixture that a *later* task creates, and any task whose verification depends on work not yet done. |
+| `house-rules` | Read the target repository's `CLAUDE.md`, including the nearest nested one. Flag anything in this plan that violates a stated rule, and especially anything under a "decisions not to re-litigate" heading. Quote the rule. |
+| `instruction-docs` | A plan is an instruction document: an executor obeys it literally, and a model will obey any command, skill, agent, `CLAUDE.md` or `AGENTS.md`, prompt, MCP tool description or hook message a task writes. Flag any task that leaves the executor to compose a rule, a claim or a number the plan never states. Check each factual claim the plan makes, or tells the executor to write, against its primary source — the code, the config, or the document it describes. Resolve every path, command and setting the plan tells the executor to use from where the executor will actually be standing — a worktree, a shell whose working directory resets between calls, or a machine where the installer has not run yet — and flag any that does not exist there. Then, as a separate step, hunt for claims the plan leaves stale in files no task touches. List each behaviour, rule, default or flow the plan changes, one line each. For each, search the whole repository — templates, agent and command definitions, READMEs, skills and other docs — by the words that describe it, not only its identifiers: a stale claim usually states the old behaviour in words the plan never uses. Flag each hit that no task updates, and record the searches you ran in `why_not`. |
+| Gate | wrapper invocation |
+| Code Review | `claude-codex-review --repo <branch worktree> --base <default branch> --plan <plan file> -o <report path>` |
+| Merge Review | `claude-codex-review --repo <branch worktree> --base <default branch> --merge-with <default branch> -o <report path>` |
+| `spec-drift` | Compare the diff against the plan. Flag anything built that no task asked for, and any acceptance criterion the diff does not actually satisfy. |
+| `neutered-tests` | Find tests that pass for the wrong reason: assertions loosened, skips added, exceptions swallowed, expected values hardcoded, a test rewritten to match the behaviour it was meant to constrain, or a test whose name describes a branch its body never reaches. A green suite that no longer tests anything is worse than a red one. |
+| `correctness` | Trace the actual control flow of the changed code. Look hardest at error paths, empty inputs, and the case where an external call fails. Give a concrete failing input for every finding. |
+| `house-rules` | Read the target repository's `CLAUDE.md`. Flag violations and quote the rule. Pay attention to which things are supposed to fail open and which fail strict — a change that flips one is a finding even if every test passes. |
+| key | add when | prompt |
+| `error-asymmetry` | the diff touches a hook, guard, or any `except` | In this codebase some things fail **open** and some fail **strict**, and which is which is deliberate: guards fail open because a guard that misfires gets disabled, config fails strict because a missing value must narrow trust. For every error path in this diff, name which direction it fails and whether that matches the surrounding component's documented direction. Flag any `except` that now swallows a *wider* class of error than before, any new fallback that hides a real failure from the one person who could act on it, and any handler whose recovery makes a later failure harder to diagnose. Do **not** flag a bare `except: exit(0)` in a hook — that is the documented house pattern. Flag it only where the swallowing is new, wider than the pattern requires, or wraps the diagnostics as well as the body. |
+| `coverage-gaps` | the diff adds a branch, guard clause, or failure mode | Ignore line coverage; ask what *behaviour* is now untested. For each new branch, guard clause, error path, and boundary condition, decide whether any test would fail if it were wrong. Report only gaps where you can name the concrete regression the missing test would catch, and rate each 1–10 on how much it would cost to miss. Also flag the inverse: a new test you cannot map to any failure mode. Remember this repo's rule — a green test is not evidence until someone has seen it fail. |
+| `comment-rot` | the diff changes behaviour a comment or docstring describes | Find comments, docstrings, and prose that the diff has made wrong, and comments that were *already* wrong and are now load-bearing because someone will trust them. Check every comment that states a constant, a relationship between constants, a payload shape, a firing site, or an ordering guarantee against the code as it now stands. A comment can stay wrong through several edits because each reader trusts it — re-derive the claim from the code, never from the prose. |
+| `instruction-docs` | the diff changes text a model reads and obeys — a command, skill, agent, `CLAUDE.md` or `AGENTS.md`, a prompt, an MCP tool description, or a hook's message | Treat every instruction document the diff touches as executable: a model will obey it literally, and no test reads it. Check each factual claim it makes against its primary source — the code, the config, or the other document it describes — including claims the change introduced while moving or rewriting nearby text. Flag a sentence that still reads as an instruction but lost its antecedent when the text around it moved: a "this", "above", "that rule" or section name that now points at nothing. Resolve every path, command and setting it tells a reader to use from where that reader will actually be standing — a different repository, or a machine where the installer has not run yet — and flag any that does not exist there. Flag any contradiction with another section, an example, or a reference file. Then, as a separate step that no suite can do for you, hunt for claims this change made stale in files it did not touch. List each behaviour, rule, default or flow the diff changes, one line each. For each, search the whole repository — templates, agent and command definitions, READMEs, skills and other docs, not only the directories the diff touched — by the words that describe it, not only its identifiers: a stale claim usually states the old behaviour in words the diff never uses. Read every hit and flag each one that still describes the old behaviour or now contradicts the new one. Record the behaviours you listed and the searches you ran in `why_not`, so a skipped hunt is visible. |
+| `wrong-premise` | You are reading a design, not a plan. Every design rests on claims about how something that already exists behaves — a file's contents, a tool's flags, a config key, an API's response, what a command builds and when it builds it. For each such claim, decide whether the author READ it or REASONED to it, and flag every one that reads as measured but is not sourced. An inferred premise is not a defect; an inferred premise dressed as a measured one is. Name the file or command that would settle each. |
+| `simpler-alternative` | Describe the smallest thing that would solve the problem this design states — not the problem it implies. Then, for each piece of the design that goes beyond that, name what specifically breaks if the piece is cut. Anything you cannot name a concrete failure for is unjustified complexity and is a finding. The house order of preference is: no new file over a new file, one function over a framework, a config line over a script, an existing tool over a built one. |
+| `silent-failure` | For each component of this design, answer one question: when it is wrong, what tells anybody? Name the observer — a crash, a non-zero exit, a blank render, a human seeing an obviously wrong answer on first use. Flag every component whose failure produces a confident wrong answer, or no answer where one was expected, with nothing downstream complaining. A guard that fails open, a scheduled job nobody watches, a test that cannot fail, and a number a human trusts unchecked are all this class. |
+| `already-exists` | Search the target repository for something that already does what this design proposes, in whole or in part, and flag any duplication you find. Then read the repository's `CLAUDE.md` "Decisions not to re-litigate" section and `docs/decisions.md`, and flag anything this design re-proposes that has already been measured and rejected. Quote the decision and its date. |
+| `seams` | This design will be called by things that do not exist yet. Name every seam — what a caller passes in, what it gets back, what happens when an input is absent or malformed, and how a caller selects behaviour. Flag any seam described in prose but given no concrete shape, and any place where the design requires a caller to know something the design never hands them. |

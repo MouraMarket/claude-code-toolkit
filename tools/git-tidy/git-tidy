@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+#
+# git-tidy — fast-forward the default branch and delete branches whose
+# upstream is gone once it can prove they merged, without ever moving the
+# checkout you're standing in.
+#
+# Two paths delete, and nothing else does: [gone] branches that provably
+# merged, and --prune-worktrees, which REMOVES the worktrees its report already
+# names as holding nothing -- it acts only on the CACHE verdict worktree_lib
+# proves byte-identical to a merged pull request. Everything else about the
+# tool reports and never deletes.
+#
+# Replaces the old `git tidy` alias (~/.gitconfig, unversioned), whose first
+# move was `git checkout "$def"` — if the checkout happened to be sitting on
+# a feature branch because someone was mid-work in it, that silently yanked
+# them off it. `git fetch origin <def>:<def>` updates the default branch's
+# ref directly instead, without touching HEAD or the working tree.
+#
+# Measured against real repos with a real remote:
+#   - on a feature branch, default branch behind origin: fast-forwards the
+#     default branch in place; current checkout is untouched.
+#   - default branch checked out in ANOTHER worktree: git itself refuses —
+#     "refusing to fetch into branch ... checked out at <path>".
+#   - local default branch diverged from origin: git itself refuses —
+#     "! [rejected] ... (non-fast-forward)".
+# Both refusals leave the branch exactly as it was; this script only tells
+# them apart in its message, since they call for different human responses.
+#
+# NB: the fetch source must be the remote (`origin`), not `.` (the local
+# repo) — `git fetch . <def>:<def>` copies local <def> onto itself: exit 0,
+# no error, nothing updates.
+#
+# Design decisions about this file that look like accidental complexity are
+# recorded in docs/decisions.md. Read the relevant one before simplifying
+# anything here.
+
+set -u
+
+fail() {
+  echo "git tidy: $1" >&2
+  exit 1
+}
+
+# An unrecognised option is refused rather than ignored. This script took no
+# arguments until --prune-worktrees existed, so ignoring the rest is the
+# tempting compatible choice -- but the only arguments anyone passes now are
+# variations on the flag that DELETES things, and `--prune-worktree` silently
+# doing nothing looks exactly like a run with nothing to remove.
+prune_worktrees=0
+for arg in "$@"; do
+  case "$arg" in
+    --prune-worktrees) prune_worktrees=1 ;;
+    *) fail "unknown option: $arg (the only option is --prune-worktrees)" ;;
+  esac
+done
+
+git rev-parse --git-dir >/dev/null 2>&1 || fail "not a git repository"
+
+def="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed -e 's@^origin/@@')"
+[ -n "$def" ] || def=main
+
+current="$(git branch --show-current)"
+
+# Uncommitted tracked changes only need protecting on the path that actually
+# touches the working tree: `git merge --ff-only` below, when already on the
+# default branch. Off the default branch, nothing in this script moves a
+# file — `git fetch origin <def>:<def>` only moves a ref, and [gone] cleanup
+# only deletes proven-merged branches — so a dirty tree there is none of this script's
+# business, and refusing it would block the exact case this rewrite exists
+# for: tidying up merged branches while mid-work on something else.
+if [ "$current" = "$def" ]; then
+  if ! git diff --quiet 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    fail "commit or stash your changes first"
+  fi
+fi
+
+git fetch -p
+
+if [ "$current" = "$def" ]; then
+  git merge --ff-only "origin/$def" || \
+    echo "git tidy: WARNING - $def has diverged from origin/$def and was left unchanged - merge or rebase it yourself" >&2
+else
+  fetch_err="$(git fetch origin "$def:$def" 2>&1)"
+  if [ $? -ne 0 ]; then
+    if echo "$fetch_err" | grep -q 'checked out at'; then
+      echo "git tidy: WARNING - $def is checked out in another worktree and was left unchanged - switch there (or run git tidy from that worktree) to update it" >&2
+    elif echo "$fetch_err" | grep -q 'non-fast-forward\|\[rejected\]'; then
+      echo "git tidy: WARNING - $def has diverged from origin/$def and was left unchanged - merge or rebase it yourself" >&2
+    else
+      echo "git tidy: WARNING - could not update $def ($fetch_err) - left unchanged" >&2
+    fi
+  fi
+fi
+
+# A branch with NO upstream configuration is invisible to the [gone] check
+# (run below by worktree_report.py): %(upstream:track) is empty for it, never the literal '[gone]', so it
+# survives every tidy forever. That is not a corner case — `git worktree add -b
+# <name>` creates a branch with no tracking config, and this repo's CLAUDE.md
+# prescribes exactly that for concurrent work. The prescribed workflow produces
+# branches the prescribed cleanup tool cannot see. One survived a real merge
+# and was only found by hand.
+#
+# These are REPORTED, never deleted. Without an upstream there is no signal
+# separating 'squash-merged and finished' from 'never pushed, still being
+# written', and the two call for opposite actions. Guessing wrong in the delete
+# direction is unrecoverable; guessing wrong in the report direction costs a
+# line of output. Same asymmetry the handover sweep resolves the same way.
+#
+# Branch names cannot contain whitespace, but upstream refs and worktree paths
+# can — so "the line has exactly one field" is the reliable test for "that
+# field is empty", where splitting on a delimiter would not be.
+untracked_branches="$(git for-each-ref --format='%(refname:short) %(upstream)' refs/heads \
+  | awk 'NF == 1 { print $1 }')"
+
+# A branch any worktree still holds is work in progress, including the one this
+# checkout is standing on — the primary checkout counts as a worktree, so this
+# covers the current branch without a separate case for it. Naming active work
+# on every run is the noise that gets a report ignored.
+held_branches=" $(git for-each-ref --format='%(refname:short) %(worktreepath)' refs/heads \
+  | awk 'NF > 1 { print $1 }' | tr '\n' ' ')"
+
+untracked_report=""
+untracked_count=0
+for b in $untracked_branches; do
+  [ "$b" = "$def" ] && continue
+  case "$held_branches" in *" $b "*) continue ;; esac
+  untracked_report="$untracked_report  $b
+"
+  untracked_count=$((untracked_count + 1))
+done
+
+if [ "$untracked_count" -gt 0 ]; then
+  echo "git tidy: $untracked_count local branch(es) have no upstream - left alone:"
+  printf '%s' "$untracked_report"
+  echo "git tidy:   nothing tracks these, so tidy cannot tell finished work from unpushed work"
+  echo "git tidy:   check one with 'git log <name>', then delete it with 'git branch -D <name>'"
+fi
+
+# Worktrees, on the same report-never-delete terms as the untracked branches
+# above.
+#
+# The classification is in worktree_lib.py rather than here because it needs a
+# pull request's merged head commit, which is the only exact way to tell a
+# branch that shipped from one still holding work — see that module's docstring
+# for the two purely-local tests that were measured and rejected.
+#
+# Resolved through realpath because ~/.local/bin/git-tidy is a symlink into the
+# repo, and $0 is the symlink. python3 does the resolving since the report is
+# python anyway; `readlink -f` is not portable to every macOS this runs on.
+#
+# [gone] branch deletion lives in worktree_report.py too, not here: the proof
+# that a squash-merged branch shipped is the same pull request data the
+# worktree check fetches, so one `gh` call serves both steps. A [gone] upstream
+# alone proves nothing -- the remote branch is also deleted when a PR is closed
+# unmerged -- so a branch is deleted only with evidence it merged, and the rest
+# are kept and listed.
+#
+# Failure here must never fail git-tidy: the fast-forward above is already done
+# and committed to the terminal by this point.
+#
+# --prune-worktrees runs the removals the report already prints, and only for
+# the CACHE verdict. It deliberately runs AFTER the [gone] branch cleanup
+# (worktree_report.py runs that step first): a branch is still held by its
+# worktree at that point, so the branch is cleared on the NEXT tidy. Reordering
+# to catch both in one run would mean deleting a branch on the strength of a
+# removal in the same breath, which is the one place this tool's report-then-act
+# separation earns its keep.
+tidy_dir="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "$0" 2>/dev/null)"
+if [ -n "$tidy_dir" ] && [ -f "$tidy_dir/worktree_report.py" ]; then
+  report_args=("$(git rev-parse --show-toplevel)" "--gone-branches")
+  [ "$prune_worktrees" -eq 1 ] && report_args+=("--prune")
+  python3 "$tidy_dir/worktree_report.py" "${report_args[@]}" || true
+else
+  # A missing helper must KEEP every branch: without it there is no proof of
+  # anything, and the old behaviour (delete on [gone] alone) is the bug.
+  echo "git tidy: WARNING - worktree_report.py could not be found - no [gone] branch was deleted" >&2
+  # The report is best-effort and its absence is survivable; a REQUESTED prune
+  # silently not happening is not. Say so rather than exiting 0 on nothing.
+  if [ "$prune_worktrees" -eq 1 ]; then
+    echo "git tidy: WARNING - --prune-worktrees was asked for but worktree_report.py could not be found - nothing was pruned" >&2
+  fi
+fi
+
+true

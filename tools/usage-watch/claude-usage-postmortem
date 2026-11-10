@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""StopFailure: write a handover when a turn dies on the usage budget.
+
+Surface: wherever StopFailure fires. Verified: the StopFailure schema in the
+2.1.228 binary; a live firing is unverified.
+
+The turn is already over by the time this fires, so there is no model left to
+ask for a narrative — this hook composes a document from git state alone and
+writes it into the existing handover directory so `claude-thread-deliver`
+offers it to the next session.
+
+Only `error` in {rate_limit, billing_error} triggers a write. The payload's
+real key is `error`, not `reason` — verified against the v2.1.228 binary's
+StopFailure schema, which has no `reason` key at all. `reason` is read only
+as belt-and-braces in case an older or different build ever sends it.
+StopFailure's other eight reasons (overloaded, authentication_failed,
+oauth_org_not_allowed, invalid_request, model_not_found, server_error,
+max_output_tokens, unknown) are transient or unrelated to budget, and writing
+a handover for any of them would cry wolf on every ordinary API blip.
+
+The document is written AND registered in `index_lib`'s index — an
+unregistered handover is invisible to `claude-thread-deliver`, which reads
+only the index and nothing else. Registration is best-effort: if it fails,
+the document itself must still exist on disk, since a visible-but-unregistered
+handover beats none at all.
+
+Every git call here is READ-ONLY: `rev-parse --abbrev-ref HEAD` and `status
+--porcelain`, each capped with a timeout and degrading to None/[] on any
+failure — same pattern as `freshness_lib._git`. No commit, add, checkout,
+push, reset, or stash EVER runs here: auto-committing a dying session's tree
+was considered and explicitly rejected, so the document names the dirty
+files and leaves them for the human to decide.
+
+Exit code is ALWAYS 0, and nothing is ever printed to stdout: the turn has
+already stopped, so there is no model left to read an additionalContext.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+
+GIT_TIMEOUT_SECONDS = 5
+
+
+def _git(repo, *args):
+    """Run a read-only git command, or return None on any failure at all.
+    Copied from freshness_lib._git: never raises, never writes."""
+    try:
+        result = subprocess.run(
+            ("git", "-C", repo) + args,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=GIT_TIMEOUT_SECONDS)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode("utf-8", "replace")
+
+
+def _git_state(repo):
+    """(branch, dirty_lines) for `repo`. `dirty` is None when git could not say.
+
+    None and [] are deliberately different answers: [] means the tree really was
+    clean, None means we never found out (not a repo, git missing, timed out).
+    Collapsing them would print "working tree was clean" into a handover when
+    nothing was actually checked — the one line a human reads to decide whether
+    they need to go looking for uncommitted work.
+    """
+    branch = None
+    raw_branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if raw_branch is not None:
+        branch = raw_branch.strip() or None
+
+    dirty = None
+    raw_status = _git(repo, "status", "--porcelain")
+    if raw_status is not None:
+        dirty = [line for line in raw_status.splitlines() if line.strip()]
+
+    return branch, dirty
+
+
+def main():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import usage_lib as usage
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    if not usage.is_enabled() or not usage.postmortem_enabled():
+        return
+
+    # The real key is `error`; `reason` is read only as belt-and-braces (see
+    # the module docstring — verified against the v2.1.228 binary, which has
+    # no `reason` key on this event at all).
+    reason = payload.get("error")
+    if not reason:
+        reason = payload.get("reason")
+    if not usage.should_postmortem(reason):
+        return
+
+    cwd = payload.get("cwd") or os.getcwd()
+    session_id = payload.get("session_id") or "unknown"
+    error_details = payload.get("error_details")
+
+    branch, dirty = _git_state(cwd)
+
+    now = time.time()
+    # read_cache_status, not read_cache: a partial reading still names a real
+    # window, and "Budget at death: not recorded" is strictly worse than
+    # "seven_day at 90%" in a document whose whole job is telling a human
+    # where they stood when the turn died.
+    # ...but a partial reading has to say so. This document is read after the
+    # fact, and the window most likely to have just rolled out of it is the
+    # one that stopped the turn, so an unlabelled calm number invites exactly
+    # the wrong conclusion.
+    status, buckets = usage.read_cache_status(now)
+
+    doc = usage.postmortem_document(reason, cwd, branch, dirty, buckets, now,
+                                    error_details=error_details,
+                                    partial=status == usage.READING_PARTIAL)
+
+    target_dir = usage.handover_dir()
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except Exception:
+        return
+
+    date = time.strftime("%Y-%m-%d", time.localtime(now))
+    # session_id is external input and goes straight into a filename. A value
+    # containing "/" does not escape the directory — the mandatory prefix means
+    # the first path segment never names a real one — but os.replace then fails
+    # with ENOENT and the handler below silently discards the document. The
+    # result is no file, no error, exit 0: the safety net vanishes precisely
+    # when a build has died on budget. Sanitise rather than trust.
+    # The name MUST end in "-handover.md" — index_lib.HANDOVER_NAME_RE is what
+    # both claude-thread-deliver's sweep and its pending-lookup match against,
+    # and a name that misses the suffix is invisible to both, silently.
+    filename = "{0}-budget-{1}-{2}-handover.md".format(
+        date, usage.safe_slug(reason), usage.safe_slug(session_id))
+    target = os.path.join(target_dir, filename)
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=target_dir, prefix=".usage-postmortem-")
+    except Exception:
+        return
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(doc)
+        os.replace(tmp_path, target)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return
+
+    # Register in the handover index so claude-thread-deliver — which reads
+    # only index_lib.find_pending() and nothing else — can see this document.
+    # Imported via sys.path rather than copied: one source of truth per tool.
+    # Best-effort and never fatal to the write above: a handover that exists
+    # on disk but failed to register still beats no handover at all.
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+            "thread-handover"))
+        import index_lib
+        # Register ONCE per path. This filename is deterministic — same session,
+        # same day, same reason — so a session that dies on budget, resumes when
+        # the window resets, and dies again overwrites the one document but would
+        # otherwise add a second index record for it. The next session then sees
+        # two pending entries for one file; attaching it consumes exactly one,
+        # and the leftover stays pending forever, re-announced at every
+        # SessionStart and never swept (sweep only considers consumed records).
+        # That is precisely the accumulating-permanently-pending-record state
+        # find_all_pending exists to prevent. `/handover` never hits it because
+        # a human picks a unique slug; a hook has no such luxury.
+        already = any(record.get("path") == target
+                      for record in index_lib.load_index())
+        if not already:
+            index_lib.add_record(
+                target,
+                index_lib._config.workspace_root() or os.path.expanduser("~"),
+                session_id,
+                datetime.now().isoformat(timespec="seconds"))
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass

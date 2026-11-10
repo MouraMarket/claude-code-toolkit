@@ -1,0 +1,19 @@
+[
+  {
+    "name": "edit-mode-draft",
+    "prompt": "Humanize this:\n\nOur small team spent three days in Hawaiʻi for the quarterly planning offsite — a chance to step back and look at the road ahead. We reviewed 37 open projects — and cut the list down to 14 that really matter. It was a pivotal moment for the team, a testament to what focused collaboration can unlock. The mornings were for strategy – the afternoons were for honest conversation about priorities. Ultimately, the offsite wasn't just a meeting, it was a reset that will shape our work in the quarter ahead.",
+    "checks": {
+      "grade_until": "What changed",
+      "must_not_match": [
+        "—",
+        " – "
+      ],
+      "must_contain": [
+        "37",
+        "14",
+        "Hawaiʻi"
+      ],
+      "no_new_numbers": true
+    }
+  }
+]

@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""statusLine command: show the budget, and cache it for the hooks.
+
+Surface: the terminal CLI only — the statusLine renders nowhere else (see
+usage_lib.status_line_surface). Verified: binary entrypoint switch, 2.1.246.
+
+Two jobs in one process because Claude Code hands live `rate_limits` to exactly
+one surface. Rendering is the visible job; writing the cache is what makes the
+hooks — and therefore Claude itself — able to see the budget at all.
+
+The cache write is a side effect of a command Claude Code already runs on every
+message and every refreshInterval tick, so it costs no extra process and cannot
+drift far from live. Nothing here ever shells out: this is a hot path.
+"""
+import json
+import os
+import sys
+import time
+
+
+def main():
+    sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+    import usage_lib as usage
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        payload = {}
+
+    # Render first, unconditionally. A status line that goes blank because a
+    # cache write failed would be a worse bug than a stale cache.
+    try:
+        sys.stdout.write(usage.render_status(payload))
+    except Exception:
+        pass
+
+    if not usage.is_enabled():
+        return
+    try:
+        buckets = usage.extract_buckets(payload)
+        if buckets:
+            usage.write_cache(buckets, time.time())
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass

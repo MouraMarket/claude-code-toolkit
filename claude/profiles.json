@@ -1,0 +1,89 @@
+{
+  "//": "Profile registry. One entry per plugin in .claude-plugin/marketplace.json. Read by lib/profiles.py.",
+  "//tested_claude_code": "The Claude Code version this release's live proof ran on. The README's prerequisites line names the same version.",
+  "tested_claude_code": "2.1.306",
+  "profiles": {
+    "core": {
+      "plugin": "toolkit-core",
+      "dir": "plugin",
+      "default": true,
+      "requires": [],
+      "agents": false,
+      "summary": "Safety guards, integrity checks and onboarding."
+    },
+    "continuity": {
+      "plugin": "toolkit-continuity",
+      "dir": "plugin-continuity",
+      "default": true,
+      "requires": [
+        "core"
+      ],
+      "agents": false,
+      "summary": "Session continuity: handover, wrap-up and the memory and CLAUDE.md distillers."
+    },
+    "builder": {
+      "plugin": "toolkit-build",
+      "dir": "plugin-build",
+      "default": false,
+      "requires": [
+        "core"
+      ],
+      "agents": true,
+      "summary": "The /build workflow and its executor and reviewer agents.",
+      "features": [
+        "Workflow tool (optional; falls back to one Agent dispatch)"
+      ]
+    },
+    "maintainer": {
+      "plugin": "toolkit-maintainer",
+      "dir": "plugin-maintainer",
+      "default": false,
+      "requires": [
+        "core",
+        "builder"
+      ],
+      "agents": false,
+      "summary": "Toolkit maintenance: /review-pr-ci and /skill-builder."
+    },
+    "mac": {
+      "plugin": "toolkit-mac",
+      "dir": "plugin-mac",
+      "default": false,
+      "requires": [
+        "core"
+      ],
+      "agents": false,
+      "summary": "macOS-only helpers, starting with /caffeinate."
+    }
+  },
+  "//writers": "One key per hook executable in any plugin's hooks/hooks.json. The value says what the hook writes, moves or deletes on its own, or is exactly \"nothing\". A missing or extra key fails tools/catalogue/tests.",
+  "writers": {
+    "tools/danger-guard/claude-danger-guard": "nothing",
+    "tools/hook-heartbeat/claude-hook-heartbeat": "its own marker files under ~/.claude/claude-code-toolkit/heartbeat/, pruned after 30 days",
+    "tools/worktree-guard/claude-worktree-guard": "nothing",
+    "tools/distill-guard/claude-distill-write-guard": "nothing",
+    "tools/toolkit-integrity/claude-toolkit-integrity": "its own state in ~/.claude/toolkit-integrity-state.json, and the hook-fires audit's verdict cache in ~/.claude/claude-code-toolkit/heartbeat-audit.json",
+    "tools/repo-freshness/claude-repo-freshness": "runs a background git fetch in each watched repo, updating its remote-tracking refs; with repo_freshness.sync on (off by default) it also fast-forwards clean repos with git pull and clones missing ones; its own throttle stamp in ~/.cache/claude-repo-sync.stamp",
+    "tools/tooling-digest/claude-tooling-digest": "nothing",
+    "tools/usage-watch/claude-usage-dispatch": "nothing; it reads the budget cache and ~/.claude/usage-anchors.json, only with usage_watch.dispatch_advisory on (off by default)",
+    "tools/session-titler/claude-title-session": "appends a title line to the ended session's transcript; its own index in ~/.claude/session-index.tsv and log in ~/.claude/title-hook.log",
+    "tools/thread-handover/claude-thread-watch": "marks a pending handover consumed in ~/.claude/thread-handover/index.json when a prompt in this session names its file, which stops it being offered again and starts its archive clock; its own state under ~/.claude/thread-handover/sessions/",
+    "tools/usage-watch/claude-usage-watch": "its own state in ~/.claude/usage-budget-state.json, plus ~/.claude/usage-anchors.json with usage_watch.estimate on (off by default)",
+    "tools/thread-handover/claude-thread-deliver": "moves consumed handover files into <handover_dir>/archive/handovers/ once both grace gates clear; its own index under ~/.claude/thread-handover/",
+    "tools/memory-lint/claude-memory-lint": "nothing",
+    "tools/context-budget/claude-context-budget": "its own readings log in ~/.claude/context-budget/readings.jsonl, one line a day",
+    "tools/usage-watch/claude-usage-subagent": "its own state in ~/.claude/usage-budget-state.json",
+    "tools/usage-watch/claude-usage-postmortem": "writes a handover document into <handover_dir> when a turn dies on a usage limit, and registers it under ~/.claude/thread-handover/",
+    "tools/memory-routing/claude-memory-routing": "nothing",
+    "tools/context-growth/claude-context-growth": "its own state in ~/.claude/context-growth-state.json",
+    "tools/model-guard/claude-model-guard": "nothing",
+    "tools/prompt-optimizer/claude-prompt-optimizer": "nothing",
+    "tools/session-claim/claude-session-claim": "when a second session writes into a checkout another live session holds, creates a git worktree and claim/ branch under that checkout's .claude/worktrees/ and adds that path to its .git/info/exclude; its own state under ~/.claude/session-claims/",
+    "tools/session-claim/claude-session-release": "its own state under ~/.claude/session-claims/; it does not remove the worktrees session-claim created",
+    "tools/build-cost/claude-build-cost-record": "appends a row for each qualifying session to ~/.claude/build-costs.jsonl, and another superseding row when a resumed session has grown",
+    "tools/base-pin/claude-base-pin": "runs a background git fetch in the current repo, updating its remote-tracking refs; its own state in ~/.claude/base-pin-state.json",
+    "tools/spec-archive/claude-spec-archive": "moves shipped specs from spec_archive.specs_dir into its archive/ folder; with spec_archive.stale_flip_days set (off by default) it also rewrites idle specs' status: live to shipped; a lock file in specs_dir",
+    "tools/harness-check/claude-harness-check": "its own state in ~/.claude/harness-check-noticed.json, only with harness_check.enabled on (off by default)",
+    "tools/caffeinate/claude-caffeinate": "starts and stops macOS caffeinate processes that keep the Mac awake, only with caffeinate.enabled on (off by default); its own state under ~/.claude/caffeinate/"
+  }
+}

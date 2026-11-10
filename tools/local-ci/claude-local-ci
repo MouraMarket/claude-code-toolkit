@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""Run local checks against a head merged with its base, and record a receipt."""
+
+import argparse
+import os
+import signal
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from local_ci_lib import FULL_SHA_RE, run_ci, run_verify
+
+DESCRIPTION = """Run local checks against a head merged with its base and write a receipt.
+
+  claude-local-ci [--repo PATH] --head SHA --base SHA --receipt FILE           # local run
+  claude-local-ci [--repo PATH] --pr N [--post] --receipt FILE                 # PR run
+  claude-local-ci [--repo PATH] --verify --head SHA --base SHA --receipt FILE  # local verify
+  claude-local-ci [--repo PATH] --verify --pr N --receipt FILE                 # PR verify
+"""
+
+EPILOG = """exit codes: 0 pass, 1 a real negative, 2 refused or broken.
+
+A receipt is local evidence, not an attestation: anyone who can write the file can change it."""
+
+
+class OneLineParser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(2, "claude-local-ci: %s\n" % message)
+
+
+def usage_error(args):
+    """The reason these arguments are refused, or None. Runs before any git or gh call."""
+    has_pair = args.head is not None or args.base is not None
+    if args.pr is not None and has_pair:
+        return "give either --pr or --head with --base, not both"
+    if args.pr is None and (args.head is None or args.base is None):
+        return "exactly one target is required: --head with --base, or --pr"
+    if args.pr is not None and args.pr < 1:
+        return "--pr must be a positive integer"
+    for flag, value in (("--head", args.head), ("--base", args.base)):
+        if value is not None and not FULL_SHA_RE.fullmatch(value):
+            return flag + " must be a full object name (40 or 64 lowercase hex characters)"
+    if args.post and args.verify:
+        return "--post cannot be used with --verify"
+    if args.post and args.no_post:
+        return "--post and --no-post cannot be combined"
+    if args.post and args.pr is None:
+        return "--post requires --pr"
+    return None
+
+
+def _sigterm_to_keyboard_interrupt(signum, frame):
+    # SIGTERM's default disposition kills the process outright, skipping
+    # run_ci's cleanup (worktree removal, the error receipt and POST). Raising
+    # KeyboardInterrupt instead routes a SIGTERM through the exact same path
+    # as Ctrl-C: stream_checks terminates the checks child with its 10s
+    # grace, and run_ci's except clause records "runner interrupted" before
+    # re-raising.
+    raise KeyboardInterrupt()
+
+
+def main():
+    parser = OneLineParser(description=DESCRIPTION, epilog=EPILOG, allow_abbrev=False,
+                           formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--repo", metavar="PATH")
+    parser.add_argument("--head", metavar="SHA")
+    parser.add_argument("--base", metavar="SHA")
+    parser.add_argument("--pr", type=int, metavar="N")
+    parser.add_argument("--post", action="store_true")
+    parser.add_argument("--no-post", action="store_true")
+    parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--receipt", metavar="FILE", required=True)
+    args = parser.parse_args()
+    reason = usage_error(args)
+    if reason:
+        print("claude-local-ci: " + reason, file=sys.stderr)
+        return 2
+    signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    try:
+        target = ("pr", args.pr) if args.pr is not None else ("local", args.head, args.base)
+        if args.verify:
+            return run_verify(args.repo, target, args.receipt)
+        return run_ci(args.repo, target, args.receipt, args.post)
+    except (Exception, KeyboardInterrupt) as exc:
+        print("claude-local-ci: " + (str(exc) or "runner interrupted"), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

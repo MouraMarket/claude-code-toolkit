@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Routes build-shaped work to /build, and reports which review mode it runs.
+
+Routing to `/build` is the `build` skill's own description; this tool no
+longer runs as a hook. Invocation shapes, and the split matters -- modelled on
+`tools/caffeinate/claude-caffeinate`:
+
+    claude-build-route --review-mode     prints the resolved `build.review`
+                                          mode, NEVER reads stdin, exits 0
+    claude-build-route --review-mode --repo PATH
+                                          the same, but under `full-power`
+                                          exits 1 and prints nothing when
+                                          PATH has no non-empty AGENTS.md
+
+Under `full-power` either form also exits 1, printing nothing on stdout, when
+Codex is unavailable (not installed or not signed in); `economical` never
+checks Codex.
+
+Nothing here may touch stdin. A tool that reads stdin unconditionally passes
+every piped test and HANGS when a person runs it from a terminal -- the one
+invocation that matters for a command whose whole purpose is being run by
+hand. This repo has written that warning down three times:
+`tools/memory-lint/claude-memory-lint:9-15`,
+`tools/context-lint/claude-context-lint:10`,
+`tools/context-budget/claude-context-budget:22-23`.
+"""
+
+import os
+import sys
+
+def _load_toolkit_config():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath would not resolve it — it would land on /Users and fail at
+    # runtime while passing every test run from the repo.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+    import toolkit_config
+    return toolkit_config
+
+
+def _toolkit_root():
+    # realpath for the same reason as `_load_toolkit_config`.
+    here = os.path.dirname(os.path.realpath(__file__))
+    return os.path.dirname(os.path.dirname(here))
+
+
+def _codex_unavailable_reason():
+    """None when Codex can run, else a sentence saying why. A checkout
+    without tools/codex-review counts as unavailable: nothing could dispatch
+    a gate from it."""
+    sys.path.insert(0, os.path.join(_toolkit_root(), "tools", "codex-review"))
+    try:
+        import codex_review_lib
+    except ImportError:
+        return "tools/codex-review is missing from this checkout"
+    return codex_review_lib.unavailable_reason()
+
+
+def _has_agents_md(repo):
+    """True iff `repo` carries a readable, non-blank AGENTS.md -- the same
+    test `claude-codex-review` applies before any Codex gate."""
+    try:
+        with open(os.path.join(repo, "AGENTS.md"), encoding="utf-8") as handle:
+            return bool(handle.read().strip())
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def cmd_review_mode(repo=None):
+    """Print the resolved build.review mode. Never reads stdin.
+
+    Under `full-power`, refuse first when Codex is unavailable: every Codex
+    gate would fail, and Phase 0 is the cheapest place to learn it. The
+    message carries the command that switches this machine to the Claude
+    reviewer. `economical` never checks Codex.
+
+    With `repo`, also refuse up front under `full-power` when the repo has no
+    AGENTS.md: every Codex gate refuses without one, and finding that out at Phase 0 costs nothing, where finding it at the
+    first gate costs the design or the plan already written. Nothing goes
+    to stdout on refusal, so no mode can be copied into a ledger."""
+    toolkit_config = _load_toolkit_config()
+    mode = toolkit_config.build_review_mode()
+    if mode == "full-power":
+        reason = _codex_unavailable_reason()
+        if reason is not None:
+            root = _toolkit_root()
+            sys.stderr.write(
+                "claude-build-route: review mode is full-power, but Codex is "
+                "unavailable: %s. Either install and sign in to Codex, or "
+                "switch this machine to the Claude reviewer:\n"
+                "  python3 \"%s\" \"%s\" \"%s\" --update "
+                "--set build.review=economical\n"
+                % (reason, os.path.join(root, "lib", "setup_config.py"),
+                   toolkit_config.CONFIG_PATH, root))
+            return 1
+    if repo is not None and mode == "full-power" and not _has_agents_md(repo):
+        sys.stderr.write(
+            "claude-build-route: review mode is full-power, but %s has no "
+            "AGENTS.md (or an empty one), and every Codex gate refuses "
+            "without it. Author one first.\n" % os.path.realpath(repo))
+        return 1
+    print(mode)
+    return 0
+
+
+USAGE = (
+    "usage: claude-build-route [--review-mode [--repo PATH]]\n"
+    "  --review-mode   print the resolved build.review mode and exit\n"
+    "  --repo PATH     with --review-mode: under full-power, refuse (exit 1)\n"
+    "                  when PATH has no non-empty AGENTS.md\n"
+    "  under full-power, either form also refuses (exit 1) when Codex is\n"
+    "  unavailable; economical never checks Codex\n"
+)
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv:
+        # A session loaded before the hook was retired still holds the old
+        # registration and runs this bare at its next SessionStart. Exit 0 with
+        # nothing on stdout keeps that session quiet instead of surfacing a
+        # hook error to a user who cannot debug it; not reading stdin keeps
+        # a terminal run from hanging.
+        sys.stderr.write(USAGE)
+        return 0
+    if argv == ["--review-mode"]:
+        return cmd_review_mode()
+    if len(argv) == 3 and argv[:2] == ["--review-mode", "--repo"] and argv[2]:
+        return cmd_review_mode(argv[2])
+    # Anything else is a usage error. Matches claude-caffeinate (usage +
+    # non-zero) and claude-context-lint:218.
+    sys.stderr.write(USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

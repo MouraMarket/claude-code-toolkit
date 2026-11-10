@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""SessionStart hook: clean up consumed handovers, then announce a pending one.
+
+It announces a path and nothing more. It deliberately does not inject the
+document, and does not mark it consumed: with several sessions open in one tree,
+whichever started last would otherwise consume a handover meant for a different
+window. The claim happens in the watch hook, when the document is attached.
+
+Sweep runs before the announcement so a file removed this session is never also
+pointed at this session. Best-effort: exits 0 on every path.
+"""
+
+import json
+import os
+import sys
+import uuid
+
+# Machine-local settings live outside the repo. See lib/toolkit_config.py.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+    "lib"))
+import toolkit_config as _config
+
+# The tree handovers are scoped to. Falls back to $HOME when unconfigured, which
+# is wide but harmless: it only affects which pending handover a session is
+# pointed at, never what gets deleted.
+PROJECT_DIR = _config.workspace_root() or os.path.expanduser("~")
+
+
+def _session_id(payload):
+    """The session id, or a UNIQUE stand-in when the payload omits it.
+
+    A shared constant here is a correctness bug, not a cosmetic one: sweep()
+    decides "was this consumed by someone other than me?" by comparing session
+    ids, so two different sessions both answering "unknown" look like one
+    session resuming. The handover is then never swept (it thinks it is still
+    the consuming session) and never redelivered (it is already marked
+    consumed) -- stranded forever. A unique fallback keeps distinct sessions
+    distinct.
+    """
+    return payload.get("session_id") or ("unknown-" + uuid.uuid4().hex[:12])
+
+POINTER = """=== PENDING THREAD HANDOVER ===
+A previous thread left a handover document at:
+  {path}
+
+It has NOT been loaded into this session, and this session has not claimed it.
+Do not read it unless {owner} attaches it or asks you to continue that work:
+several sessions can be open in this tree at once, and only the one it is
+actually attached in should pick it up. Attaching it is what marks it consumed.
+"""
+
+
+def main():
+    try:
+        if _config.get("thread_handover", "enabled", default=True) is False:
+            return
+    except Exception:
+        pass
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import index_lib
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    session_id = _session_id(payload)
+    project_dir = payload.get("cwd") or PROJECT_DIR
+
+    index_lib.sweep(session_id)
+
+    path = index_lib.find_pending(project_dir, session_id)
+    if not path:
+        return
+
+    sys.stdout.write(POINTER.format(path=path, owner=_config.owner_name()))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

@@ -1,0 +1,49 @@
+{
+  "name": "claude-code-toolkit",
+  "owner": {
+    "name": "mouramarket"
+  },
+  "description": "Claude Code guards and session hooks. Add your own checkout as a local marketplace (install.sh does this).",
+  "plugins": [
+    {
+      "name": "toolkit-core",
+      "source": "./plugin",
+      "description": "The toolkit's guards, integrity checks and onboarding: the hooks that protect a machine, plus /onboard and /autonomy-permissions."
+    },
+    {
+      "name": "toolkit-continuity",
+      "source": "./plugin-continuity",
+      "description": "Session continuity skills: /handover, /wrap-up, memory-distill and claude-md-distill."
+    },
+    {
+      "name": "toolkit-build",
+      "source": "./plugin-build",
+      "description": "The /build workflow and its executor, task-reviewer and code-reviewer agents, plus an optional architect-reviewer."
+    },
+    {
+      "name": "toolkit-maintainer",
+      "source": "./plugin-maintainer",
+      "description": "Toolkit maintenance skills: /review-pr-ci and /skill-builder."
+    },
+    {
+      "name": "toolkit-mac",
+      "source": "./plugin-mac",
+      "description": "macOS-only helpers: /caffeinate."
+    },
+    {
+      "name": "skill-prompt-optimizer",
+      "source": "./plugins/prompt-optimizer",
+      "description": "Improve a rough or high-stakes request before doing it, and challenge the reasoning behind it."
+    },
+    {
+      "name": "skill-humanizer",
+      "source": "./plugins/humanizer",
+      "description": "Strip AI-writing patterns from a draft and give it a human voice, or name the patterns without rewriting."
+    },
+    {
+      "name": "skill-claude-teacher",
+      "source": "./plugins/claude-teacher",
+      "description": "Learn Claude Code and git by doing: lessons matched to your level, using your own work."
+    }
+  ]
+}

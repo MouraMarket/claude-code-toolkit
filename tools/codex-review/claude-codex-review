@@ -1,0 +1,975 @@
+#!/usr/bin/env python3
+"""Dispatch a Code or Merge Review to `codex exec`, and validate the report
+it hands back rather than trusting a clean exit code.
+
+    claude-codex-review --base <ref> --repo <path> -o <report.json>
+                        [--plan <plan file> | --merge-with <ref>]
+                        [--sessions-root <path>]
+    claude-codex-review --plan-review <plan file> --repo <path> -o <report.json>
+                        [--sessions-root <path>]
+    claude-codex-review --design-review <design> <requirements> [<file> ...]
+                        --repo <path> -o <report.json> [--sessions-root <path>]
+
+Arguments are parsed before any stdin access, like the other tools here:
+this tool is run by hand, and an unconditional stdin read hangs the one
+invocation that matters. In practice this file never reads its own
+`sys.stdin` at all -- the diff it generates goes to the *child* process's
+stdin, on a file handle this process opens itself, never on fd 0.
+
+`--plan-review` and `--design-review` dispatch a document gate instead of a
+diff gate: the wrapper builds its own stdin from the named file(s) via
+`merge_brief_lib`, sends the matching fixed brief (`plan-brief.md` /
+`design-brief.md`) as the positional, and runs the same stale-report
+removal, schema validation and semantic validation as the diff gates below.
+Neither takes `--base` or `--merge-with`, and the two document flags are
+mutually exclusive -- every such conflict fails at argument parsing (exit 2)
+before anything is dispatched.
+
+**Code Review runs on a detached snapshot of HEAD, never the live checkout**:
+the wrapper adds a detached worktree at HEAD's commit, diffs and dispatches
+there, and removes it afterwards, so uncommitted edits in `--repo` are never
+reviewed.
+
+**`--merge-with <ref>` reviews a merge result, not the unmerged branch.** It
+fetches `<ref>`, merges it into a scratch worktree, and sends the reviewer
+TWO labelled blocks on stdin instead of one: the branch's own diff, and
+what moved on `<ref>` since the branch diverged. A three-dot diff is
+invariant under merging the base in (byte-identical), so the diff alone
+cannot distinguish the two gates -- the second block is what does.
+
+Each gate runs on a pinned model (see `codex_review_lib`), which the
+`codex_review.models.<gate>` key of the toolkit config overrides.
+
+Exit codes: 0 report accepted; 1 review failed or refused; 2 usage or
+configuration error; 4 Codex unavailable, nothing reviewed.
+
+Behaviour ladder:
+
+  1. Preflight: `codex` on PATH and its auth file readable, else exit 4
+     (Codex unavailable); `review-brief.md` present and non-empty, and
+     `AGENTS.md` present and non-empty in `--repo` -- absent or blank is a
+     refusal, not a warning. Then the toolkit config is read and each gate's
+     model resolved; an unreadable config or a bad `codex_review.models`
+     value exits 2 before anything is dispatched.
+  2. Headroom -- the ONLY non-fatal step. Printed always; never blocks.
+  3. Capture ids and build the scratch worktree, diff gates only. Resolve
+     `HEAD`, `--base` (or `origin/<ref>` after the fetch) and the merge base
+     to immutable shas ONCE, before anything is built -- nothing after this
+     reads them from `--repo` again. A Code Review `--base` naming a branch
+     `origin` tracks is fetched first, and refused (nothing dispatched)
+     when the local branch is strictly behind `origin` and HEAD already
+     carries commits it lacks (see `_refresh_code_review_base`). A dirty
+     `--repo` prints a stderr warning counting the uncommitted paths the
+     review does not see (never a refusal). Then build a detached scratch
+     worktree: at HEAD for Code Review (a snapshot), or at HEAD with
+     `origin/<ref>` merged in for Merge Review -- the branch point is
+     captured BEFORE merging (merging destroys it). A conflict aborts the
+     merge, removes the worktree, and exits non-zero -- never review a
+     conflicted tree, and never silently fall back to the unmerged branch.
+  4. Generate the diff(s) in the scratch worktree. Code Review:
+     `git diff <base sha>...<head sha>`, one diff on stdin, unlabelled.
+     Merge Review: `=== YOUR BRANCH ===` (`diff <origin sha>...<head sha>`)
+     and `=== MOVED UNDER YOU SINCE ===` (`diff <branch point> <origin
+     sha>`), both on stdin. An unresolvable ref or an EMPTY branch diff are
+     both loud failures -- an empty diff dispatches a reviewer with nothing
+     to read, which returns a clean-looking `APPROVE, findings: []` that
+     nothing else in this pipeline would catch. An EMPTY upstream block is
+     different: it is legitimate (nothing landed on `<ref>` since the
+     branch diverged), so it prints a sentence saying so and continues
+     rather than failing. Then, on both diff gates, print one
+     `reviewed snapshot: head=… tree=… base=…@… merge-base=…` line -- the
+     record of what was reviewed, outside the model's report.
+  5. Dispatch `codex exec` in the foreground, `cwd` AND `-C` both set to
+     the scratch worktree for both diff gates (and to `--repo` for the
+     document gates), diff piped explicitly on stdin (never inherited).
+  6. Non-zero exit from `codex` -> loud failure. If its stderr says the
+     model is not supported for this account, exit 4 instead, and leave no
+     report behind.
+  7. The `-o` file must exist, be non-empty, and parse as JSON.
+  8. It must validate structurally against the schema.
+  9. It must validate SEMANTICALLY -- a structurally valid report can still
+     describe a review that never happened.
+  10. Per-run cost, from the run's OWN token counts rather than the
+      integer meter delta (the latter quantises to a whole point and is
+      noise for one run): `run_cost` attributes a rollout file to this
+      dispatch by cwd and start time, reports its uncached input tokens
+      and, where a fit exists, the estimated % of the window spent. Then
+      ONE fresh meter snapshot, printed as a gates-left line -- never step
+      2's snapshot path, which is now stale.
+  11. Print the report location and a one-line finding count.
+  12. Cleanup of the scratch worktree: `git worktree remove --force`,
+      ALWAYS on every catchable exit -- including on every failure path
+      from step 4 onward, not just a merge conflict at step 3. SIGTERM
+      counts: a handler turns it into `SystemExit(143)`, which kills the
+      codex child and runs the cleanup. SIGKILL skips it.
+"""
+
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+# realpath, not abspath: this runs through a ~/.local/bin symlink and
+# abspath does not resolve it -- it lands on the wrong directory and the
+# library imports and the review-brief.md read below fail at runtime while
+# passing every test that runs this script in place.
+HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, HERE)
+import codex_review_lib  # noqa: E402
+
+# The report validator is shared with the Claude-reviewer path, so both
+# gates accept and refuse exactly the same reports. A missing module is a
+# broken checkout, not something to recover from.
+BUILD_LENS = os.path.join(os.path.dirname(HERE), "build-lens")
+LIB = os.path.join(os.path.dirname(os.path.dirname(HERE)), "lib")
+sys.path.insert(0, BUILD_LENS)
+sys.path.insert(0, LIB)
+import review_lib  # noqa: E402
+import toolkit_config  # noqa: E402
+
+EXIT_CODEX_UNAVAILABLE = 4
+
+BRIEF_PATH = os.path.join(HERE, "review-brief.md")
+PLAN_BRIEF_PATH = os.path.join(HERE, "plan-brief.md")
+DESIGN_BRIEF_PATH = os.path.join(HERE, "design-brief.md")
+SCHEMA_PATH = str(review_lib.REPORT_SCHEMA_PATH)
+
+
+def _fail(message):
+    sys.stderr.write("claude-codex-review: %s\n" % message)
+
+
+def _warn(message):
+    sys.stderr.write("claude-codex-review: WARNING -- %s\n" % message)
+
+
+def _read_brief(path):
+    """The brief file's exact contents, unstripped -- or None if it is
+    missing, unreadable, or empty/whitespace-only.
+
+    Deliberately a plain `.read()` with no `.strip()` on the success path:
+    this string becomes `build_argv`'s `prompt` verbatim, and a test
+    compares the dispatched argv's last element against the SAME plain
+    `.read()` of the same file, so there must be exactly one definition of
+    "the brief file's exact contents."
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    return text
+
+
+def _git_run(cwd, args):
+    """Run `git -C cwd <args>`, returning `(stdout_bytes, None)` on success
+    or `(None, stderr_text)` on any failure, including the binary itself
+    not existing. The merge-target preparation procedure and the diff gates
+    below issue several different git subcommands (fetch, rev-parse,
+    merge-base, worktree add, merge, diff, worktree remove), so this is one
+    shape that is not tied to any single argv.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", cwd] + list(args),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except OSError as exc:
+        return None, str(exc)
+    if result.returncode != 0:
+        return None, result.stderr.decode("utf-8", "replace")
+    return result.stdout, None
+
+
+def _add_detached_worktree(repo, commit, prefix):
+    """Add a detached worktree of `commit` under a fresh temp path.
+
+    Returns `(path, None)` or `(None, error_message)`. The caller owns
+    removing `path`."""
+    worktree = tempfile.mkdtemp(prefix=prefix)
+    os.rmdir(worktree)  # `git worktree add` creates the directory itself;
+                        # it refuses a path that already exists.
+    _, err = _git_run(repo, ["worktree", "add", "--detach", worktree, commit])
+    if err is not None:
+        return None, ("git worktree add %s failed in %s:\n%s" %
+                      (worktree, repo, err))
+    return worktree, None
+
+
+def _git_text(repo, args):
+    """`_git_run`'s stdout as stripped text, or None on any failure."""
+    stdout, err = _git_run(repo, args)
+    return None if err is not None else stdout.decode("utf-8", "replace").strip()
+
+
+def _refresh_code_review_base(repo, base, head_sha):
+    """A Code Review `--base` that names a branch tracked on
+    `origin` is checked against `origin` before it is resolved. A local
+    branch the checkout has not fast-forwarded since a peer merge, under a
+    HEAD that already CONTAINS that merge, makes `diff <base>...HEAD` carry
+    the peer's changes -- a confident review of the wrong diff.
+
+    Returns an error message when local `base` is strictly BEHIND its
+    refreshed `origin` branch AND that changes the review range --
+    `merge-base(local, HEAD)` differs from `merge-base(origin, HEAD)`. A
+    branch forked before the peer merge diffs the same either way, so it
+    dispatches. A refusal, not a silent swap
+    to `origin/<ref>`: a deliberately local base (a stacked branch) must not
+    be overridden, and a warning is the scrolled-past signal this exists to
+    replace.
+
+    "Tracked on origin" is the branch's configured upstream
+    (`branch.<b>.remote = origin`) OR an existing `refs/remotes/origin/<b>`,
+    and the fetch names an explicit refspec, so a pruned, never-fetched or
+    narrow-refspec tracking ref is refreshed rather than skipped.
+    `--base origin/<ref>` is fetched the same way, so the escape hatch is
+    current too. Anything else -- a tag, a sha, a branch origin does not
+    track, a local branch ahead of or diverged from origin -- is left alone.
+    A failed fetch only warns: it is not evidence the base is stale.
+    """
+    if base.startswith("origin/"):
+        name, local = base[len("origin/"):], None
+    else:
+        local = "refs/heads/" + base
+        if _git_text(repo, ["rev-parse", "--verify", "--quiet", local]) is None:
+            return None
+        merge = _git_text(repo, ["config", "branch.%s.merge" % base])
+        if (_git_text(repo, ["config", "branch.%s.remote" % base]) == "origin"
+                and merge and merge.startswith("refs/heads/")):
+            name = merge[len("refs/heads/"):]
+        elif _git_text(repo, ["rev-parse", "--verify", "--quiet",
+                              "refs/remotes/origin/" + base]) is not None:
+            name = base
+        else:
+            return None
+    tracking = "refs/remotes/origin/" + name
+    _, err = _git_run(repo, ["fetch", "--quiet", "origin",
+                             "+refs/heads/%s:%s" % (name, tracking)])
+    if err is not None:
+        _warn("could not fetch origin/%s to check --base is current: %s" %
+              (name, err.strip().splitlines()[0] if err.strip() else "unknown"))
+        return None
+    if local is None:
+        return None
+    local_sha = _git_text(repo, ["rev-parse", local])
+    origin_sha = _git_text(repo, ["rev-parse", tracking])
+    if local_sha is None or origin_sha is None or local_sha == origin_sha:
+        return None
+    if _git_run(repo, ["merge-base", "--is-ancestor", local_sha, origin_sha])[1] is not None:
+        return None
+    if (_git_text(repo, ["merge-base", local_sha, head_sha]) ==
+            _git_text(repo, ["merge-base", origin_sha, head_sha])):
+        return None
+    return ("--base %s is behind origin/%s (%s vs %s) and HEAD already has "
+            "commits from origin/%s, so the diff would carry changes that "
+            "already landed. Fast-forward it (`git merge --ff-only origin/%s` "
+            "in the checkout that has %s out) or pass --base origin/%s. "
+            "Nothing was dispatched." %
+            (base, name, local_sha[:12], origin_sha[:12], name, name, base, name))
+
+
+def _prepare_merge_target(repo, ref, head_sha):
+    """Prepare the merge target: fetch `ref`, resolve `origin/ref` to a
+    sha, capture the branch point BEFORE merging (merging destroys it --
+    `merge-base(origin/ref, HEAD)` collapses to `origin/ref` itself once
+    `origin/ref` is merged into HEAD), build a scratch worktree at
+    `head_sha`, and merge the resolved `origin/ref` sha into it.
+
+    `head_sha` is captured once by the caller; nothing here reads `HEAD`
+    from `repo` again.
+
+    Returns `(worktree_path, branch_point, origin_sha, None)` on success.
+    The caller owns removing `worktree_path` once it is done with it -- this
+    function only ever removes a worktree it built and then had to abandon
+    because the merge conflicted; it never removes one it hands back
+    successfully.
+
+    Returns `(None, None, None, error_message)` on any failure. On a
+    conflict specifically, the merge has already been aborted and the
+    worktree already removed before this returns -- there is nothing left
+    for the caller to clean up on that path. Never review a conflicted tree,
+    and never silently fall back to reviewing the unmerged branch instead --
+    both produce a confident report about a surface that will not exist
+    after the merge.
+    """
+    _, err = _git_run(repo, ["fetch", "origin", ref])
+    if err is not None:
+        return None, None, None, ("git fetch origin %s failed in %s:\n%s" %
+                                  (ref, repo, err))
+
+    stdout, err = _git_run(
+        repo, ["rev-parse", "--verify", "origin/%s^{commit}" % ref])
+    if err is not None:
+        return None, None, None, ("git rev-parse origin/%s failed in "
+                                  "%s:\n%s" % (ref, repo, err))
+    origin_sha = stdout.decode("utf-8", "replace").strip()
+
+    # Captured BEFORE the merge -- see the docstring above. Late capture
+    # silently yields an empty upstream block, which reads exactly like "nothing landed
+    # upstream" rather than the bug it actually is.
+    stdout, err = _git_run(repo, ["merge-base", origin_sha, head_sha])
+    if err is not None:
+        return None, None, None, ("git merge-base origin/%s (%s) %s failed "
+                                  "in %s:\n%s" %
+                                  (ref, origin_sha, head_sha, repo, err))
+    branch_point = stdout.decode("utf-8", "replace").strip()
+
+    worktree, err = _add_detached_worktree(repo, head_sha,
+                                           "codex-review-merge-")
+    if err is not None:
+        return None, None, None, err
+
+    _, err = _git_run(worktree, ["merge", "--no-edit", origin_sha])
+    if err is not None:
+        _git_run(worktree, ["merge", "--abort"])
+        _git_run(repo, ["worktree", "remove", "--force", worktree])
+        return None, None, None, (
+            "merge conflict with origin/%s; resolve it before the merge "
+            "gate can review the merge result" % ref)
+
+    return worktree, branch_point, origin_sha, None
+
+
+def _exit_on_sigterm(signum, frame):
+    """SIGTERM's default action ends the process without running `finally`,
+    which would leave the scratch worktree registered on disk -- and a
+    second worktree arms `claude-worktree-guard`'s multi-worktree rules in a
+    repo that had one. Raising `SystemExit` instead unwinds through
+    `subprocess.run` (which kills the codex child) and the cleanup below."""
+    raise SystemExit(128 + signum)
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="claude-codex-review",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        # `--plan` must never be read as an abbreviation of `--plan-review`
+        # (or the reverse): the two flags select different gates.
+        allow_abbrev=False)
+    parser.add_argument("--base", required=False, default=None, metavar="REF",
+                         help="the ref to diff HEAD against, e.g. main "
+                              "(required unless --plan-review or "
+                              "--design-review is given)")
+    parser.add_argument("--repo", required=True, metavar="PATH",
+                         help="the git checkout to review")
+    parser.add_argument("-o", "--output", required=True, metavar="FILE",
+                         dest="output", help="where codex writes its report")
+    parser.add_argument("--merge-with", default=None, metavar="REF",
+                         help="review a merge of REF into --repo: fetch "
+                              "REF, merge it into a scratch worktree, and "
+                              "send BOTH the branch's own diff and what "
+                              "moved on REF since the branch diverged, "
+                              "instead of the branch diff alone.")
+    parser.add_argument("--plan-review", default=None, metavar="PLAN",
+                         help="dispatch a Plan Review: build the fixed "
+                              "plan brief from PLAN via merge_brief_lib and "
+                              "send it as stdin, instead of a diff.")
+    parser.add_argument("--design-review", nargs="+", default=None,
+                         metavar="FILE",
+                         help="dispatch a Design Review: send each FILE, "
+                              "in the order given (the design document "
+                              "first), joined under its own path header, "
+                              "instead of a diff.")
+    parser.add_argument("--plan", default=None, metavar="PLAN",
+                         help="the plan this diff was built from: sent as "
+                              "a labelled block ahead of the diff so Code "
+                              "Review can check spec drift. Code Review "
+                              "only -- Merge Review stays blinded to the "
+                              "plan.")
+    parser.add_argument("--sessions-root", default=None, metavar="PATH",
+                         help="where to read the Codex rate-limit meter "
+                              "from (default: $CODEX_HOME/sessions, else "
+                              "~/.codex/sessions). The seam that makes the "
+                              "meter-reading step testable.")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # --- Post-parse usage validation: every conflict below fails at
+    # argument parsing (exit 2) and dispatches nothing. `parser.error`
+    # writes to stderr and calls `sys.exit(2)` itself.
+    #
+    # This clause runs FIRST and deliberately tests presence (`is not
+    # None`), not truthiness: `--plan-review ""` or `--plan ""` is falsy,
+    # so a truthiness check below would treat it as "not given" and fall
+    # through into another gate's mode entirely -- `--plan-review ""
+    # --base base` would silently dispatch a Code Review, and `--plan ""`
+    # would silently become a plan-less Code Review. An empty path is a
+    # usage error, not an absent flag.
+    if args.plan_review == "" or args.plan == "" or (
+            args.design_review is not None and "" in args.design_review):
+        parser.error("empty path given to --plan-review, --plan, or "
+                     "--design-review -- an empty string is not a file "
+                     "and must not fall through to another gate")
+    # Same trap for `--merge-with ""`: gate selection reads it by presence
+    # (Merge Review, the stronger model) while merge preparation reads it by
+    # truthiness (no merge), so it would run a plain Code diff labelled as a
+    # Merge Review on the wrong model.
+    if args.merge_with == "":
+        parser.error("empty ref given to --merge-with -- an unset ref "
+                     "must not turn a Code Review into a mislabelled "
+                     "Merge Review")
+    if args.plan_review is not None and args.design_review is not None:
+        parser.error("--plan-review and --design-review cannot both be "
+                     "given -- a document gate reviews one document at a "
+                     "time")
+    if (args.plan_review is not None or args.design_review is not None) and \
+            args.base is not None:
+        parser.error("--plan-review/--design-review take no --base -- a "
+                     "document gate builds its own stdin, it does not diff "
+                     "a ref")
+    if (args.plan_review is not None or args.design_review is not None) and \
+            args.merge_with is not None:
+        parser.error("--plan-review/--design-review take no --merge-with "
+                     "-- a document gate builds its own stdin, it does "
+                     "not diff a ref")
+    if args.plan_review is None and args.design_review is None and args.base is None:
+        parser.error("--base is required unless --plan-review or "
+                     "--design-review is given")
+    if args.merge_with is not None and args.merge_with.startswith("origin/"):
+        parser.error("--merge-with takes a branch name, not a remote ref -- it fetches from origin itself; pass %r, not %r"
+                     % (args.merge_with[len("origin/"):], args.merge_with))
+    if args.plan is not None and args.merge_with is not None:
+        parser.error("--plan and --merge-with cannot both be given -- "
+                     "Merge Review is blinded to the plan, matching "
+                     "blinded-review.js's rule that only gate: \"code\" "
+                     "takes a plan")
+    if args.plan is not None and (args.plan_review is not None or
+                                   args.design_review is not None):
+        parser.error("--plan takes no --plan-review or --design-review -- "
+                     "a document gate builds its own stdin, it does not "
+                     "diff a ref")
+    # Last, so every conflict above is reported as itself first. The gate's
+    # contract is the design AND the requirements it answers (the economical
+    # path always joins two files); a lone design reviews without the
+    # contract its judgements are made against, and nothing would say so.
+    if args.design_review is not None and len(args.design_review) < 2:
+        parser.error("--design-review needs the design document AND the "
+                     "requirements it answers -- at least two files, the "
+                     "design first")
+
+    # Resolved once, used everywhere below (id capture, worktree prep, the
+    # AGENTS.md check, and -- for a document gate -- the dispatch's -C and
+    # cwd) so everything agrees on the same directory regardless of whether
+    # --repo was given relative to the caller's own cwd. This is always the
+    # ORIGINAL --repo: preflight's AGENTS.md check and the id-capture and
+    # worktree-prep `git -C <repo> ...` commands name `--repo` specifically,
+    # never the derived scratch worktree.
+    target = os.path.realpath(args.repo)
+    # Resolved to an absolute path up front: a document gate sets the child's
+    # cwd to `target`, so a relative -o given by the caller would otherwise
+    # be interpreted twice -- once (correctly) by codex relative to its own
+    # cwd, and once (wrongly) by this process relative to ITS OWN cwd when
+    # reading the report back in step 7.
+    output_path = os.path.realpath(args.output)
+
+    # --- Step 1: preflight -------------------------------------------------
+    reason = codex_review_lib.unavailable_reason()
+    if reason is not None:
+        _fail("Codex is unavailable: %s. Nothing was reviewed. Install and "
+              "sign in to Codex, or run this gate with the Claude reviewer "
+              "(see tools/build-lens/code-review.md, \"Exit 4\")." % reason)
+        return EXIT_CODEX_UNAVAILABLE
+
+    if args.plan_review is not None:
+        brief_path = PLAN_BRIEF_PATH
+        gate = "plan"
+    elif args.design_review is not None:
+        brief_path = DESIGN_BRIEF_PATH
+        gate = "design"
+    else:
+        brief_path = BRIEF_PATH
+        # `--merge-with` is the only difference between Code and Merge
+        # Review; `--plan` alongside `--base` is still a Code gate.
+        gate = "merge" if args.merge_with is not None else "code"
+    brief = _read_brief(brief_path)
+    if brief is None:
+        _fail("%s is missing, empty, or whitespace-only: %s "
+              "-- dispatching with no brief is a review with no "
+              "instructions, and it returns a confident nothing." %
+              (os.path.basename(brief_path), brief_path))
+        return 1
+
+    # Hard refusal, not a warning: AGENTS.md is how the repo's house rules
+    # reach Codex, and a review run without them returns a confident report
+    # that reads exactly like one that had them. A warning on stderr would be
+    # that silent case, so there is no override flag either.
+    agents_path = os.path.join(target, "AGENTS.md")
+    if _read_brief(agents_path) is None:
+        _fail("no AGENTS.md (or an empty one) at %s -- a Codex review "
+              "without this repo's house rules is refused. Author one "
+              "first." % target)
+        return 1
+
+    # Which model this gate runs on: the pin, unless the toolkit config
+    # overrides it. A config that cannot be read or holds a bad value is
+    # refused here, before anything is paid for -- guessing would dispatch
+    # on a model the user did not choose.
+    config, config_error = toolkit_config.load_status()
+    if config_error is not None:
+        _fail("cannot read the toolkit config, so codex_review.models cannot "
+              "be resolved: %s" % config_error)
+        return 2
+    codex_review_config = config.get("codex_review")
+    if codex_review_config is None:
+        models = None
+    elif isinstance(codex_review_config, dict):
+        models = codex_review_config.get("models")
+    else:
+        _fail("codex_review must be an object")
+        return 2
+    try:
+        gate_model, model_source = codex_review_lib.resolve_gate_model(
+            gate, models)
+    except codex_review_lib.ConfigError as exc:
+        _fail(str(exc))
+        return 2
+
+    # --- Step 2: headroom (the ONLY non-fatal step) -------------------------
+    # `snapshot_meter` is documented to never raise, but this step's whole
+    # contract is "unreadable -> say so and continue, exit path unaffected"
+    # -- that guarantee belongs to THIS wrapper, not just to trusting the
+    # library's promise. Wrapped defensively so a future change to the
+    # library (or a corrupt log it hasn't seen before) can never turn the
+    # one non-fatal step into a fatal one.
+    sessions_root = (os.path.expanduser(args.sessions_root)
+                      if args.sessions_root
+                      else codex_review_lib.default_sessions_root())
+    try:
+        meter_path, meter_block = codex_review_lib.snapshot_meter(sessions_root)
+    except BaseException:
+        meter_path, meter_block = None, None
+    # Off a TTY stdout is block-buffered, and the headroom line is only
+    # useful BEFORE the spend. This flush=True is belt-and-braces, not the
+    # sole guarantee: the "codex gate:" print in step 5 flushes right before
+    # dispatch and carries anything still buffered with it. The SIGKILL tests
+    # go red only when EVERY pre-dispatch flush is gone, so removing one
+    # alone is not caught.
+    print(codex_review_lib.format_headroom(meter_block), flush=True)
+    # Own try/except: a gates-left read must never be able to turn the one
+    # non-fatal step into a fatal one, independently of format_headroom's
+    # own guarantee above.
+    try:
+        gates_left_line = codex_review_lib.format_gates_left(
+            codex_review_lib.gates_left(meter_block, time.time(), gate_model),
+            codex_review_lib.mtime_or_none(meter_path))
+        if gates_left_line:
+            print(gates_left_line, flush=True)
+    except BaseException:
+        pass
+
+    # --- Step 3: capture ids, warn on a dirty tree, build the scratch tree --
+    # `dispatch_target` is what steps 4-5 diff and dispatch against: the
+    # original --repo for a document gate, or the scratch worktree for both
+    # diff gates (a detached snapshot of HEAD for Code Review, the merge
+    # result for Merge Review). `scratch_worktree` stays None unless that
+    # worktree was actually built, and is what the `finally` below removes
+    # -- ALWAYS, on every failure path from here on, not just a conflict
+    # (which cleans up itself, inside `_prepare_merge_target`, before ever
+    # setting this).
+    #
+    # Every input to a diff gate is resolved to an immutable sha ONCE, here,
+    # before anything is built; the worktree, the merge, both diffs and the
+    # snapshot line all consume these variables. Nothing after this reads
+    # HEAD, --base or origin/<ref> from --repo again.
+    scratch_worktree = None
+    dispatch_target = target
+    is_diff_gate = args.plan_review is None and args.design_review is None
+    head_sha = base_sha = merge_base_sha = origin_sha = branch_point = None
+    if is_diff_gate:
+        # Installed before any worktree exists, so a cancelled review can
+        # never leave one behind.
+        signal.signal(signal.SIGTERM, _exit_on_sigterm)
+        # `--untracked-files=all` so the count does not depend on the user's
+        # status.showUntrackedFiles config, and untracked directories are
+        # counted per file.
+        status_out, status_err = _git_run(
+            target, ["status", "--porcelain", "--untracked-files=all"])
+        if status_err is not None:
+            _warn("could not check --repo for uncommitted changes: %s" %
+                  status_err)
+        else:
+            dirty = len(status_out.decode("utf-8", "replace").splitlines())
+            if dirty > 0:
+                _warn("%d uncommitted path(s) in %s are NOT in this review "
+                      "-- it reviews committed history only" %
+                      (dirty, target))
+
+        stdout, err = _git_run(target,
+                               ["rev-parse", "--verify", "HEAD^{commit}"])
+        if err is not None:
+            _fail("git rev-parse HEAD failed in %s:\n%s" % (target, err))
+            return 1
+        head_sha = stdout.decode("utf-8", "replace").strip()
+
+        if args.merge_with:
+            (worktree, branch_point, origin_sha,
+             err) = _prepare_merge_target(target, args.merge_with, head_sha)
+            if err is not None:
+                _fail(err)
+                return 1
+        else:
+            stale = _refresh_code_review_base(target, args.base, head_sha)
+            if stale is not None:
+                _fail(stale)
+                return 1
+            stdout, err = _git_run(
+                target, ["rev-parse", "--verify", "%s^{commit}" % args.base])
+            if err is not None:
+                _fail("git rev-parse %s failed in %s:\n%s" %
+                      (args.base, target, err))
+                return 1
+            base_sha = stdout.decode("utf-8", "replace").strip()
+            stdout, err = _git_run(target, ["merge-base", base_sha, head_sha])
+            if err is not None:
+                _fail("git merge-base %s (%s) %s failed in %s:\n%s" %
+                      (args.base, base_sha, head_sha, target, err))
+                return 1
+            merge_base_sha = stdout.decode("utf-8", "replace").strip()
+            worktree, err = _add_detached_worktree(
+                target, head_sha, "codex-review-snapshot-")
+            if err is not None:
+                _fail(err)
+                return 1
+        scratch_worktree = worktree
+        dispatch_target = worktree
+
+    try:
+        # Codex loads AGENTS.md from its -C directory, which on both diff
+        # gates is the scratch worktree, not --repo. An uncommitted
+        # AGENTS.md is not carried into it and a merge can remove one, so
+        # preflight's check on --repo alone does not cover this dispatch.
+        # Inside the try so the finally still removes the worktree.
+        if scratch_worktree is not None and _read_brief(
+                os.path.join(dispatch_target, "AGENTS.md")) is None:
+            _fail("no AGENTS.md (or an empty one) in the %s at %s -- "
+                  "--repo has one, but it is not committed at HEAD (or the "
+                  "merge removed it). Refused." %
+                  ("merge result" if args.merge_with
+                   else "reviewed snapshot", dispatch_target))
+            return 1
+
+        # --- Step 4: generate the diff(s), OR build a document-gate stdin ---
+        if args.plan_review is not None or args.design_review is not None:
+            # Lazy import, inside this branch only: only the document gates
+            # need `merge_brief_lib`, so a diff gate does not depend on it.
+            merge_brief_dir = os.path.join(os.path.dirname(HERE), "merge-brief")
+            sys.path.insert(0, merge_brief_dir)
+            try:
+                import merge_brief_lib
+            except ImportError as exc:
+                _fail("could not import merge_brief_lib from %s: %s" %
+                      (merge_brief_dir, exc))
+                return 1
+
+            try:
+                if args.plan_review is not None:
+                    text = merge_brief_lib.build_plan_brief(
+                        target, os.path.realpath(args.plan_review))
+                else:
+                    parts = []
+                    for doc_path in args.design_review:
+                        try:
+                            with open(doc_path, "r", encoding="utf-8") as handle:
+                                content = handle.read()
+                        except OSError as exc:
+                            _fail("could not read --design-review file %r: "
+                                  "%s" % (doc_path, exc))
+                            return 1
+                        if not content.strip():
+                            _fail("--design-review file %r is empty or "
+                                  "whitespace-only" % doc_path)
+                            return 1
+                        parts.append(
+                            "=== %s ===\n%s%s" %
+                            (os.path.realpath(doc_path), content,
+                             "" if content.endswith("\n") else "\n"))
+                    text = "".join(parts)
+
+                warnings = merge_brief_lib.scan_for_leaked_provenance(text, "plan")
+                for warning in warnings:
+                    _warn(warning)
+            except merge_brief_lib.BriefError as exc:
+                _fail(str(exc))
+                return 1
+
+            stdin_bytes = text.encode("utf-8")
+        elif args.merge_with:
+            branch_bytes, err = _git_run(
+                dispatch_target,
+                ["diff", "%s...%s" % (origin_sha, head_sha)])
+            if err is not None:
+                _fail("git diff origin/%s (%s)...%s failed in %s:\n%s" %
+                      (args.merge_with, origin_sha, head_sha,
+                       dispatch_target, err))
+                return 1
+            if not branch_bytes:
+                _fail("the diff between origin/%s (%s) and HEAD (%s) in %s "
+                      "is empty -- refusing to dispatch a reviewer with "
+                      "nothing to read. That would return a clean-looking "
+                      "APPROVE with zero findings, exit 0, schema-valid, "
+                      "semantically valid -- byte-identical to a real "
+                      "clean gate." % (args.merge_with, origin_sha,
+                                       head_sha, dispatch_target))
+                return 1
+
+            upstream_bytes, err = _git_run(
+                dispatch_target, ["diff", branch_point, origin_sha])
+            if err is not None:
+                _fail("git diff %s origin/%s (%s) failed in %s:\n%s" %
+                      (branch_point, args.merge_with, origin_sha,
+                       dispatch_target, err))
+                return 1
+            # An EMPTY upstream block is legitimate, not an error -- it
+            # means nothing landed on <ref> since this branch diverged.
+            # Deliberately NOT the same rule as the empty-BRANCH-diff check
+            # above: an empty branch diff is a broken gate, an empty
+            # upstream diff is a quiet week, and reusing that rule here
+            # would fail a legitimate run.
+            if not upstream_bytes:
+                print("nothing landed on %s since this branch diverged; "
+                      "this merge review is equivalent to the code review"
+                      % args.merge_with, flush=True)
+
+            stdin_bytes = (b"=== YOUR BRANCH ===\n" + branch_bytes +
+                           b"=== MOVED UNDER YOU SINCE ===\n" + upstream_bytes)
+        else:
+            # Three-dot, not two-dot: `A...B` is "changes on B since it
+            # diverged from A", the branch-review semantics. Two-dot would
+            # silently include everything that landed on A since the branch
+            # started, inflating the review surface with other people's
+            # work.
+            diff_bytes, diff_err = _git_run(
+                dispatch_target, ["diff", "%s...%s" % (base_sha, head_sha)])
+            if diff_err is not None:
+                _fail("git diff %s (%s)...%s failed in %s:\n%s" %
+                      (args.base, base_sha, head_sha, dispatch_target,
+                       diff_err))
+                return 1
+            if not diff_bytes:
+                _fail("the diff between %s (%s) and HEAD (%s) in %s is "
+                      "empty -- refusing to dispatch a reviewer with "
+                      "nothing to read. That would return a clean-looking "
+                      "APPROVE with zero findings, exit 0, schema-valid, "
+                      "semantically valid -- byte-identical to a real "
+                      "clean gate." % (args.base, base_sha, head_sha,
+                                       dispatch_target))
+                return 1
+            if args.plan is not None:
+                try:
+                    with open(args.plan, "rb") as handle:
+                        plan_bytes = handle.read()
+                except OSError as exc:
+                    _fail("could not read --plan file %r: %s" %
+                          (args.plan, exc))
+                    return 1
+                if not plan_bytes.strip():
+                    _fail("--plan file %r is empty or whitespace-only" %
+                          args.plan)
+                    return 1
+                stdin_bytes = (b"=== THE PLAN ===\n" + plan_bytes +
+                               (b"" if plan_bytes.endswith(b"\n") else b"\n") +
+                               b"=== THE DIFF ===\n" + diff_bytes)
+            else:
+                # The plan is the contract Code Review checks spec drift
+                # against -- without it, that lens has nothing to compare
+                # the diff to. Say so on stdout rather than staying quiet
+                # about a check that silently did not run.
+                print("no --plan given: this Code Review has no plan to "
+                      "check spec drift against", flush=True)
+                stdin_bytes = diff_bytes
+
+        # The record of what was reviewed, outside the model's report. Both
+        # diff gates; every value but the tree is a sha captured in step 3.
+        if is_diff_gate:
+            tree_out, tree_err = _git_run(
+                dispatch_target, ["rev-parse", "HEAD^{tree}"])
+            if tree_err is not None:
+                _fail("git rev-parse HEAD^{tree} failed in %s:\n%s" %
+                      (dispatch_target, tree_err))
+                return 1
+            if args.merge_with:
+                base_label = "origin/%s" % args.merge_with
+                base_commit, merge_base_commit = origin_sha, branch_point
+            else:
+                base_label = args.base
+                base_commit, merge_base_commit = base_sha, merge_base_sha
+            print("reviewed snapshot: head=%s tree=%s base=%s@%s "
+                  "merge-base=%s" %
+                  (head_sha, tree_out.decode("utf-8", "replace").strip(),
+                   base_label, base_commit, merge_base_commit), flush=True)
+
+        # --- Step 5: dispatch --------------------------------------------------
+        # A report already sitting at `output_path` from an earlier run
+        # would make step 7's `os.path.isfile(output_path)` true even if
+        # THIS dispatch writes nothing at all -- codex exiting 0 says
+        # nothing about whether it produced anything; only a fresh file
+        # created after this point does. Remove whatever is there right
+        # before dispatch so "the file exists afterwards" can only mean
+        # "this run wrote it." A gate that cannot guarantee a fresh report
+        # must refuse rather than silently validate a stale one.
+        if os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except OSError as exc:
+                _fail("could not remove the stale report already at %s "
+                      "before dispatch: %s -- refusing to run a review "
+                      "that cannot guarantee its report is fresh" %
+                      (output_path, exc))
+                return 1
+
+        argv_codex = codex_review_lib.build_argv(
+            dispatch_target, SCHEMA_PATH, output_path, brief, gate_model,
+            skip_git_check=False)
+        # Names the reviewer this gate got and where the choice came from, so
+        # a wrong model shows in the run's own output rather than only in the
+        # session log.
+        print("codex gate: %s review on %s (%s)" %
+              (gate, gate_model, model_source), flush=True)
+
+        diff_fd, diff_path = tempfile.mkstemp(prefix="codex-review-diff-",
+                                               suffix=".diff")
+        try:
+            with os.fdopen(diff_fd, "wb") as handle:
+                handle.write(stdin_bytes)
+            # stdin is supplied explicitly from this file handle, never
+            # inherited from our own process -- codex reads stdin even when
+            # a prompt positional is also given, and an inherited
+            # interactive stdin would hang the one invocation that matters.
+            with open(diff_path, "rb") as stdin_handle:
+                # Captured immediately before the dispatch, not earlier --
+                # this is the "since" boundary `run_cost` attributes a
+                # rollout file against, and anything captured earlier (e.g.
+                # before diff generation) would let a stale file from the
+                # same second masquerade as this run's.
+                dispatch_started = time.time()
+                result = subprocess.run(
+                    argv_codex, cwd=dispatch_target, stdin=stdin_handle,
+                    stderr=subprocess.PIPE)
+        finally:
+            os.unlink(diff_path)
+
+        # --- Step 6: check the dispatch -----------------------------------------
+        if result.returncode != 0:
+            stderr_text = (result.stderr.decode("utf-8", "replace")
+                            if result.stderr else "")
+            if codex_review_lib.model_rejected(stderr_text):
+                # No report may outlive this exit: nothing was reviewed.
+                try:
+                    os.remove(output_path)
+                except OSError:
+                    pass
+                _fail("Codex is unavailable: this account does not serve %s, "
+                      "the model the %s gate uses (%s). Nothing was "
+                      "reviewed. Set codex_review.models.%s to a model it "
+                      "serves, or run this gate with the Claude reviewer "
+                      "(see tools/build-lens/code-review.md, \"Exit 4\")." %
+                      (gate_model, gate, model_source, gate))
+                return EXIT_CODEX_UNAVAILABLE
+            _fail("codex exited %d:\n%s" % (result.returncode, stderr_text))
+            return 1
+
+        # --- Step 7: the report exists and parses -------------------------------
+        if not os.path.isfile(output_path):
+            _fail("codex exited 0 but wrote no report at %s" % output_path)
+            return 1
+        try:
+            with open(output_path, "r", encoding="utf-8") as handle:
+                report_text = handle.read()
+        except OSError as exc:
+            _fail("could not read the report at %s: %s" % (output_path, exc))
+            return 1
+        if not report_text.strip():
+            _fail("the report at %s is empty" % output_path)
+            return 1
+        try:
+            report = json.loads(report_text)
+        except ValueError as exc:
+            _fail("the report at %s is not valid JSON: %s" %
+                  (output_path, exc))
+            return 1
+
+        # --- Step 8: structural validation ---------------------------------------
+        with open(SCHEMA_PATH, "r", encoding="utf-8") as handle:
+            schema = json.load(handle)
+        violations = review_lib.validate_against_schema(schema, report)
+        if violations:
+            _fail("the report at %s failed schema validation:\n%s" %
+                  (output_path, "\n".join(" - %s" % v for v in violations)))
+            return 1
+
+        # --- Step 9: semantic validation ------------------------------------------
+        reason = review_lib.semantic_violation(report)
+        if reason is not None:
+            _fail("the report at %s is structurally valid but is not a "
+                  "review this gate can accept: %s" % (output_path, reason))
+            return 1
+        if isinstance(report.get("executed"), dict) and \
+                report["executed"].get("ran") is False:
+            print("codex did not execute anything this run: %s" %
+                  report["executed"].get("why_not"))
+
+        # --- Step 10: per-run cost (token-based) and the budget again ------------
+        # Whole step wrapped so it can never change the exit code -- this
+        # is a reporting step, not a correctness gate, and nothing past
+        # here should be able to turn an otherwise-successful review into
+        # a failure.
+        try:
+            cost = codex_review_lib.run_cost(
+                sessions_root, dispatch_target, dispatch_started)
+            if cost is None:
+                print("codex run log not found (or not attributable); "
+                      "per-run cost not measured")
+            elif cost["points"] is None:
+                print("codex run used %s uncached input tokens on %s; no "
+                      "fitted rate for plan %s / that model, so no cost "
+                      "estimate" % ("{:,}".format(cost["uncached_input"]),
+                                     cost["model"], cost["plan_type"]))
+            else:
+                print("codex run cost (estimate): ≈%.1f%% of the "
+                      "window (%s uncached input tokens on %s, rate "
+                      "from the calibration table)" %
+                      (cost["points"], "{:,}".format(cost["uncached_input"]),
+                       cost["model"]))
+
+            fresh_path, fresh_block = codex_review_lib.snapshot_meter(sessions_root)
+            fresh_gates_left_line = codex_review_lib.format_gates_left(
+                codex_review_lib.gates_left(fresh_block, time.time(),
+                                             gate_model),
+                codex_review_lib.mtime_or_none(fresh_path))
+            if fresh_gates_left_line:
+                print(fresh_gates_left_line)
+        except BaseException:
+            pass
+
+        # --- Step 11: report location and finding count ---------------------------
+        findings = report.get("findings") or []
+        print("review report: %s (%d finding%s)" %
+              (output_path, len(findings), "" if len(findings) == 1 else "s"))
+
+        return 0
+    finally:
+        # --- Step 12: cleanup, ALWAYS, including on every failure path above
+        # from step 4 onward -- a merge conflict at step 3 has already
+        # cleaned up before ever setting `scratch_worktree`, so this only
+        # fires for a worktree that was actually built. SIGKILL skips it.
+        if scratch_worktree is not None:
+            _git_run(target, ["worktree", "remove", "--force", scratch_worktree])
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

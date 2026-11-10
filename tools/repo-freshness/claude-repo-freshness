@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""SessionStart hook: report a stale toolkit, and — if opted in — pull it current.
+
+Two behaviours, one process, on purpose: `freshness_lib` answers "is this repo
+behind" without ever touching the network on its hot path; `sync_lib` is the
+half that can. Folding them into one hook is what makes the report TRUE — when
+the sync phase has just fast-forwarded a repo in this same process, the "N
+commits behind" that follows is read from the POST-pull state, not the stale
+one a second, uncoordinated hook would have seen.
+
+Reporting stays ON by default — the same `repo_freshness.enabled` switch this
+hook has always had. PULLING is a separate switch, OFF by default, and
+requires a literal `true` under `repo_freshness.sync.enabled`: a hook that
+rewrites working trees unattended must never arrive by upgrade. With no
+config at all, this hook behaves exactly as it did before it grew a sync
+phase — it reports, it never pulls.
+
+Best-effort by construction: every failure path prints nothing extra and
+exits 0, because a broken hook must never cost someone a prompt.
+
+## One shared deadline, not two
+
+Both halves of this hook -- the sync phase and the report phase -- run inside
+one SessionStart hook timeout, and only the sync phase (`sync_lib.run()`) used
+to carry a budget of its own. The report loop that follows it made up to four
+blocking git calls per watched repo with nothing bounding the whole phase, so
+a slow filesystem or a long watch list could still run the hook past its
+declared timeout -- a hook the harness kills mid-loop returns no notice at
+all, for a repo that may have been the one thing worth reporting.
+
+`REPORT_DEADLINE_SECONDS` fixes that with an absolute deadline, computed once
+from `freshness_lib._now()` at the very top of `main()` -- BEFORE the sync
+phase runs, not after. Measuring from hook start rather than from wherever
+sync happened to finish is what keeps the two phases sharing one clock: a
+sync phase that used most of its own budget must shrink the report phase's
+remaining time, never reset it.
+"""
+
+import json
+import os
+import sys
+
+_CLONE_HEADER = "=== NEWLY CLONED ==="
+
+# The REPORT phase's whole-loop budget, shared with the SYNC phase's own
+# budget against one declared hook timeout rather than a second, independent
+# one. See the module docstring, "One shared deadline, not two", for why it
+# is measured from hook start.
+#
+#   sync_end   <= sync_lib.NET_BUDGET 2 + sync_tail 7 + gh_repo_list 4 = 13
+#   report_end <= max(sync_end 13, REPORT_DEADLINE_SECONDS 13)
+#                 + 4 x freshness_lib.GIT_TIMEOUT_SECONDS 2            = 21
+#                 <= declared 25 - MARGIN 2 = 23        (headroom 2)
+REPORT_DEADLINE_SECONDS = 13
+
+
+def main():
+    tools_dir = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, tools_dir)
+    import freshness_lib as freshness
+    import sync_lib
+
+    # The payload is read and discarded: staleness is a property of the repo,
+    # not of the session. Reading it anyway keeps stdin drained, which matters
+    # when several hooks are wired to the same event.
+    try:
+        json.loads(sys.stdin.buffer.read())
+    except Exception:
+        pass
+
+    if not freshness.is_enabled():
+        return
+
+    notice_owner = "the human"
+    try:
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(tools_dir)), "lib"))
+        import toolkit_config
+        notice_owner = toolkit_config.owner_name()
+    except Exception:
+        pass
+
+    # Computed ONCE, here, BEFORE the sync phase runs -- see "One shared
+    # deadline, not two" above. Reading `freshness._now()` after the sync
+    # phase instead would let a slow sync phase silently hand the report loop
+    # a fresh, full budget rather than whatever was left of the shared one.
+    report_deadline_at = freshness._now() + REPORT_DEADLINE_SECONDS
+
+    # --- sync phase: OFF by default, throttled, best-effort -------------------
+    #
+    # `sync_result` stays `None` when the sync phase does not even ATTEMPT to
+    # run this session. `render()` treats `None` and an empty `blocked` list
+    # as two different facts — "did not run" versus "ran and blocked nothing"
+    # — and that distinction has to survive all the way out to `render()`
+    # below or it is lost.
+    sync_result = None
+    if sync_lib.sync_enabled() and sync_lib.throttle_due():
+        # Recorded BEFORE the phase runs, not in a `finally` afterwards.
+        # `throttle_due()` answers "did we attempt recently", and a hook the
+        # harness kills mid-pull is still an attempt — `finally` does NOT
+        # run on SIGTERM/SIGKILL, so recording only there meant a killed
+        # hook never wrote the stamp at all: `throttle_due()` stayed True
+        # forever, and the sync phase re-ran in full, got killed again, and
+        # printed nothing, on every single session start.
+        sync_lib.record_run()
+        try:
+            sync_result = sync_lib.run(sync_lib.sync_root(), sync_lib.gh_owner())
+        except Exception:
+            sync_result = None
+
+    # Fetch spawning happens AFTER the sync phase and BEFORE the measurement
+    # loop -- both edges matter. AFTER the sync phase: watched repos
+    # are typically also sync pull candidates, so spawning
+    # first would put a detached `git fetch` against the same repo as a
+    # concurrent `git pull --ff-only`. BEFORE the measurement loop: a fetch
+    # spawned here refreshes refs for the NEXT session regardless of whether
+    # this one's report loop ever reaches that repo, which is the whole fix
+    # for a killed hook leaving every later repo un-fetched, forever measuring
+    # from the same stale refs.
+    repos = freshness.watched_repos()
+    freshness.spawn_due_fetches(repos)
+
+    # The pin check runs BEFORE the measurement loop, inside the same shared
+    # deadline: after expiry at most one git call (the pin's or a repo's) is
+    # still in flight, and `measure_repos` starts no repo, so the whole-hook
+    # worst case is unchanged.
+    deadline = freshness.Deadline(report_deadline_at)
+    try:
+        toolkit = freshness.repo_root()
+        import install_record
+        pin = (freshness.pin_notice(toolkit, install_record.record_path(
+            os.path.expanduser("~")), deadline) if toolkit else None)
+    except Exception:
+        pin = None
+    reports, unmeasured = freshness.measure_repos(repos, deadline)
+
+    pieces = []
+
+    # A clone is announced. A new directory appearing in someone's workspace
+    # unannounced is exactly the surprise this tool exists to avoid — unlike
+    # a successful PULL, which stays silent: session start should be quiet
+    # when nothing needs a human, and a fast-forward is exactly that.
+    if sync_result and sync_result.cloned:
+        names = ", ".join(sorted(
+            os.path.basename(path.rstrip("/")) for path in sync_result.cloned))
+        pieces.append("{0}\n\n{1} — just cloned into the workspace by the "
+                      "sync phase.".format(_CLONE_HEADER, names))
+
+    notice = freshness.render(
+        reports, notice_owner,
+        blocked=(sync_result.blocked if sync_result is not None else None),
+        failed=(sync_result.failed if sync_result is not None else None),
+        unchecked=(sync_result.unchecked if sync_result is not None else 0),
+        cloned_unchecked=(
+            sync_result.cloned_unchecked if sync_result is not None else 0),
+        unmeasured=unmeasured)
+    if notice:
+        pieces.append(notice)
+    if pin:
+        pieces.append(pin)
+
+    if pieces:
+        # stdout is a pipe here, and a pipe is block-buffered -- anything
+        # still sitting in the buffer when this process dies (killed on the
+        # hook's own timeout, or anything else) is lost. Flushed immediately
+        # rather than left to interpreter shutdown.
+        sys.stdout.write("\n\n".join(pieces))
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

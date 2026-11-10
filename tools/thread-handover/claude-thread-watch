@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit hook: watch context growth, nudge at a natural boundary.
+
+Prints nothing until context crosses the arming threshold. Once armed, it
+tells Claude to watch for a boundary rather than to interrupt; at the urgent
+threshold the boundary gate is dropped.
+
+Best-effort by construction: every failure path prints nothing and exits 0,
+because a broken watcher must never block a prompt.
+"""
+
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+SIGNAL_LABELS = {
+    "pr_merged": "a PR was merged or `git tidy` ran",
+    "idle_gap": "more than 30 minutes passed between prompts",
+    "phase_done": "a plan task or todo list was completed",
+}
+
+
+def render(stage, context, window, signals):
+    percent = (context * 100.0 / window) if window else 0.0
+    header = ("[thread-handover] context {:,} / {:,} tokens ({:.0f}% of window)"
+              .format(context, window, percent))
+
+    if stage == watch_lib.URGENT:
+        return "\n".join([
+            header,
+            "URGENT — approaching the auto-compact threshold. Finish the step in",
+            "progress, then invoke /handover to write the handover document and",
+            "recommend that {} start a new thread. Do not begin new work."
+            .format(_config.owner_name()),
+        ])
+
+    lines = [header,
+             "This thread is long enough to be worth cutting, but DO NOT interrupt",
+             "mid-task — a mid-task handover loses the most."]
+    if signals:
+        lines.append("A natural boundary was detected:")
+        for signal in signals:
+            lines.append("  - " + SIGNAL_LABELS.get(signal, signal))
+        lines.append("Propose a handover now: offer to run /handover, and say why.")
+    else:
+        lines.append("At the next natural boundary — a merged PR, a finished phase,")
+        lines.append("a change of subject — propose a handover via /handover.")
+    lines.append("If {} declines, record a snooze so this stays quiet."
+                 .format(_config.owner_name()))
+    return "\n".join(lines)
+
+
+# Machine-local settings live outside the repo. See lib/toolkit_config.py.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+    "lib"))
+import toolkit_config as _config
+
+# The tree handovers are scoped to. Falls back to $HOME when unconfigured, which
+# is wide but harmless: it only affects which pending handover a session is
+# pointed at, never what gets deleted.
+PROJECT_DIR = _config.workspace_root() or os.path.expanduser("~")
+
+
+def claim_attached_handover(payload, session_id, transcript):
+    """Consume the pending handover once the user actually attaches it.
+
+    This is the whole point of the explicit-claim model: SessionStart only
+    announces a path, so nothing is marked consumed until a real prompt names
+    the document. That keeps concurrent sessions from racing for a handover
+    none of them asked for.
+
+    Checks EVERY pending handover, not just the newest. With several sessions
+    open under one workspace root there is routinely more than one outstanding,
+    and the user attaches the one whose work they are continuing — which is
+    often not the most recent. Matching only the newest made those attachments
+    invisible: nothing was claimed, so nothing was ever swept.
+
+    Claims at most one document per prompt. Attaching handover A is not a
+    statement about handover B, so B stays pending for whichever session
+    actually picks it up.
+
+    Runs before every context check below because the attachment lands on turn
+    1, when context is still unmeasurable and the nudge path returns early.
+    Wrapped whole: a failure to claim must never cost the user their prompt.
+    """
+    try:
+        import index_lib
+        pending = index_lib.find_all_pending(
+            payload.get("cwd") or PROJECT_DIR, session_id)
+        if not pending:
+            return
+        entries = list(watch_lib.iter_entries(transcript))
+        for candidate in pending:
+            if watch_lib.mentions_path(candidate, entries):
+                index_lib.claim(candidate, session_id)
+                return
+    except Exception:
+        pass
+
+
+def main():
+    global watch_lib
+
+    try:
+        if _config.get("thread_handover", "enabled", default=True) is False:
+            return
+    except Exception:
+        pass
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import watch_lib
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+
+    session_id = payload.get("session_id") or "unknown"
+    transcript = payload.get("transcript_path")
+    if not transcript:
+        return
+
+    claim_attached_handover(payload, session_id, transcript)
+
+    context, model = watch_lib.read_context(transcript)
+    if context <= 0:
+        return
+
+    window = watch_lib.window_for(model)
+    state = watch_lib.load_state(session_id)
+    state["turn"] = (state.get("turn") or 0) + 1
+
+    stage = watch_lib.stage_for(context, window, state.get("snoozed_at"))
+
+    signals = []
+    outstanding = None
+    if stage != watch_lib.QUIET:
+        if state.get("armed_at") is None:
+            # The hook payload carries no timestamp, so stamp arming ourselves.
+            # Timezone-aware, to compare against the transcript's ...Z stamps.
+            state["armed_at"] = datetime.now(timezone.utc).isoformat()
+        signals = watch_lib.boundaries_for(transcript, watch_lib.scan_floor(state))
+        # Computed only when not QUIET -- a quiet session must not pay for
+        # the git calls it will not use.
+        outstanding = watch_lib.outstanding_work(
+            transcript, payload.get("cwd"), session_id)
+
+    if watch_lib.should_inject(state, stage, signals, outstanding):
+        sys.stdout.write(render(stage, context, window, signals) + "\n")
+        state["last_inject_turn"] = state["turn"]
+        state["last_inject_at"] = datetime.now(timezone.utc).isoformat()
+
+    state["stage"] = stage
+    state["signals"] = signals
+    watch_lib.save_state(session_id, state)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

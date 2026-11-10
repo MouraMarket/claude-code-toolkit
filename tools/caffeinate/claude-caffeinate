@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""Keep the Mac awake while a Claude Code session is alive and working.
+
+TWO SETS OF MODES, and the split matters:
+
+    HOOK MODES — wired in plugin-mac/hooks/hooks.json, read a payload on stdin,
+    print nothing on stdout, exit 0 no matter what.
+
+        UserPromptSubmit  acquire   push the deadline out — a turn is starting
+        PostToolBatch     acquire   push it out again — work just happened
+        Stop              settle    release if we must; else leave it alone
+        StopFailure       settle    same, for a turn that died
+        SessionEnd        release   drop it
+
+    CLI MODES — what `/caffeinate` runs. A human is reading, so these DO print,
+    and they take no stdin.
+
+        on        hold on battery too, machine-wide, until turned off
+        off       back to holding only on wall power
+        status    what the config says and what is actually held right now
+
+`HOOK_MODES` and `CLI_MODES` are separate tuples rather than one list because
+collapsing them would let `status` be wired as a hook — printing to stdout on
+every prompt submit, into the model's context, forever. Their disjointness is
+asserted by TestCliModes.test_the_two_mode_sets_do_not_overlap, and separately
+TestTimeoutBudget checks that every mode wired in hooks.json is one the
+library actually implements.
+
+Prints nothing on stdout in hook mode. `acquire` runs on UserPromptSubmit and
+after every tool batch, where every byte written lands in the model's context — a
+hook that reports its own success there is a hook that costs tokens forever.
+CAFFEINATE_DEBUG=1 sends the verdict to stderr instead, which is how to check the
+wiring through the ~/.local/bin symlink without touching a real session:
+
+    echo '{"session_id":"probe"}' | CAFFEINATE_DEBUG=1 \\
+      ~/.local/bin/claude-caffeinate acquire
+
+Exits 0 on anything unexpected in HOOK mode. A broken hook must never cost
+someone a prompt, and the worst case here is a machine that sleeps the way it
+always did. CLI mode exits non-zero on a real failure, because a human ran it and
+a toggle that silently does nothing is the one outcome it must never produce.
+"""
+
+import json
+import os
+import sys
+import time
+
+HOOK_MODES = ("acquire", "settle", "release")
+CLI_MODES = ("on", "off", "status")
+
+
+def load_modules(here):
+    sys.path.insert(0, here)
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath does not resolve one — it lands on /Users and the import fails at
+    # runtime while passing every test.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+    import caffeinate_lib
+    import toolkit_config
+    return caffeinate_lib, toolkit_config
+
+
+def run_hook(mode, lib, config):
+    # Drained even on the paths that ignore it: several hooks are wired to the
+    # same events, and leaving stdin full is how one hook breaks another.
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except Exception:
+        payload = {}
+    session_id = payload.get("session_id") if isinstance(payload, dict) else None
+
+    handler = getattr(lib, mode)
+    verdict = handler(config, lib.System(), session_id, os.getpid())
+
+    if os.environ.get("CAFFEINATE_DEBUG") == "1":
+        sys.stderr.write("claude-caffeinate %s: %s\n" % (mode, verdict))
+
+
+def describe_power(on_ac, percent):
+    charge = "unknown charge" if percent is None else "%d%%" % percent
+    return "%s, %s" % ("wall power" if on_ac else "battery", charge)
+
+
+def describe_override(lib, config):
+    """The battery override's state, in the words a human needs to act on.
+
+    A LAPSED override is the case worth spelling out: config.json still reads
+    `require_ac: false`, so the file and the behaviour genuinely disagree, and
+    the only place that is visible is here. Saying "no" and stopping would send
+    someone to a config file that appears to contradict this output.
+    """
+    state = lib.override_state(config, int(time.time()))
+    if state == "off":
+        return "NO, wall power only  (/caffeinate on to change)"
+    if state == "forever":
+        return ("yes, and never lapses  (battery_override_hours is 0; "
+                "/caffeinate off to change)")
+    if state == "lapsed":
+        return ("LAPSED — config still says on, but %dh passed with no battery "
+                "use, so it is not holding. /caffeinate on to restart it."
+                % lib.override_hours(config))
+
+    # Every state that is currently HOLDING names `/caffeinate off`. The `off`
+    # state already names `/caffeinate on`, and a review caught the reverse hint
+    # missing from all four new states — an asymmetry that reads as an accident
+    # because it was one. The test pinning it had been rewritten to a weaker
+    # assertion in the same commit that dropped the string.
+    hours = lib.override_hours(config)
+    if state == "unstamped":
+        return ("yes  (clock starts on first use; lapses %dh after; "
+                "/caffeinate off to change)" % hours)
+    remaining = (lib.read_stamp(lib.stamp_path(config)) + hours * 3600
+                 - int(time.time()))
+    return "yes  (lapses in %dh %dm unless used; /caffeinate off to change)" % (
+        max(0, remaining) // 3600, (max(0, remaining) % 3600) // 60)
+
+
+def describe_holds(lib, config, system):
+    rows = lib.held_sessions(config, system)
+    if not rows:
+        return ["  nothing held right now"]
+
+    lines = []
+    for row in rows:
+        if not row["live"]:
+            lines.append("  %s — stale record, no assertion (harmless; "
+                         "swept by the next hold taken after its deadline)"
+                         % row["session"][:8])
+            continue
+        minutes = max(0, row["expires_in"]) // 60
+        if row["bound"]:
+            bound = "bound to claude pid %d, so it ends when that exits" \
+                % row["claude_pid"]
+        else:
+            bound = "NOT bound to a process — deadline is its only bound"
+        lines.append("  %s — held, %s; ceiling in %dm" % (
+            row["session"][:8], bound, minutes))
+    return lines
+
+
+def run_status(lib, config):
+    system = lib.System()
+    on_ac, percent = system.power_state()
+    enabled = lib.enabled(config)
+    # `holds_on_battery`, not the raw `require_ac`: a LAPSED override reads as
+    # `require_ac: false` in the file while holding nothing, and the floor
+    # warning below must not fire for a machine that is not holding anyway.
+    on_battery_now = lib.holds_on_battery(config, int(time.time()))
+    floor = lib.battery_floor_percent(config)
+
+    print("caffeinate — keeps this Mac awake while a session is alive")
+    print("")
+    print("  config      %s" % config.CONFIG_PATH)
+    print("  enabled     %s" % ("yes" if enabled else "no — holds nothing at all"))
+    print("  on battery  %s" % describe_override(lib, config))
+    print("  floor       %s" % ("disabled — a hold can run the battery flat"
+                                if floor <= 0 else
+                                "release below %d%% on battery" % floor))
+    print("  ceiling     %dm without any activity" % (lib.hold_seconds(config) // 60))
+    print("  power now   %s" % describe_power(on_ac, percent))
+
+    if enabled and on_battery_now and lib.below_floor(config, on_ac, percent):
+        print("")
+        print("  BELOW THE FLOOR — holds are being released and not re-taken.")
+
+    print("")
+    print("holds:")
+    for line in describe_holds(lib, config, system):
+        print(line)
+    return 0
+
+
+def run_cli(mode, lib, config):
+    if mode == "status":
+        return run_status(lib, config)
+
+    path = config.CONFIG_PATH
+    turn_on = mode == "on"
+    # Read BEFORE the write and the stamp below. A LAPSED override leaves
+    # config.json untouched by `on` — it already says `require_ac: false` — so
+    # "no change" would be true of the file and false of the behaviour, which is
+    # exactly the disagreement `status` exists to surface.
+    was_lapsed = turn_on and lib.override_state(config, int(time.time())) == "lapsed"
+    ok, changes = lib.apply_battery_override(path, turn_on)
+
+    # The clock is stamped only after the config write SUCCEEDS. Stamping first
+    # would leave a machine whose config could not be written believing the
+    # override had started, which reads as working for 24 hours.
+    if ok:
+        stamp = lib.stamp_path(config)
+        if turn_on:
+            try:
+                lib.write_stamp(stamp, int(time.time()))
+            except OSError as error:
+                # The config write ALREADY LANDED, so this cannot just re-raise
+                # — a traceback here reports failure for a toggle that took
+                # effect. Both facts have to be said, because they point at
+                # different repairs, and the hooks will now decline to hold on
+                # battery until the clock is writable (see _refresh_stamp).
+                sys.stderr.write(
+                    "claude-caffeinate: the setting was written to %s, but the "
+                    "expiry clock could not be:\n  %s\n"
+                    "Battery holding stays OFF until that path is writable — a "
+                    "clock that cannot be kept would never expire.\n"
+                    "Fix the path (or delete it) and run /caffeinate on again.\n"
+                    % (path, error))
+                return 1
+        else:
+            lib.clear_stamp(stamp)
+    if not ok:
+        sys.stderr.write(
+            "claude-caffeinate: could not read %s as JSON, so nothing was "
+            "written.\nFix or create it (./install.sh --setup) and try again.\n"
+            % path)
+        return 1
+
+    if was_lapsed and not changes:
+        print("Battery holding had LAPSED after %dh with no battery use. "
+              "Restarted it; %s already had the setting, so it is unchanged."
+              % (lib.override_hours(config), path))
+    elif not changes:
+        print("Already %s. No change to %s." % (
+            "holding on battery" if turn_on else "wall-power only", path))
+    else:
+        for key, was, now in changes:
+            print("%s: %s -> %s" % (key, json.dumps(was), json.dumps(now)))
+        print("")
+        print("Written to %s." % path)
+
+    # The one thing a toggle must not do is look like it worked and not work.
+    # Config is read fresh per hook process, so running sessions pick this up on
+    # their next turn with no restart — say so, because the opposite is the
+    # normal assumption for anything in this directory.
+    if turn_on:
+        hours = lib.override_hours(config)
+        if hours > 0:
+            print("Every session on this machine now holds on battery too, "
+                  "from its next turn.")
+            print("This LAPSES back to wall-power-only after %dh with no "
+                  "battery use. Working unplugged restarts that clock; "
+                  "/caffeinate off ends it now." % hours)
+        else:
+            print("Every session on this machine now holds on battery too, "
+                  "from its next turn. battery_override_hours is 0, so this "
+                  "NEVER lapses — it persists until you run /caffeinate off.")
+        # `on` reads the power state PURELY to say this. It is the one case
+        # where the setting applies cleanly and still holds nothing, so silence
+        # here is the feature looking installed and doing nothing — the shape
+        # the whole battery path is gated against. Leaving it to the caller to
+        # notice does not work: nothing else `on` prints names the charge, so
+        # there is no input from which to notice it.
+        on_ac, percent = lib.System().power_state()
+        if lib.below_floor(config, on_ac, percent):
+            print("")
+            print("BUT NOT YET: battery is at %d%%, at or under the %d%% floor. "
+                  "No hold will be taken until it charges past that."
+                  % (percent, lib.battery_floor_percent(config)))
+    else:
+        print("Back to holding only on wall power, from the next turn. "
+              "Holds already running on battery are released at that point.")
+    return 0
+
+
+def a_human_is_watching(stream):
+    """Whether an unknown mode should be complained about at all.
+
+    A typo has two very different meanings here. From a terminal it is someone
+    running the tool by hand, and silence would be a silent failure. From
+    hooks.json it is a mis-wired hook on UserPromptSubmit — and this
+    file's whole contract is that a broken hook never costs someone a prompt, so
+    a non-zero exit there could BLOCK the prompt it was meant to be invisible to.
+
+    stdin being a tty is what separates them: hooks are handed a pipe. Anything
+    that raises while asking (a closed or replaced stdin) reads as "not a human",
+    which is the direction that stays silent.
+    """
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    lib, toolkit_config = load_modules(here)
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    if mode in HOOK_MODES:
+        run_hook(mode, lib, toolkit_config)
+        return 0
+    if mode in CLI_MODES:
+        return run_cli(mode, lib, toolkit_config)
+
+    if mode and a_human_is_watching(sys.stdin):  # encoding-lint: ok isatty probe, never read
+        sys.stderr.write("claude-caffeinate: unknown mode %r\n" % mode)
+        sys.stderr.write("usage: claude-caffeinate {on|off|status}\n")
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    # HOOK modes swallow everything; CLI modes are allowed to fail loudly. The
+    # split is on argv rather than on an exception type, so a crash inside
+    # `acquire` still cannot cost someone a prompt.
+    _mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if _mode in CLI_MODES or (_mode and _mode not in HOOK_MODES):
+        sys.exit(main())
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

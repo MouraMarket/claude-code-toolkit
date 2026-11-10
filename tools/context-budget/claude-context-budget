@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Report AND record every context surface a session is charged for, on its
+own unit.
+
+    claude-context-budget --report [workspace-root]
+    claude-context-budget --record
+
+`--report` is checkable at a single instant -- a cap on the right unit,
+headroom below it, and a loud crossing:
+
+  - Every capped surface here is already watched by the tool that owns it
+    (`claude-context-lint` blocks a commit, `claude-context-growth` fires on
+    the edit that pushes a file over, `claude-memory-lint` speaks at session
+    start). This tool is not a second voice on that contract -- a hook
+    repeating what those already say at session start is the notice-fatigue
+    this repo treats as a defect, not extra safety.
+
+`--record` exists because R2 wants a growth RATE, and a rate needs history a
+single scan cannot supply. It appends one line to a reading log per day
+(`readings_lib`), meant to run from a SessionStart hook -- and it is SILENT on
+every path, prints nothing at all: the notice-fatigue argument above does not
+apply to a recorder nobody has to read. `--report` reads that log back and
+turns it into a rate and a days-to-cap forecast, alongside the per-instant
+table.
+
+What `--report` adds beyond either is that nobody could see the surfaces
+TOGETHER. The numbers each existed; the total did not, and a mission to
+shrink it ran with the total unmeasured because assembling it took
+an ad-hoc script every time.
+
+Best-effort: every failure path prints something (`--report`) or nothing
+(`--record`) and exits 0. Neither reads stdin -- a tool meant to be run by
+hand must not hang when run from a terminal, and a SessionStart hook must
+never cost someone a prompt.
+"""
+
+import os
+import sys
+
+
+def _load():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink and
+    # abspath would resolve the symlink's directory, not the tool's.
+    repo = os.path.dirname(os.path.dirname(here))
+    for path in (
+        here,
+        os.path.join(repo, "lib"),
+        os.path.join(repo, "tools", "memory-lint"),
+        os.path.join(repo, "tools", "context-growth"),
+        os.path.join(repo, "tools", "context-lint"),
+        os.path.join(repo, "tools", "tooling-digest"),
+    ):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    import budget_lib
+    import claude_home
+
+    return budget_lib, claude_home
+
+
+def _workspace_root(argv, config):
+    for arg in argv:
+        if not arg.startswith("-"):
+            return os.path.realpath(os.path.expanduser(arg))
+    if config is not None:
+        try:
+            root = config.workspace_root()
+            if root:
+                return os.path.realpath(os.path.expanduser(root))
+        except Exception:
+            pass
+    return None
+
+
+def _skill_roots():
+    home = os.path.expanduser("~")
+    return [
+        os.path.join(home, ".claude", "skills"),
+        os.path.join(home, ".claude", "plugins", "cache"),
+    ]
+
+
+def _record(budget_lib, config):
+    """`--record`: append today's reading, once. Design 4.5.
+
+    Reads the workspace root from `config.workspace_root()` ONLY -- never
+    guessed from argv or cwd, so a session opened inside a repo still records
+    the ROOT's surfaces. Checks the log for today's line BEFORE measuring
+    anything, so only the first session of the day pays for a scan (and a
+    second `--record` the same day is a no-op). Prints nothing and exits 0 on
+    every path, including every exception -- a SessionStart hook must never
+    cost someone a prompt (repo CLAUDE.md, Hard rules). Never reads stdin.
+    """
+    try:
+        import datetime
+
+        import instruction_lib
+        import readings_lib
+
+        root = None
+        if config is not None:
+            try:
+                root = config.workspace_root()
+            except Exception:
+                root = None
+        if not root:
+            return 0
+        root = os.path.realpath(os.path.expanduser(root))
+
+        path = readings_lib.readings_path(config)
+        today = datetime.date.today().isoformat()
+        if readings_lib.has_reading(path, today, instruction_lib.UNIT_VERSION, root):
+            return 0
+
+        home = os.path.expanduser("~")
+        memory_dir, memory_reason = budget_lib.resolve_memory_dir(root, config, home)
+        records = budget_lib.measure_instructions(
+            root, memory_dir, memory_reason, config, home
+        )
+        total = budget_lib.always_on_total(records)
+        reading = readings_lib.build_reading(
+            records, total, root, datetime.datetime.now()
+        )
+        readings_lib.append_reading(path, reading)
+    except Exception:
+        pass
+    return 0
+
+
+def main():
+    argv = sys.argv[1:]
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    try:
+        budget_lib, claude_home = _load()
+    except Exception as exc:
+        print("claude-context-budget: could not load its library (%s)" % exc)
+        return 0
+
+    config = None
+    try:
+        import toolkit_config
+
+        config = toolkit_config
+    except Exception:
+        pass
+
+    if argv and argv[0] == "--record":
+        return _record(budget_lib, config)
+
+    root = _workspace_root(argv, config)
+    home = os.path.expanduser("~")
+    try:
+        memory_dir, memory_reason = budget_lib.resolve_memory_dir(root, config, home)
+    except Exception:
+        memory_dir, memory_reason = None, None
+
+    # The instruction-meter section's inputs (design 4.7): only built when a
+    # root resolved, so a rootless --report calls neither `measure_instructions`
+    # nor `readings_lib.load` and just says so.
+    instruction_records, readings, readings_file, today = None, [], None, None
+    if root is not None:
+        try:
+            import datetime
+
+            import instruction_lib
+            import readings_lib
+
+            instruction_records = budget_lib.measure_instructions(
+                root, memory_dir, memory_reason, config, home
+            )
+            readings_file = readings_lib.readings_path(config)
+            readings = readings_lib.load(
+                readings_file, os.path.realpath(root), instruction_lib.UNIT_VERSION
+            )
+            today = datetime.date.today()
+        except Exception:
+            instruction_records, readings, readings_file, today = None, [], None, None
+
+    try:
+        text = budget_lib.report(
+            root,
+            memory_dir,
+            _skill_roots(),
+            config,
+            user_rules_dir=claude_home.user_rules_dir(home),
+            memory_reason=memory_reason,
+            instruction_records=instruction_records,
+            readings=readings,
+            readings_path=readings_file,
+            today=today,
+        )
+        if root is None:
+            text += (
+                "\nalways-on instructions: no workspace root — pass one or "
+                "set workspace_root"
+            )
+        print(text)
+    except Exception as exc:
+        print("claude-context-budget: could not complete the report (%s)" % exc)
+    return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+#
+# Global git hook forwarder. scripts/setup-git.sh symlinks it into the directory
+# core.hooksPath points at, once per client-side hook name (commit-msg,
+# pre-push, post-checkout, ...).
+#
+# Why it exists: core.hooksPath REPLACES per-repo hooks rather than adding to
+# them. git-pre-commit already chains to the repo's own pre-commit; every other
+# hook name had nothing in our directory, so installing secret scanning silently
+# disabled a repo's own commit-msg, pre-push, post-checkout and the rest. This
+# one script restores them all: it runs the repo's own hook of the same name, if
+# it kept one, and otherwise gets out of the way.
+#
+# The hook name comes from basename "$0", NOT realpath: this file is reached
+# through a link named after the hook, so $0 is that link and its basename is
+# the hook git is running. realpath would resolve to "git-hook-forward" for
+# every hook and lose the name. (Resolve the recursion guard below with
+# realpath, which is the opposite job.)
+#
+# Never prints on success and never reads stdin itself: pre-push and
+# reference-transaction feed their stdin to the repo's own hook through exec,
+# and with no own hook this exits without reading it.
+set -uo pipefail
+
+name="$(basename "$0")"
+
+# The repo's own hook lives in the common git dir, not the one --git-path
+# resolves through core.hooksPath (that is our own directory, so the repo's real
+# hook would never be found), and not a worktree's own gitdir (it has no hooks/;
+# hooks are shared by every worktree). Same resolution as git-pre-commit.
+git_dir="$(git rev-parse --git-common-dir 2>/dev/null)" \
+  || git_dir="$(git rev-parse --git-dir 2>/dev/null)" || git_dir=""
+
+if [[ -n "$git_dir" ]]; then
+  own="$git_dir/hooks/$name"
+  # Recursion guard: a repo whose own hook IS this forwarder or git-pre-commit
+  # (someone linked it per-repo as well as globally) would loop forever.
+  own_real="$(realpath "$own" 2>/dev/null)"
+  self_real="$(realpath "$0" 2>/dev/null)"
+  pre_commit_real="$(realpath "$(dirname "$self_real")/git-pre-commit" 2>/dev/null)"
+  # -f as well as -x: git itself ignores a hook path that is a directory or
+  # another non-file, so forwarding must not turn one into a blocked commit.
+  if [[ -f "$own" && -x "$own" && "$own_real" != "$self_real" && "$own_real" != "$pre_commit_real" ]]; then
+    exec "$own" "$@"
+  fi
+fi
+
+exit 0

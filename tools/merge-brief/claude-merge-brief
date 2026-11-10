@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Build the reviewer's whole merge-context framing, by script rather than by
+hand — every diff-mode section comes from `git` or `gh` output, and there is
+no flag that accepts free text or a file to embed alongside a diff. A
+hand-assembled brief leaks the author's rationale through *selection*; a
+script has no opinion. `--plan` is the one carve-out — see below.
+
+    claude-merge-brief --pr 42
+    claude-merge-brief --pre-pr
+    claude-merge-brief --pre-pr --base develop -o /tmp/brief.md
+    claude-merge-brief --pr 42 --since a1b2c3d      # fix-round rescope
+    claude-merge-brief --plan /path/to/plan.md
+
+--pr N          review an open PR's merge ref — the "already open" ordering.
+--pre-pr        merge the base into a scratch tree and review that, before
+                the PR exists. The ordering to default to.
+--plan FILE     build a Plan Review brief instead of a diff review: a fixed
+                requirements block (tools/merge-brief/plan-requirements.md),
+                then the plan's `Requirements:` file when it names one,
+                then FILE's own text, verbatim. No merge ref, no diff, no
+                commit log, no freshness check — a plan has none of those.
+                Mutually exclusive with --pr and --pre-pr; --base and
+                --since are usage errors under --plan, since both describe a
+                commit range and a plan has none.
+--base BRANCH   pre-PR only. Default: the remote's default branch, resolved
+                via tools/repo-freshness, never guessed. In a repo with no
+                `origin` remote, the LOCAL branch of that name is the base
+                (default `main`; pass --base for any other).
+--since REF     fix-round scoping: restrict the changed-files and diff
+                sections to changes since REF. Not valid with --plan.
+-o, --output    write the brief here (default: stdout).
+--repo PATH     default: cwd.
+
+Every brief, in every mode, is scanned before it is written or printed for a
+prior review's own answer key leaking through — a `## Round N` heading, or (
+under --plan only) a literal severity/verdict JSON payload. See
+merge_brief_lib.scan_for_leaked_provenance for the full rule and the mode
+split; a hit that is only a warning (prose "BLOCKING", prose "round N", or a
+payload under --pr/--pre-pr, where a diff may legitimately carry this repo's
+own findings-shaped fixtures) still writes the brief and prints to stderr.
+
+Exit codes: 0 brief written; 2 a freshness or precondition failure — including
+a missing/empty plan-requirements.md, a brief that leaked provenance, or an
+-o path that cannot be written (no brief written in any of these — see stderr
+for what was compared or matched); 3 a usage error, including a missing,
+unreadable (or not UTF-8), or empty --plan file (the caller's usage mistake,
+not a repo precondition).
+"""
+import argparse
+import os
+import sys
+
+# realpath, not abspath: this file is a `~/.local/bin` symlink target, and
+# abspath does not resolve a symlink. Run directly, Python already puts the
+# resolved directory first on sys.path, so the import works either way; this
+# keeps it working for a caller that loads the file by its link path.
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import merge_brief_lib as lib  # noqa: E402
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """Every usage error exits 3, matching this tool's documented exit codes
+    rather than argparse's default of 2 (which this tool reserves for a
+    freshness or precondition failure)."""
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(3, "%s: error: %s\n" % (self.prog, message))
+
+
+def build_parser():
+    parser = _ArgumentParser(description=__doc__,
+                              formatter_class=argparse.RawDescriptionHelpFormatter)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--pr", type=int, metavar="N",
+                       help="review an open PR's merge ref")
+    mode.add_argument("--pre-pr", action="store_true",
+                       help="merge the base into a scratch tree and review that")
+    mode.add_argument("--plan", default=None, metavar="FILE",
+                       help="build a Plan Review brief: a fixed requirements "
+                            "block, then the plan's Requirements: file "
+                            "when it names one, then FILE's text verbatim")
+    parser.add_argument("--repo", default=None, metavar="PATH",
+                         help="repo to review (default: cwd)")
+    parser.add_argument("--base", default=None, metavar="BRANCH",
+                         help="pre-PR only: base branch (default: resolved, not guessed)")
+    parser.add_argument("--since", default=None, metavar="REF",
+                         help="fix-round scoping: restrict the diff/changed-files "
+                              "sections to changes since REF")
+    parser.add_argument("-o", "--output", default=None, metavar="FILE",
+                         help="write the brief here (default: stdout)")
+    return parser
+
+
+def main(argv=None):
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.base is not None and not args.pre_pr:
+        parser.error("--base is only valid with --pre-pr")
+    if args.since is not None and args.plan is not None:
+        parser.error("--since is not valid with --plan")
+
+    repo = os.path.realpath(args.repo) if args.repo else os.getcwd()
+
+    try:
+        if args.pr is not None:
+            mode = "pr"
+            brief = lib.build_pr_brief(repo, args.pr, since=args.since)
+        elif args.plan is not None:
+            mode = "plan"
+            brief = lib.build_plan_brief(repo, args.plan)
+        else:
+            mode = "pre-pr"
+            brief = lib.build_pre_pr_brief(repo, base=args.base, since=args.since)
+        # One call site downstream of every builder — never inside a single
+        # mode's branch, and before either output path below, so `-o FILE`
+        # and stdout are both scanned rather than only the redirected one.
+        # See `lib.scan_for_leaked_provenance`'s docstring for the mode
+        # split (PAYLOAD refuses only under --plan) and why this cannot
+        # live in `_assemble` (`build_plan_brief` never calls it).
+        warnings = lib.scan_for_leaked_provenance(brief, mode)
+    except lib.PlanFileError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except lib.BriefError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    for warning in warnings:
+        print("warning: %s" % warning, file=sys.stderr)
+
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as handle:
+                handle.write(brief)
+        except OSError as exc:
+            print("could not write the brief to %r: %s" % (args.output, exc),
+                  file=sys.stderr)
+            return 2
+    else:
+        print(brief)
+    return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

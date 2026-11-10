@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""Archive stale, declared-shipped specs out of workspace/specs/ (or whatever
+`spec_archive.specs_dir` names), and optionally flip idle `status: live`
+specs to `shipped` first (D2).
+
+Dry run by default -- it only reports what it would do. `--apply` is required
+to actually move (or, with `--flip-stale`, flip) anything, and even then a
+move refuses rather than overwrites a destination that already exists. See
+archive_lib.py for the classification and flip-eligibility rules the report
+is built from and the safety contract behind them.
+The D1-D11 labels cited in comments are defined in archive_lib.py's header.
+
+Three invocation modes:
+
+    claude-spec-archive [--report] [--flip-stale] [--apply]   manual, human-run
+    claude-spec-archive --hook                                 SessionStart hook
+
+`--hook` reads a JSON payload on stdin (drained but never parsed -- nothing
+here needs it) and, on stdout, emits either nothing or exactly one
+`hookSpecificOutput`/`SessionStart` JSON object (D9: fail open, loudly).
+"""
+
+import argparse
+import json
+import os
+import shutil
+import sys
+import tempfile
+import threading
+from datetime import datetime
+
+# Machine-local settings live outside the repo. See lib/toolkit_config.py.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))),
+    "lib"))
+import toolkit_config as _config
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import archive_lib
+import portable
+
+GROUP_ORDER = (
+    ("archive", "ARCHIVE"),
+    ("keep", "KEEP"),
+    ("undeclared", "UNDECLARED"),
+    ("unmanaged", "UNMANAGED"),
+)
+
+LOCK_NAME = ".spec-archive.lock"
+
+# Names shown in a --hook notice's flip clause: at most this many, then
+# "and K more" -- a hook notice is meant to be one skimmable line, not a
+# full listing (that is what running the tool by hand is for).
+MAX_NOTICE_NAMES = 10
+
+
+def _entries(specs_dir):
+    """Top-level entries under specs_dir that are candidates for classification.
+
+    Excludes the archive/ directory itself and the manifest file -- neither
+    is a spec, and walking archive/ would re-classify already-archived files
+    on every run.
+    """
+    try:
+        names = sorted(os.listdir(specs_dir))
+    except OSError:
+        return []
+    skip = {archive_lib.ARCHIVE_DIR_NAME, archive_lib.MANIFEST_NAME}
+    return [os.path.join(specs_dir, name) for name in names if name not in skip]
+
+
+def _classify_all(specs_dir, min_age_days):
+    manifest = archive_lib.load_manifest(specs_dir)
+    groups = {action: [] for action, _ in GROUP_ORDER}
+    for path in _entries(specs_dir):
+        verdict = archive_lib.classify(path, specs_dir, manifest, min_age_days)
+        groups[verdict.action].append((path, verdict))
+    return groups
+
+
+def _print_report(groups, report_only):
+    for action, label in GROUP_ORDER:
+        items = groups[action]
+        print(f"{label} ({len(items)})")
+        if action == "archive" and report_only:
+            # --report is accounting only: the count above, no per-file plan.
+            continue
+        for path, verdict in items:
+            if action == "archive":
+                print(f"  {path} -> {verdict.destination}")
+            else:
+                print(f"  {path}: {verdict.reason}")
+
+
+def _apply(groups, specs_dir):
+    """Move every ARCHIVE-verdict file. Returns a list of events, never prints.
+
+    Each event is ("moved", src, dst) or ("refused", src, dst, why). Manual
+    mode prints these itself (_print_move_events, in exactly today's
+    wording); --hook consumes them silently to build its one-line notice.
+    """
+    events = []
+    for path, verdict in groups["archive"]:
+        destination = verdict.destination
+        # Re-checked here even though classify() already verified containment:
+        # this is the one place a real, irreversible move happens, and it must
+        # not trust a verdict computed earlier in the run without a second
+        # look right before acting on it.
+        if not archive_lib.is_within(path, specs_dir) or not archive_lib.is_within(destination, specs_dir):
+            events.append(("refused", path, destination, "containment check failed"))
+            continue
+        # Checked live, not from the classify() snapshot: this run's own
+        # earlier moves can create the very destination a later file wants.
+        if archive_lib.refuses_overwrite(destination):
+            events.append(("refused", path, destination, "destination already exists"))
+            continue
+        os.makedirs(os.path.dirname(destination), exist_ok=True)
+        shutil.move(path, destination)
+        events.append(("moved", path, destination))
+    return events
+
+
+def _print_move_events(events):
+    """Manual-mode printing for _apply()'s events, in today's exact wording."""
+    for event in events:
+        if event[0] == "moved":
+            _, src, dst = event
+            print(f"spec-archive: moved {src} -> {dst}")
+        else:
+            _, src, dst, why = event
+            print(f"spec-archive: REFUSED {src} -> {dst} ({why})")
+
+
+# --- D2: the stale-live flip ------------------------------------------------
+
+def _flip_candidates(specs_dir, stale_flip_days):
+    """(path, FlipVerdict) for every top-level entry flip_verdict says to flip.
+
+    [] outright when stale_flip_days <= 0 -- flip_verdict would report the
+    same "disabled" skip for every file anyway, but not scanning at all is
+    both cheaper and what --hook's worker relies on to know it can skip the
+    flip phase entirely (D1: the flip is off in the shipped default).
+    """
+    if stale_flip_days <= 0:
+        return []
+    candidates = []
+    for path in _entries(specs_dir):
+        verdict = archive_lib.flip_verdict(path, specs_dir, stale_flip_days)
+        if verdict.action == "flip":
+            candidates.append((path, verdict))
+    return candidates
+
+
+def _print_flip_report(candidates, stale_flip_days):
+    print(f"FLIP ({len(candidates)})")
+    if stale_flip_days <= 0:
+        print("  flip disabled (spec_archive.stale_flip_days is 0 or unset)")
+        return
+    for path, verdict in candidates:
+        print(f"  {path}: {verdict.reason}")
+
+
+def _print_flip_apply_event(event):
+    """Manual-mode printing for one _apply_flip() event. --hook never calls
+    this -- it consumes the same events silently to build its notice."""
+    kind = event[0]
+    if kind == "flipped":
+        print(f"spec-archive: flipped {event[1]}")
+    elif kind == "flip-skipped":
+        _, path, why = event
+        print(f"spec-archive: flip skipped {path} ({why})")
+    else:
+        _, path, why = event
+        print(f"spec-archive: REFUSED flip {path} ({why})")
+
+
+def _apply_flip(path, verdict, today, stale_days):
+    """Perform one D2 flip. Returns an event tuple; never raises.
+
+    Race-narrowed by re-stat (D8), checked three times across the
+    read-then-write sequence: once before reading, once right after reading,
+    once immediately before the atomic replace. Each catches an edit landing
+    in the window since the previous check, rather than risk clobbering a
+    concurrent edit -- but the LAST check cannot close the gap between its
+    own stat and the os.replace syscall right below it. That sliver is
+    accepted, not fixed: an editor never takes our lock, so nothing closes
+    it, and a file must already sit idle >stale_flip_days days to reach this
+    function at all, which is what keeps the window narrow in practice.
+
+    Otherwise: re-read with newline="" (D11), rewrite, and write atomically
+    through a same-directory temp file so a reader never observes a
+    half-written file.
+
+    The temp file is created via tempfile.mkstemp(), never a predictable
+    name: mkstemp opens with O_EXCL|O_CREAT, so it can never follow a
+    pre-planted symlink the way a plain open(predictable_name, "w") could.
+    The "." prefix is kept so a leftover (e.g. from a crash between mkstemp
+    and os.replace) still reads as a dotfile -- classify() treats that as
+    unmanaged rather than a spec.
+    """
+    tmp_path = None
+    try:
+        current_mtime = os.path.getmtime(path)
+        if current_mtime != verdict.mtime:
+            return ("flip-skipped", path, "changed since scanned")
+
+        with open(path, encoding="utf-8", newline="") as handle:
+            text = handle.read()
+
+        current_mtime = os.path.getmtime(path)
+        if current_mtime != verdict.mtime:
+            return ("flip-skipped", path, "changed while reading")
+
+        new_text = archive_lib.rewrite_status_shipped(text, today, stale_days)
+        if new_text is None:
+            raise RuntimeError("no status: live line found to rewrite")
+
+        mode = os.stat(path).st_mode
+        directory = os.path.dirname(path)
+        basename = os.path.basename(path)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=directory, prefix=f".{basename}.", suffix=".spec-archive-tmp")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(new_text)
+        os.chmod(tmp_path, mode)
+
+        current_mtime = os.path.getmtime(path)
+        if current_mtime != verdict.mtime:
+            os.unlink(tmp_path)
+            tmp_path = None
+            return ("flip-skipped", path, "changed before replace")
+
+        # Residual accepted window: between this stat and the os.replace
+        # call directly below, nothing closes the gap -- see the docstring.
+        os.replace(tmp_path, path)
+        tmp_path = None
+        return ("flipped", path)
+    except Exception as exc:
+        if tmp_path is not None and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        return ("flip-refused", path, repr(exc))
+
+
+# --- Config reads, all through toolkit_config -------------------------------
+
+def _stale_flip_days():
+    # D1: absent or 0 means off. A missing key never raises (get_int's own
+    # contract), and the strict/absent-is-off default lives here, not in the
+    # shipped config.
+    return _config.get_int("spec_archive", "stale_flip_days", default=0)
+
+
+def _hook_deadline_seconds():
+    # get_int can express any JSON number (it truncates a float via int()),
+    # so the common case never leaves this first call. The fallback only
+    # matters for a fractional deadline written as a JSON *string*
+    # ("1.5"), which int() cannot parse but float() can.
+    value = _config.get_int("spec_archive", "hook_deadline_seconds", default=None)
+    if value is None:
+        raw = _config.get("spec_archive", "hook_deadline_seconds")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            value = 4
+    return value if value > 0 else 4
+
+
+# --- --hook (SessionStart) --------------------------------------------------
+
+def _emit_hook_notice(notice):
+    """The only thing --hook ever writes to stdout: one JSON object."""
+    sys.stdout.write(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": notice,
+        }
+    }))
+
+
+def _format_names(names):
+    shown = names[:MAX_NOTICE_NAMES]
+    text = ", ".join(shown)
+    extra = len(names) - len(shown)
+    if extra > 0:
+        text += f" and {extra} more"
+    return text
+
+
+def _build_notice(specs_dir, events, exc, timed_out, stale_flip_days, hook_deadline_seconds):
+    """The hook's one-line notice, or None when nothing is worth saying.
+
+    D9: silence is allowed in exactly four cases; this covers the fourth
+    ("the run did nothing") -- the other three are decided by callers before
+    this is ever reached.
+    """
+    moved = [e for e in events if e[0] == "moved"]
+    flipped = [e for e in events if e[0] == "flipped"]
+    refused = [e for e in events if e[0] in ("refused", "flip-refused")]
+
+    # Gate on what is REPORTABLE, not on the event list being empty: a lone
+    # "flip-skipped" (a file touched between scan and re-stat) is the flip
+    # correctly doing nothing, and must not produce an "archived 0; flipped 0".
+    if not (moved or flipped or refused) and exc is None and not timed_out:
+        return None
+
+    # The flip clause is only omitted when the flip is off AND nothing was
+    # flipped -- if it is on but happened to flip zero specs this run, that
+    # zero is still reported, matching the base line's literal template.
+    flip_off = stale_flip_days <= 0 and not flipped
+
+    base = f"SPEC AUTO-CULL ({specs_dir}): archived {len(moved)}"
+    if flip_off:
+        base += "."
+    else:
+        names = _format_names([os.path.basename(event[1]) for event in flipped])
+        base += f"; flipped {len(flipped)} idle live spec(s) to shipped: {names}."
+    sentences = [base]
+
+    if refused:
+        sentences.append(f"{len(refused)} refused — run claude-spec-archive to see why.")
+    if exc is not None:
+        sentences.append(f"FAILED: {type(exc).__name__}: {exc}.")
+    if timed_out:
+        sentences.append(
+            f"Did not finish within {hook_deadline_seconds}s — "
+            "run claude-spec-archive --apply --flip-stale by hand.")
+
+    if flip_off:
+        sentences.append(
+            "Tell the user this in one line in your first reply. "
+            "An archived file comes back with mv out of archive/.")
+    else:
+        sentences.append(
+            "Tell the user this in one line in your first reply. "
+            "A wrong flip is undone by setting status: live back in that file "
+            f"(it then waits another {stale_flip_days} days); "
+            "an archived file comes back with mv out of archive/.")
+
+    return " ".join(sentences)
+
+
+def _run_hook_locked(specs_dir):
+    """The work done once the D8 lock is held. Returns the exit code."""
+    stale_flip_days = _stale_flip_days()
+    hook_deadline_seconds = _hook_deadline_seconds()
+    min_age_days = _config.get_int("spec_archive", "min_age_days", default=14)
+
+    # A dict, not a plain list reference, so the worker can keep appending
+    # to the SAME list the main thread reads after a timeout -- if it were
+    # reassigned only at the end, a stalled worker would leave the main
+    # thread with nothing, even though D7 promises "listing what completed".
+    state = {"events": [], "exception": None}
+
+    def worker():
+        try:
+            flipped_paths = set()
+            if stale_flip_days > 0:
+                today = datetime.now().strftime("%Y-%m-%d")
+                for path, verdict in _flip_candidates(specs_dir, stale_flip_days):
+                    event = _apply_flip(path, verdict, today, stale_flip_days)
+                    state["events"].append(event)
+                    if event[0] == "flipped":
+                        flipped_paths.add(event[1])
+            groups = _classify_all(specs_dir, min_age_days)
+            # A spec flipped THIS run resets its own mtime (D2, on purpose),
+            # which can otherwise clear the archive floor immediately (e.g.
+            # min_age_days: 0) and archive it in the same run it was just
+            # flipped in -- exclude it so it sits the floor like every other
+            # freshly-shipped spec.
+            if flipped_paths:
+                groups["archive"] = [
+                    (path, verdict) for path, verdict in groups["archive"]
+                    if path not in flipped_paths]
+            state["events"].extend(_apply(groups, specs_dir))
+        except Exception as exc:
+            state["exception"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join(timeout=hook_deadline_seconds)
+
+    timed_out = thread.is_alive()
+    notice = _build_notice(specs_dir, state["events"], state["exception"], timed_out,
+                           stale_flip_days, hook_deadline_seconds)
+    if notice:
+        _emit_hook_notice(notice)
+
+    if timed_out:
+        # D7: a stalled syscall in the worker (e.g. a FIFO with no writer)
+        # is bounded here, not by waiting for it to unwind. os._exit ends
+        # the whole process -- worker thread included -- so nothing is left
+        # running after this call returns.
+        sys.stdout.flush()
+        os._exit(0)
+
+    return 0
+
+
+def _run_hook(specs_dir_override):
+    """SessionStart entry point. Always exits 0 (D9)."""
+    # SessionStart pipes a JSON payload on stdin; nothing here needs it, but a
+    # stdin that never reaches EOF (a pipe held open, not just a terminal)
+    # must never be allowed to hold up the D7 deadline -- that deadline
+    # cannot even start joining the worker until this call returns. Drain it
+    # on its own daemon thread and never join that thread: if it blocks
+    # forever, it blocks alone, and os._exit (on a timeout) or normal process
+    # exit (otherwise) ends it along with everything else.
+    try:
+        # Inside the try, and None-guarded: a hook spawned with fd 0 closed
+        # gets sys.stdin = None, and an AttributeError here would exit 1 with
+        # no output -- a fifth silent path D9 does not allow.
+        if sys.stdin is not None and not sys.stdin.isatty():
+            def _drain_stdin():
+                try:
+                    sys.stdin.read()  # encoding-lint: ok drain thread discards bytes; buffer.read aborts at shutdown
+                except Exception:
+                    pass
+            threading.Thread(target=_drain_stdin, daemon=True).start()
+
+        if _config.get("spec_archive", "enabled", default=True) is False:
+            return 0
+
+        specs_dir = specs_dir_override or _config.get_path("spec_archive", "specs_dir")
+        if not specs_dir:
+            return 0
+
+        if not os.path.isdir(specs_dir):
+            _emit_hook_notice(
+                f"SPEC AUTO-CULL: specs_dir {specs_dir} is not a directory "
+                "— auto-cull is not running. Tell the user in one line.")
+            return 0
+
+        lockpath = os.path.join(specs_dir, LOCK_NAME)
+        try:
+            lock = portable.exclusive_lock(lockpath)
+            acquired = lock.__enter__()
+        except OSError as exc:
+            _emit_hook_notice(f"SPEC AUTO-CULL: FAILED: {exc!r}")
+            return 0
+        try:
+            if not acquired:
+                # D8: another session is doing the work. Silent, not a failure.
+                return 0
+            return _run_hook_locked(specs_dir)
+        finally:
+            lock.__exit__(None, None, None)
+    except Exception as exc:
+        # Belt and braces on top of every guard above: nothing outside the
+        # worker thread may ever propagate past this hook uncaught.
+        _emit_hook_notice(f"SPEC AUTO-CULL: FAILED: {exc!r}")
+        return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Archive stale, declared-shipped/superseded specs.")
+    parser.add_argument("--apply", action="store_true",
+                        help="Actually move (and, with --flip-stale, flip) files. Default is a dry run.")
+    parser.add_argument("--report", action="store_true",
+                        help="Accounting only -- counts, no ARCHIVE file listing.")
+    parser.add_argument("--specs-dir",
+                        help="Override the configured specs_dir (for tests and one-off use).")
+    parser.add_argument("--flip-stale", action="store_true",
+                        help="Also report (and, with --apply, perform) the D2 stale status:live flip.")
+    parser.add_argument("--hook", action="store_true",
+                        help="SessionStart hook mode: flip + archive, silent unless notable (D9).")
+    args = parser.parse_args()
+
+    if args.hook:
+        return _run_hook(args.specs_dir)
+
+    if _config.get("spec_archive", "enabled", default=True) is False:
+        print("spec-archive: disabled (spec_archive.enabled is false)")
+        return 0
+
+    specs_dir = args.specs_dir or _config.get_path("spec_archive", "specs_dir")
+    if not specs_dir:
+        # No compiled default on purpose: a tool that moves files must not
+        # guess which directory to move them in.
+        print("spec-archive: not configured (spec_archive.specs_dir is unset)")
+        return 0
+
+    min_age_days = _config.get_int("spec_archive", "min_age_days", default=14)
+    stale_flip_days = _stale_flip_days()
+
+    flip_events = []
+    flipped_paths = set()
+    if args.flip_stale:
+        candidates = _flip_candidates(specs_dir, stale_flip_days)
+        _print_flip_report(candidates, stale_flip_days)
+        if args.apply:
+            today = datetime.now().strftime("%Y-%m-%d")
+            for path, verdict in candidates:
+                event = _apply_flip(path, verdict, today, stale_flip_days)
+                flip_events.append(event)
+                _print_flip_apply_event(event)
+                if event[0] == "flipped":
+                    flipped_paths.add(event[1])
+
+    groups = _classify_all(specs_dir, min_age_days)
+    # Same run-order hazard as --hook's worker: a spec flipped above already
+    # reset its own mtime, so it must not also be classified for archive in
+    # this same invocation. See the matching comment in _run_hook_locked.
+    if flipped_paths:
+        groups["archive"] = [
+            (path, verdict) for path, verdict in groups["archive"]
+            if path not in flipped_paths]
+    _print_report(groups, report_only=args.report)
+
+    if not args.apply:
+        return 0
+
+    move_events = _apply(groups, specs_dir)
+    _print_move_events(move_events)
+
+    refused = sum(1 for event in flip_events if event[0] == "flip-refused")
+    refused += sum(1 for event in move_events if event[0] == "refused")
+    return 1 if refused else 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

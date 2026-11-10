@@ -1,0 +1,1442 @@
+{
+  "//": "The registry of what this toolkit offers: every tool, skill, agent and installable component, with what it is for, how it is delivered, where its code and tests live, and what it needs. lib/tests/test_capabilities.py fails when a capability has no entry here or an entry points at something that does not exist, because either one reads as complete and is not.",
+  "schema": 1,
+  "capabilities": [
+    {
+      "id": "tool:backup",
+      "kind": "tool",
+      "summary": "Copies the machine-local files that no cloud holds to a backup folder you choose, checks the newest backup is fresh and complete, and restores one to a new directory.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/backup/claude-backup"
+      ],
+      "tests": [
+        "tools/backup/tests"
+      ],
+      "commands": [
+        "claude-backup"
+      ],
+      "hooks": [],
+      "config": [
+        "backup"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:base-pin",
+      "kind": "tool",
+      "summary": "Warns when the default branch has moved ahead of the linked worktree you are working in.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "tools/base-pin/claude-base-pin"
+      ],
+      "tests": [
+        "tools/base-pin/tests"
+      ],
+      "commands": [
+        "claude-base-pin"
+      ],
+      "hooks": [
+        "tools/base-pin/claude-base-pin"
+      ],
+      "config": [
+        "base_pin"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:build-cost",
+      "kind": "tool",
+      "summary": "Reports what a session spent by model, split into main, executor, review and other lanes, and records it when a session ends.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "tools/build-cost/claude-build-cost",
+        "tools/build-cost/claude-build-cost-record"
+      ],
+      "tests": [
+        "tools/build-cost/tests"
+      ],
+      "commands": [
+        "claude-build-cost"
+      ],
+      "hooks": [
+        "tools/build-cost/claude-build-cost-record"
+      ],
+      "config": [
+        "build_cost"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:build-lens",
+      "kind": "tool",
+      "summary": "Holds the review-gate references for the build workflow and the command that runs a gate through the Agent tool.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/build-lens/claude-review-gate"
+      ],
+      "tests": [
+        "tools/build-lens/tests"
+      ],
+      "commands": [
+        "claude-review-gate"
+      ],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:build-route",
+      "kind": "tool",
+      "summary": "Routes build-shaped work to the build workflow and reports which review mode it will run.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/build-route/claude-build-route"
+      ],
+      "tests": [
+        "tools/build-route/tests"
+      ],
+      "commands": [
+        "claude-build-route"
+      ],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:caffeinate",
+      "kind": "tool",
+      "summary": "Keeps a Mac awake while a Claude Code session is alive and working, and lets it sleep again afterwards.",
+      "delivery": "profile:mac",
+      "entry_points": [
+        "tools/caffeinate/claude-caffeinate"
+      ],
+      "tests": [
+        "tools/caffeinate/tests"
+      ],
+      "commands": [
+        "claude-caffeinate"
+      ],
+      "hooks": [
+        "tools/caffeinate/claude-caffeinate"
+      ],
+      "config": [
+        "caffeinate"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:catalogue",
+      "kind": "tool",
+      "summary": "Generates the catalogue of what each profile installs and what each hook writes on its own, and checks that it is current.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/catalogue/build_catalogue.py"
+      ],
+      "tests": [
+        "tools/catalogue/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:codex-review",
+      "kind": "tool",
+      "summary": "Sends a code or merge review to Codex and validates the report it returns instead of trusting a clean exit.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/codex-review/claude-codex-review"
+      ],
+      "tests": [
+        "tools/codex-review/tests"
+      ],
+      "commands": [
+        "claude-codex-review"
+      ],
+      "hooks": [],
+      "config": [
+        "codex_review"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:context-budget",
+      "kind": "tool",
+      "summary": "Reports and records every context surface a session is charged for, in its own unit.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/context-budget/claude-context-budget"
+      ],
+      "tests": [
+        "tools/context-budget/tests"
+      ],
+      "commands": [
+        "claude-context-budget"
+      ],
+      "hooks": [
+        "tools/context-budget/claude-context-budget"
+      ],
+      "config": [
+        "context_budget",
+        "workspace_root"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:context-growth",
+      "kind": "tool",
+      "summary": "Charges growth in a context file to the session that caused it, after the write.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/context-growth/claude-context-growth"
+      ],
+      "tests": [
+        "tools/context-growth/tests"
+      ],
+      "commands": [
+        "claude-context-growth"
+      ],
+      "hooks": [
+        "tools/context-growth/claude-context-growth"
+      ],
+      "config": [
+        "context_growth"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:context-lint",
+      "kind": "tool",
+      "summary": "Blocks a commit or merge that pushes a CLAUDE.md file over its size cap.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/context-lint/claude-context-lint"
+      ],
+      "tests": [
+        "tools/context-lint/tests"
+      ],
+      "commands": [
+        "claude-context-lint"
+      ],
+      "hooks": [],
+      "config": [
+        "context_lint"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:danger-guard",
+      "kind": "tool",
+      "summary": "Blocks a small set of genuinely destructive command shapes before Claude runs them.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/danger-guard/claude-danger-guard"
+      ],
+      "tests": [
+        "tools/danger-guard/tests",
+        "lib/tests/test_guard_crash_reports.py"
+      ],
+      "commands": [
+        "claude-danger-guard"
+      ],
+      "hooks": [
+        "tools/danger-guard/claude-danger-guard"
+      ],
+      "config": [
+        "danger_guard",
+        "workspace_root"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:distill-guard",
+      "kind": "tool",
+      "summary": "Refuses a whole-file rewrite over an existing context file and provides the one safe write path that keeps a pre-rewrite copy.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/distill-guard/claude-distill-write-guard"
+      ],
+      "tests": [
+        "tools/distill-guard/tests",
+        "lib/tests/test_guard_crash_reports.py"
+      ],
+      "commands": [
+        "claude-distill-write-guard"
+      ],
+      "hooks": [
+        "tools/distill-guard/claude-distill-write-guard"
+      ],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:git-tidy",
+      "kind": "tool",
+      "summary": "Fast-forwards the default branch and deletes branches that are provably merged, without moving the checkout you are standing in.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/git-tidy/git-tidy"
+      ],
+      "tests": [
+        "tools/git-tidy/tests"
+      ],
+      "commands": [
+        "git-tidy"
+      ],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:harness-check",
+      "kind": "tool",
+      "summary": "Re-verifies each Claude Code version against the memory design's assumptions and shows an advisory notice while it is unverified.",
+      "delivery": "profile:maintainer",
+      "entry_points": [
+        "tools/harness-check/claude-harness-check"
+      ],
+      "tests": [
+        "tools/harness-check/tests",
+        "lib/tests/test_harness_check_wiring.py"
+      ],
+      "commands": [
+        "claude-harness-check"
+      ],
+      "hooks": [
+        "tools/harness-check/claude-harness-check"
+      ],
+      "config": [
+        "harness_check"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:hook-heartbeat",
+      "kind": "tool",
+      "summary": "Records that the plugin hooks are actually dispatched in a session, so a silent hook failure can be detected.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/hook-heartbeat/claude-hook-heartbeat"
+      ],
+      "tests": [
+        "tools/hook-heartbeat/tests",
+        "lib/tests/test_hook_heartbeat_audit.py",
+        "lib/tests/test_hook_heartbeat_verdict.py"
+      ],
+      "commands": [],
+      "hooks": [
+        "tools/hook-heartbeat/claude-hook-heartbeat"
+      ],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:leak-gate",
+      "kind": "tool",
+      "summary": "Scans a tree about to be published and fails closed when it finds private material.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/leak-gate/leak-gate"
+      ],
+      "tests": [
+        "tools/leak-gate/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:local-ci",
+      "kind": "tool",
+      "summary": "Runs a repository's local checks against a head merged with its base and records a receipt of the result.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/local-ci/claude-local-ci"
+      ],
+      "tests": [
+        "tools/local-ci/tests"
+      ],
+      "commands": [
+        "claude-local-ci"
+      ],
+      "hooks": [],
+      "config": [
+        "local_ci"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:memory-lint",
+      "kind": "tool",
+      "summary": "Notices when an auto-memory index has grown a second copy of its own content, and stays silent when it is healthy.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/memory-lint/claude-memory-lint"
+      ],
+      "tests": [
+        "tools/memory-lint/tests"
+      ],
+      "commands": [
+        "claude-memory-lint"
+      ],
+      "hooks": [
+        "tools/memory-lint/claude-memory-lint"
+      ],
+      "config": [
+        "memory_lint"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:memory-routing",
+      "kind": "tool",
+      "summary": "Nudges when a memory write looks like a machine fact that belongs in the tooling map instead.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/memory-routing/claude-memory-routing"
+      ],
+      "tests": [
+        "tools/memory-routing/tests"
+      ],
+      "commands": [
+        "claude-memory-routing"
+      ],
+      "hooks": [
+        "tools/memory-routing/claude-memory-routing"
+      ],
+      "config": [
+        "memory_routing"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:merge-brief",
+      "kind": "tool",
+      "summary": "Builds the reviewer's merge-context framing from git and gh output by script, so the author's rationale cannot leak in.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/merge-brief/claude-merge-brief"
+      ],
+      "tests": [
+        "tools/merge-brief/tests"
+      ],
+      "commands": [
+        "claude-merge-brief"
+      ],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:model-guard",
+      "kind": "tool",
+      "summary": "Refuses a subagent dispatch that would silently inherit the session's model.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "tools/model-guard/claude-model-guard"
+      ],
+      "tests": [
+        "tools/model-guard/tests",
+        "lib/tests/test_guard_crash_reports.py"
+      ],
+      "commands": [
+        "claude-model-guard"
+      ],
+      "hooks": [
+        "tools/model-guard/claude-model-guard"
+      ],
+      "config": [
+        "model_guard"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:prompt-optimizer",
+      "kind": "tool",
+      "summary": "Reminds the parent agent to tighten a subagent's dispatch prompt before it is spawned.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "tools/prompt-optimizer/claude-prompt-optimizer"
+      ],
+      "tests": [
+        "tools/prompt-optimizer/tests",
+        "lib/tests/test_install_prompt_reminder.py"
+      ],
+      "commands": [
+        "claude-prompt-optimizer"
+      ],
+      "hooks": [
+        "tools/prompt-optimizer/claude-prompt-optimizer"
+      ],
+      "config": [
+        "prompt_optimizer"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:repo-freshness",
+      "kind": "tool",
+      "summary": "Reports a stale toolkit checkout at session start and, only if opted in, pulls it current.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/repo-freshness/claude-repo-freshness"
+      ],
+      "tests": [
+        "tools/repo-freshness/tests"
+      ],
+      "commands": [
+        "claude-repo-freshness"
+      ],
+      "hooks": [
+        "tools/repo-freshness/claude-repo-freshness"
+      ],
+      "config": [
+        "repo_freshness"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:secret-scan",
+      "kind": "tool",
+      "summary": "Blocks credentials from reaching git history, as a global pre-commit hook or by hand.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/secret-scan/claude-secret-scan"
+      ],
+      "tests": [
+        "tools/secret-scan/tests",
+        "lib/tests/test_install_secret_scan_status.py"
+      ],
+      "commands": [
+        "claude-secret-scan"
+      ],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:session-claim",
+      "kind": "tool",
+      "summary": "Allows one session per checkout, so two sessions cannot edit the same working tree.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "tools/session-claim/claude-session-claim",
+        "tools/session-claim/claude-session-release"
+      ],
+      "tests": [
+        "tools/session-claim/tests",
+        "lib/tests/test_guard_crash_reports.py"
+      ],
+      "commands": [
+        "claude-session-claim",
+        "claude-session-release"
+      ],
+      "hooks": [
+        "tools/session-claim/claude-session-claim",
+        "tools/session-claim/claude-session-release"
+      ],
+      "config": [
+        "session_claim"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:session-titler",
+      "kind": "tool",
+      "summary": "Titles each session when it ends and keeps a searchable index of past sessions.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/session-titler/claude-title-session",
+        "tools/session-titler/claude-title-backfill",
+        "tools/session-titler/csearch"
+      ],
+      "tests": [
+        "tools/session-titler/tests"
+      ],
+      "commands": [
+        "claude-title-session",
+        "claude-title-backfill",
+        "csearch"
+      ],
+      "hooks": [
+        "tools/session-titler/claude-title-session"
+      ],
+      "config": [
+        "session_titler"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:setup-audit",
+      "kind": "tool",
+      "summary": "Shows what is already on this machine versus what the toolkit manages, and can snapshot the current setup.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/setup-audit/claude-setup-audit"
+      ],
+      "tests": [
+        "tools/setup-audit/tests"
+      ],
+      "commands": [
+        "claude-setup-audit"
+      ],
+      "hooks": [],
+      "config": [
+        "permissions"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:skill-trigger",
+      "kind": "tool",
+      "summary": "Measures which skill a prompt actually routes to, against a set of cases and controls.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/skill-trigger/claude-skill-trigger"
+      ],
+      "tests": [
+        "tools/skill-trigger/tests",
+        "lib/tests/test_install_skill_trigger.py"
+      ],
+      "commands": [
+        "claude-skill-trigger"
+      ],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "tool:spec-archive",
+      "kind": "tool",
+      "summary": "Archives stale, shipped specs out of the specs folder; a dry run unless told to apply.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "tools/spec-archive/claude-spec-archive"
+      ],
+      "tests": [
+        "tools/spec-archive/tests",
+        "lib/tests/test_specs_dir_instructions.py"
+      ],
+      "commands": [
+        "claude-spec-archive"
+      ],
+      "hooks": [
+        "tools/spec-archive/claude-spec-archive"
+      ],
+      "config": [
+        "spec_archive"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:thread-handover",
+      "kind": "tool",
+      "summary": "Announces a pending handover document at session start and cleans up ones already consumed.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/thread-handover/claude-thread-watch",
+        "tools/thread-handover/claude-thread-deliver"
+      ],
+      "tests": [
+        "tools/thread-handover/tests"
+      ],
+      "commands": [
+        "claude-thread-watch",
+        "claude-thread-deliver"
+      ],
+      "hooks": [
+        "tools/thread-handover/claude-thread-watch",
+        "tools/thread-handover/claude-thread-deliver"
+      ],
+      "config": [
+        "thread_handover"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:tooling-digest",
+      "kind": "tool",
+      "summary": "Injects the digest block of your tooling map at session start so common setup questions need no asking.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/tooling-digest/claude-tooling-digest"
+      ],
+      "tests": [
+        "tools/tooling-digest/tests"
+      ],
+      "commands": [
+        "claude-tooling-digest"
+      ],
+      "hooks": [
+        "tools/tooling-digest/claude-tooling-digest"
+      ],
+      "config": [
+        "tooling_digest"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:toolkit-integrity",
+      "kind": "tool",
+      "summary": "Checks that the installed toolkit is still intact and that its hooks still run.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/toolkit-integrity/claude-toolkit-integrity"
+      ],
+      "tests": [
+        "tools/toolkit-integrity/tests"
+      ],
+      "commands": [
+        "claude-toolkit-integrity"
+      ],
+      "hooks": [
+        "tools/toolkit-integrity/claude-toolkit-integrity"
+      ],
+      "config": [
+        "toolkit_integrity"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:usage-watch",
+      "kind": "tool",
+      "summary": "Warns at usage thresholds from the terminal status line's reading, or from an estimate anchored to a real reading, and asks before a dispatch at the halt threshold.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/usage-watch/claude-usage-line",
+        "tools/usage-watch/claude-usage-watch",
+        "tools/usage-watch/claude-usage-subagent",
+        "tools/usage-watch/claude-usage-postmortem",
+        "tools/usage-watch/claude-usage-anchor",
+        "tools/usage-watch/claude-usage-dispatch"
+      ],
+      "tests": [
+        "tools/usage-watch/tests"
+      ],
+      "commands": [
+        "claude-usage-line",
+        "claude-usage-watch",
+        "claude-usage-subagent",
+        "claude-usage-postmortem",
+        "claude-usage-anchor",
+        "claude-usage-dispatch"
+      ],
+      "hooks": [
+        "tools/usage-watch/claude-usage-dispatch",
+        "tools/usage-watch/claude-usage-watch",
+        "tools/usage-watch/claude-usage-subagent",
+        "tools/usage-watch/claude-usage-postmortem"
+      ],
+      "config": [
+        "usage_watch"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:worktree-guard",
+      "kind": "tool",
+      "summary": "Enforces which checkout git commands and file edits may touch, steering concurrent sessions into their own worktrees.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "tools/worktree-guard/claude-worktree-guard"
+      ],
+      "tests": [
+        "tools/worktree-guard/tests",
+        "lib/tests/test_guard_crash_reports.py"
+      ],
+      "commands": [
+        "claude-worktree-guard"
+      ],
+      "hooks": [
+        "tools/worktree-guard/claude-worktree-guard"
+      ],
+      "config": [
+        "worktree_guard",
+        "workspace_root"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:wrap-up",
+      "kind": "tool",
+      "summary": "Prints the local git state a wrap-up needs, as JSON.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/wrap-up/claude-wrap-up-survey"
+      ],
+      "tests": [
+        "tools/wrap-up/tests"
+      ],
+      "commands": [
+        "claude-wrap-up-survey"
+      ],
+      "hooks": [],
+      "config": [
+        "wrap_up"
+      ],
+      "requires": []
+    },
+    {
+      "id": "skill:build",
+      "kind": "skill",
+      "summary": "Runs a multi-file build as an architect and executor split, with adversarial review gates.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "skills/builder/build/SKILL.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests",
+        "tools/build-route/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:build-cost",
+        "tool:build-lens",
+        "tool:build-route",
+        "tool:codex-review",
+        "tool:spec-archive"
+      ]
+    },
+    {
+      "id": "skill:claude-md-distill",
+      "kind": "skill",
+      "summary": "Shrinks a bloated CLAUDE.md by moving detail out, with a backup and a safe write path.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "skills/continuity/claude-md-distill/SKILL.md"
+      ],
+      "tests": [],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:backup",
+        "tool:context-budget",
+        "tool:distill-guard",
+        "tool:memory-lint"
+      ]
+    },
+    {
+      "id": "skill:handover",
+      "kind": "skill",
+      "summary": "Writes a handover document for the current thread and recommends starting a fresh session.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "skills/continuity/handover/SKILL.md"
+      ],
+      "tests": [],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:session-claim",
+        "tool:spec-archive",
+        "tool:thread-handover"
+      ]
+    },
+    {
+      "id": "skill:memory-distill",
+      "kind": "skill",
+      "summary": "Shrinks a bloated auto-memory index and routes each memory to the right place.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "skills/continuity/memory-distill/SKILL.md"
+      ],
+      "tests": [],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:backup",
+        "tool:distill-guard"
+      ]
+    },
+    {
+      "id": "skill:wrap-up",
+      "kind": "skill",
+      "summary": "Surveys the local git state and closes out a work session cleanly.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "skills/continuity/wrap-up/SKILL.md"
+      ],
+      "tests": [],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:backup",
+        "tool:caffeinate",
+        "tool:wrap-up"
+      ]
+    },
+    {
+      "id": "skill:onboard",
+      "kind": "skill",
+      "summary": "Sets up this toolkit on a Mac: detects what is already there, installs the chosen profiles, and proves the safety guard works.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "skills/core/onboard/SKILL.md"
+      ],
+      "tests": [
+        "lib/tests/test_onboard_team_policy.py",
+        "lib/tests/test_onboard_auto_memory_verify.py",
+        "lib/tests/test_onboard_existing_work.py",
+        "lib/tests/test_onboard_experience_level.py",
+        "lib/tests/test_onboard_profile_chooser.py",
+        "lib/tests/test_onboard_setup_audit.py",
+        "lib/tests/test_onboard_verify_canary.py",
+        "lib/tests/test_onboard_public.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:danger-guard",
+        "tool:setup-audit"
+      ]
+    },
+    {
+      "id": "skill:autonomy-permissions",
+      "kind": "skill",
+      "summary": "Walks you through widening or tightening what Claude may do without asking.",
+      "delivery": "profile:core",
+      "entry_points": [
+        "skills/core/autonomy-permissions/SKILL.md"
+      ],
+      "tests": [
+        "skills/core/autonomy-permissions/scripts/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:danger-guard"
+      ]
+    },
+    {
+      "id": "skill:caffeinate",
+      "kind": "skill",
+      "summary": "Keeps this Mac awake on battery while Claude works, or turns that back off.",
+      "delivery": "profile:mac",
+      "entry_points": [
+        "skills/mac/caffeinate/SKILL.md"
+      ],
+      "tests": [],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:caffeinate"
+      ]
+    },
+    {
+      "id": "skill:review-pr-ci",
+      "kind": "skill",
+      "summary": "Reviews a pull request against the repository's own CLAUDE.md rules and posts one review; ships a GitHub Actions template that runs it on new pull requests with your own Claude token.",
+      "delivery": "profile:maintainer",
+      "entry_points": [
+        "skills/maintainer/review-pr-ci/SKILL.md",
+        "actions/claude-pr-review/action.yml",
+        "actions/claude-pr-review/workflow-template.yml"
+      ],
+      "tests": [
+        "skills/maintainer/review-pr-ci/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "agent:code-reviewer"
+      ]
+    },
+    {
+      "id": "skill:skill-builder",
+      "kind": "skill",
+      "summary": "Guides creating, editing, reviewing and testing a Claude Code skill, from where it lives to its trigger evals.",
+      "delivery": "profile:maintainer",
+      "entry_points": [
+        "skills/maintainer/skill-builder/SKILL.md"
+      ],
+      "tests": [
+        "skills/maintainer/skill-builder/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "skill:prompt-optimizer",
+        "tool:skill-trigger",
+        "evals",
+        "bundle-checks",
+        "tool:catalogue"
+      ]
+    },
+    {
+      "id": "skill:claude-teacher",
+      "kind": "skill",
+      "summary": "Teaches Claude Code and git by doing, with lessons matched to your level and built from your own work.",
+      "delivery": "plugin:skill-claude-teacher",
+      "entry_points": [
+        "plugins/claude-teacher/skills/claude-teacher/SKILL.md"
+      ],
+      "tests": [
+        "lib/tests/test_skill_plugins.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "skill:humanizer",
+      "kind": "skill",
+      "summary": "Strips AI-writing patterns from a draft and gives it a human voice, or names the patterns without rewriting.",
+      "delivery": "plugin:skill-humanizer",
+      "entry_points": [
+        "plugins/humanizer/skills/humanizer/SKILL.md"
+      ],
+      "tests": [
+        "evals/tests",
+        "lib/tests/test_skill_plugins.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "skill:prompt-optimizer",
+      "kind": "skill",
+      "summary": "Improves a rough or high-stakes request before it is acted on, and challenges the reasoning behind it.",
+      "delivery": "plugin:skill-prompt-optimizer",
+      "entry_points": [
+        "plugins/prompt-optimizer/skills/prompt-optimizer/SKILL.md"
+      ],
+      "tests": [
+        "lib/tests/test_skill_plugins.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "agent:architect-reviewer",
+      "kind": "agent",
+      "summary": "Reads a finished branch against its plan as one artifact, for coherence and cross-task problems; dispatched by hand.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "agents/architect-reviewer.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "agent:code-reviewer",
+      "kind": "agent",
+      "summary": "Reviews a whole pull request or branch diff against the repository's own rules, independent of the author.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "agents/code-reviewer.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "agent:executor",
+      "kind": "agent",
+      "summary": "Implements exactly one task from a written plan and reports back, without redesigning it.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "agents/executor.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests",
+        "tools/model-guard/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "agent:task-reviewer",
+      "kind": "agent",
+      "summary": "Reviews the diff of one completed plan task against its acceptance criteria.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "agents/task-reviewer.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "installer",
+      "kind": "component",
+      "summary": "Installs the toolkit from a checkout: links commands onto your PATH, merges settings, and records what it did.",
+      "delivery": "checkout",
+      "entry_points": [
+        "install.sh",
+        "lib/install_record.py",
+        "lib/settings_io.py",
+        "lib/claude_home.py",
+        "lib/portable.py",
+        "lib/core_block.py",
+        "lib/claude_imports.py",
+        "lib/auto_memory.py",
+        "lib/readiness.py"
+      ],
+      "tests": [
+        "lib/tests/test_install_manifest.py",
+        "lib/tests/test_install_links_only.py",
+        "lib/tests/test_install_preflight.py",
+        "lib/tests/test_install_atomic_writes.py",
+        "lib/tests/test_install_record.py",
+        "lib/tests/test_settings_io.py",
+        "lib/tests/test_claude_home.py",
+        "lib/tests/test_portable.py",
+        "lib/tests/test_core_block.py",
+        "lib/tests/test_claude_imports.py",
+        "lib/tests/test_auto_memory.py",
+        "lib/tests/test_install_auto_memory.py",
+        "lib/tests/test_install_backup_link.py",
+        "lib/tests/test_install_check_fails.py",
+        "lib/tests/test_install_claude_md_excludes.py",
+        "lib/tests/test_install_config_dir.py",
+        "lib/tests/test_install_relocation.py",
+        "lib/tests/test_readiness.py",
+        "lib/tests/test_install_git_helper.py",
+        "lib/tests/test_install_links_inventory.py",
+        "lib/tests/test_install_prune.py",
+        "lib/tests/test_install_record_writes.py",
+        "lib/tests/test_install_required_failures.py",
+        "lib/tests/test_install_snapshots.py",
+        "lib/tests/test_install_verify_live.py",
+        "lib/tests/test_install_workflows.py",
+        "lib/tests/test_workflows_setting.py",
+        "lib/tests/test_install_worktree.py",
+        "lib/tests/test_path_surface_matrix.py",
+        "lib/tests/test_fresh_clone_bootstrap.py",
+        "lib/tests/test_gitattributes.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "config",
+      "kind": "component",
+      "summary": "Defines the optional per-user config file, its documented defaults and the setup helper that writes it.",
+      "delivery": "checkout",
+      "entry_points": [
+        "config.example.json",
+        "lib/toolkit_config.py",
+        "lib/setup_config.py"
+      ],
+      "tests": [
+        "lib/tests/test_toolkit_config.py",
+        "lib/tests/test_setup_config.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "policy",
+      "kind": "component",
+      "summary": "Provides the shared policy text and the templates for a personal CLAUDE.md and tooling map.",
+      "delivery": "checkout",
+      "entry_points": [
+        "policy/CLAUDE.md",
+        "CLAUDE.md.template",
+        "TOOLING.md.template",
+        "lib/team_policy.py"
+      ],
+      "tests": [
+        "lib/tests/test_policy_split.py",
+        "lib/tests/test_team_policy.py",
+        "lib/tests/test_tooling_template.py",
+        "lib/tests/test_template_review_pointers.py",
+        "lib/tests/test_install_autonomous.py",
+        "lib/tests/test_install_permissions_opt_out.py",
+        "lib/tests/test_install_team_policy.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "marketplace",
+      "kind": "component",
+      "summary": "Describes the toolkit as a plugin marketplace, with a manifest per plugin (no plugin version, so installs follow the commit), a release-tag VERSION and a layout check.",
+      "delivery": "checkout",
+      "entry_points": [
+        ".claude-plugin/marketplace.json",
+        "plugin/.claude-plugin/plugin.json",
+        "plugin-continuity/.claude-plugin/plugin.json",
+        "plugin-build/.claude-plugin/plugin.json",
+        "plugin-maintainer/.claude-plugin/plugin.json",
+        "plugin-mac/.claude-plugin/plugin.json",
+        "VERSION",
+        "scripts/check_layout.py"
+      ],
+      "tests": [
+        "lib/tests/test_plugin_layout.py",
+        "lib/tests/test_plugin_hooks.py",
+        "lib/tests/test_install_plugin.py",
+        "lib/tests/test_install_plugin_components.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "profile-selection",
+      "kind": "component",
+      "summary": "Lets you choose which profiles, and so which plugins, a machine installs.",
+      "delivery": "checkout",
+      "entry_points": [
+        "claude/profiles.json",
+        "lib/profiles.py",
+        "lib/hook_manifest.py",
+        "lib/plugin_paths.py"
+      ],
+      "tests": [
+        "lib/tests/test_profiles.py",
+        "lib/tests/test_hook_manifest_profiles.py",
+        "lib/tests/test_plugin_paths.py",
+        "lib/tests/test_install_profiles.py",
+        "lib/tests/test_install_prerequisites.py",
+        "lib/tests/test_profiles_prose.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "update",
+      "kind": "component",
+      "summary": "Updates the toolkit from its configured origin and refuses an origin you did not choose.",
+      "delivery": "checkout",
+      "entry_points": [
+        "lib/toolkit_update.py"
+      ],
+      "tests": [
+        "lib/tests/test_toolkit_update.py",
+        "lib/tests/test_install_update.py",
+        "lib/tests/test_install_fault_injection.py",
+        "lib/tests/test_fault_inject.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "uninstall",
+      "kind": "component",
+      "summary": "Removes what the installer added, after showing a plan of what would go.",
+      "delivery": "checkout",
+      "entry_points": [
+        "lib/uninstall.py"
+      ],
+      "tests": [
+        "lib/tests/test_uninstall_plan.py",
+        "lib/tests/test_install_uninstall.py",
+        "lib/tests/test_uninstall_live_cli.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "ci-local-checks",
+      "kind": "component",
+      "summary": "Runs every check a change must pass in one script, printing one result line per check.",
+      "delivery": "checkout",
+      "entry_points": [
+        "ci/local-checks.sh"
+      ],
+      "tests": [
+        "ci/tests/test_local_checks.py",
+        "lib/tests/test_install_checks_every_suite.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "evals",
+      "kind": "component",
+      "summary": "Runs a skill's recorded eval cases and checks the answers against each case's rules.",
+      "delivery": "checkout",
+      "entry_points": [
+        "evals/run_eval.py",
+        "evals/eval_lib.py",
+        "evals/cases"
+      ],
+      "tests": [
+        "evals/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "bundle-checks",
+      "kind": "component",
+      "summary": "Checks that every skill bundle is well formed and within the size limit.",
+      "delivery": "checkout",
+      "entry_points": [
+        "scripts/check_bundles.py"
+      ],
+      "tests": [
+        "scripts/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "plugin-prerequisites",
+      "kind": "component",
+      "summary": "Offers optional outside plugins through setup-plugins.sh, and reports any outside plugin a profile declares as a prerequisite (none ship today); it reports, never installs for a profile.",
+      "delivery": "checkout",
+      "entry_points": [
+        "claude/recommended-plugins.json",
+        "claude/profiles.json",
+        "scripts/setup-plugins.sh"
+      ],
+      "tests": [
+        "lib/tests/test_setup_plugins.py",
+        "lib/tests/test_plugin_deps.py",
+        "lib/tests/test_install_prerequisites.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "build-measurements",
+      "kind": "component",
+      "summary": "Explains how to measure what a build or review gate costs and catches, without quoting anyone's figures.",
+      "delivery": "checkout",
+      "entry_points": [
+        "docs/build-measurements.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests",
+        "tools/build-cost/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "setup-git",
+      "kind": "component",
+      "summary": "Links the repository's client-side Git hooks into the global hooks path, forwarding to any hooks the user already had.",
+      "delivery": "checkout",
+      "entry_points": [
+        "scripts/setup-git.sh"
+      ],
+      "tests": [
+        "lib/tests/test_setup_git_forwarding.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "pr-review-action",
+      "kind": "component",
+      "summary": "A composite GitHub Action and workflow template that users copy to run a Claude review on their own pull requests.",
+      "delivery": "checkout",
+      "entry_points": [
+        "actions/claude-pr-review/action.yml",
+        "actions/claude-pr-review/pr-review.sh",
+        "actions/claude-pr-review/workflow-template.yml"
+      ],
+      "tests": [
+        "skills/maintainer/review-pr-ci/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "capability-check",
+      "kind": "component",
+      "summary": "Checks this registry against the repository and, in release mode, proves each capability with tests that actually ran under both supported Python versions.",
+      "delivery": "checkout",
+      "entry_points": [
+        "scripts/check-capabilities.py",
+        "lib/capabilities.py",
+        "lib/capability_evidence.py",
+        "docs/capability-skips.json"
+      ],
+      "tests": [
+        "lib/tests/test_capabilities.py",
+        "scripts/tests/test_check_capabilities.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "repo-checks",
+      "kind": "component",
+      "summary": "Repository self-checks that keep instruction files, shebangs, suite locations and text encodings honest for contributors.",
+      "delivery": "checkout",
+      "entry_points": [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/decisions.md"
+      ],
+      "tests": [
+        "lib/tests/test_doc_pointers.py",
+        "lib/tests/test_shebangs.py",
+        "lib/tests/test_suite_discovery.py",
+        "lib/tests/test_text_encoding_lint.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    }
+  ]
+}

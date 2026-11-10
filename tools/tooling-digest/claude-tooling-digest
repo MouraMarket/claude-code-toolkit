@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""SessionStart hook: inject the digest block from the personal TOOLING.md.
+
+The map answers the questions that otherwise get asked out loud every session —
+where a credential lives, whether a platform is connected, which venv has a
+library, what is already automated. A file nobody is pointed at does not get
+read, so the summary is put in front of Claude rather than waited on.
+
+Prints nothing when the feature is off, or when anything at all goes wrong.
+An enabled digest with no map configured or present prints a one-line notice
+instead of staying silent: the opt-out is `enabled: false`, not a missing
+file. Best-effort by construction: a broken hook must never cost someone a
+prompt.
+"""
+
+import json
+import os
+import sys
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+    # realpath, not abspath: this runs through a ~/.local/bin symlink, and
+    # abspath would resolve the lib path against /Users and fail at runtime
+    # while passing every test.
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+
+    import digest_lib
+
+    # The payload is read and discarded — what to inject is a property of the
+    # machine, not of the session. Reading it anyway keeps stdin drained, which
+    # matters when several hooks are wired to the same event.
+    try:
+        json.loads(sys.stdin.buffer.read())
+    except Exception:
+        pass
+
+    notice = digest_lib.build()
+    if notice:
+        sys.stdout.write(notice)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

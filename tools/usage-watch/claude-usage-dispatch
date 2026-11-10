@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""PreToolUse (Agent|Workflow): forecast a dispatch against the usage budget.
+
+Surface: wherever PreToolUse fires on Agent|Workflow. Verified: unverified live;
+subprocess tests only.
+
+PreToolUse fires before the tool RUNS, not before the model decides, so below
+halt the forecast informs the NEXT decision; at halt `permissionDecision: "ask"`
+stops the call it fires on. The percentage is the binding real reading from the
+status-line cache, else an anchored estimate (this machine only, a floor). Every
+judgement lives in `dispatch_lib.verdict`.
+
+Channels: additionalContext -> Claude; systemMessage -> the human, halt only;
+permissionDecision "ask" at halt, else OMITTED ("allow" bypasses other rules).
+An exception prints ONE JSON crash report (no permissionDecision) and exits 0:
+the dispatch proceeds, visibly unchecked. Exit code is ALWAYS 0.
+"""
+import json
+import os
+import sys
+import time
+
+GUARD = "claude-usage-dispatch"
+NOUN = "dispatch"
+
+
+def _crash_report(exc):
+    # Fail open, but never look like a check that ran and found headroom.
+    # permissionDecision is OMITTED: "allow" would bypass other rules.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". The budget check did not run, "
+                                 "so treat the budget as unknown, not as "
+                                 "headroom. Tell the user this check is "
+                                 "broken.",
+        },
+    }
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink and
+    # abspath does not resolve one.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(os.path.dirname(here), "build-cost"))
+    import usage_lib as usage
+    import estimate_lib as estimator
+    import dispatch_lib as dispatch
+    import cost_lib
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        return
+    except Exception as exc:
+        print(json.dumps(_crash_report(exc)))
+        return
+    if not isinstance(payload, dict):
+        return
+
+    if not usage.is_enabled() or not usage.dispatch_advisory_enabled():
+        return
+
+    now = time.time()
+    report = usage.cache_report(now)
+    found = usage.binding(report.buckets) if report.buckets else None
+    if found:
+        pct, source, bucket = found[1], "reading", usage.bucket_label(found[0])
+    else:
+        est = estimator.current_estimate(now)
+        if est and est.pct is not None:
+            pct, source, bucket = est.pct, "estimate", "5h"
+        else:
+            pct, source, bucket = None, None, None
+    ratio, ratio_source = estimator.derive_ratio(estimator.load_store())
+
+    tool_input = payload.get("tool_input")
+    subagent_type = tool_input.get("subagent_type") \
+        if isinstance(tool_input, dict) else None
+    lane = dispatch.lane_for_dispatch(payload.get("tool_name"), subagent_type,
+                                      cost_lib.LANE_BY_AGENT_TYPE)
+
+    emit(dispatch.verdict(
+        pct=pct, source=source, bucket=bucket, lane=lane,
+        lane_stats=cost_lib.lane_stats(cost_lib.ledger_path()),
+        ratio=ratio, ratio_source=ratio_source,
+        thresholds=usage.thresholds()))
+
+
+def emit(result):
+    """Print only the channels that have something in them.
+
+    An empty `hookSpecificOutput` is not printed at all: a bare
+    `{"hookSpecificOutput": {"hookEventName": "PreToolUse"}}` is a valid
+    payload that says nothing, and printing one on every dispatch trains
+    whoever reads the transcript to skip this hook's output entirely.
+    """
+    specific = {"hookEventName": "PreToolUse"}
+    if result.context:
+        specific["additionalContext"] = result.context
+    if result.permission_decision:
+        specific["permissionDecision"] = result.permission_decision
+        specific["permissionDecisionReason"] = result.reason
+    if len(specific) == 1:
+        return
+
+    blob = {"hookSpecificOutput": specific}
+    if result.system_message:
+        blob["systemMessage"] = result.system_message
+    print(json.dumps(blob))
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception as exc:
+        # The JSON object is the only stdout: a traceback there would be
+        # parsed as the hook's output.
+        print(json.dumps(_crash_report(exc)))
+    sys.exit(0)

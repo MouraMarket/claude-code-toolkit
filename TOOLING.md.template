@@ -1,0 +1,221 @@
+# TOOLING.md — template
+
+Copy this to the root of your workspace (the same `workspace_root` you gave
+setup) as `TOOLING.md`. The `claude-tooling-digest` hook injects the digest block
+into every session automatically; the rest is read on demand.
+
+**Keep the digest block under its line cap (`tooling_digest.max_lines`, 60 by
+default).** Over the cap the block is **withheld entirely** — the session gets a
+two-line overage notice and no map at all. That is deliberate: a block trimmed to
+the cap reads exactly like a complete one, so a map can quietly lose its tail for
+days. Demote rows into the body below the block rather than raising the cap; the
+body is read on demand and costs nothing per session.
+
+**The easy way is `/onboard`** — Claude copies this file and fills in the `TODO`
+sections by *checking your machine*, which is most of them. Filling them by hand
+works too.
+
+**Why this file is yours and not in the toolkit.** It describes one machine and
+one set of accounts. Which CLIs you have, which account your `gh` is logged in as,
+which MCP connectors you have authorized — none of that is true on a different
+machine. A fact copied into two places will eventually disagree with itself, so
+keep each fact here once and link to anything canonical elsewhere.
+
+Delete this header block once you've copied the file.
+
+---
+
+# Tooling, access, and configuration — <TODO: your name>'s machine
+
+**What I use, how I reach it, and whether it currently works.** Read this before
+asking me for a credential, guessing whether a platform is connected, hunting for
+which venv has a library, or asking what's already automated.
+
+**No secrets, ever.** Every credential is named by its secret-manager reference or
+its environment variable. Resolve at runtime. Never paste a value here, into a
+task, a commit, or chat.
+
+**Every status carries the date it was last confirmed by actually running
+something.** An unverified row is a lead, not a fact.
+
+<!--
+  `CORE:START` / `CORE:END` work identically to the DIGEST pair below — same
+  behaviour, and CORE is the name the context contract uses. Carry EXACTLY ONE
+  pair in this file: the earliest complete pair wins whichever kind it is, so a
+  second one is ambiguous about what gets injected and the hook will say so.
+-->
+<!-- DIGEST:START -->
+```
+TOOLING DIGEST — full detail in <TODO: path>/TOOLING.md
+TODO — rewrite this block for your machine, then delete these notes.
+Keep it under ~25 lines: it is paid for in EVERY session. It should
+answer the questions you are tired of being asked, and nothing else.
+
+Secrets    TODO — how credentials resolve here (a secret-manager CLI,
+           environment variables). UNVERIFIED until you have run it here.
+API/MCP    Both exist for a service? Pick per task, and say which.
+MCP live   TODO — which connectors actually work for you
+MCP DOWN   TODO — the ones that need authorizing, and what they cost you
+CLI        TODO — what's installed, and what ISN'T (that matters more)
+Env        TODO — python version, venvs, mounts, local gotchas
+Scheduled  TODO — what already runs without you
+If a row here is wrong, fix TOOLING.md in the same turn.
+```
+<!-- DIGEST:END -->
+
+---
+
+## 1. Secrets
+
+**TODO — how credentials resolve on this machine.** Name the mechanism and how to
+confirm it works, never a value. For example, with a password manager's CLI:
+
+```bash
+op whoami                                         # confirm the session
+op item list --vault "<TODO: vault>" --format=json   # titles, never values
+```
+
+Or list the environment variables your scripts read, and where they are set.
+
+**A listing goes stale within minutes, not months.** Re-list before concluding
+something is absent. "Not in the table" is not evidence.
+
+---
+
+## 2. Platforms — what auth *you* have
+
+This table records which accounts *this machine* is authenticated as.
+
+```bash
+gh auth status      # plus the equivalent check for each CLI you use
+```
+
+| Platform | How I reach it | Identity | Verified |
+|---|---|---|---|
+| GitHub | `gh` CLI (optional) | TODO — flag it if it can reach production ⚠️ | TODO |
+| TODO | TODO — REST token, MCP, or both | TODO | TODO |
+
+**When a service has both a direct API and an MCP connector, decide per task,
+and say which one you are using.** Neither is the default. Choose by what this
+session actually has — its tools, credentials and network access, not the
+surface's name. The API suits bulk, scripted or repeatable work, writes, and
+anything the connector cannot do; the connector suits a quick interactive read,
+or a session that cannot reach the API. Use one of them per task for the same
+data, never both. Record a service-specific exception in the table above.
+
+**⚠️ Flag any personal account with production reach.** Saying so here is what
+makes it fixable later.
+
+---
+
+## 3. MCP connectors — what's actually authorized
+
+Claude Code cannot run the OAuth flow in a non-interactive session. Authorize
+connectors via `/mcp` in an interactive session, or in the settings of the app
+that provides them.
+
+**Live** — TODO, list the connectors whose tools are actually available to you.
+
+**Wanted, but NOT authorized** — TODO. This is the highest-value row in the file.
+An unauthorized connector fails in a way that looks like *no data* rather than
+*not logged in*, so it gets misdiagnosed every single time. Name the connector,
+what it's for, and what its absence costs.
+
+**Present but not used** — TODO, optional. Worth listing only so their absence
+isn't mistaken for a broken connection.
+
+*Connector status is per-session and per-account.* Re-read the session's own
+server list before asserting a connector is down.
+
+---
+
+## 4. Local environment
+
+**TODO — fill from your own machine.** The entries that earn their place are the
+ones that are *missing* or *surprising*, not the ones that are normal.
+
+```bash
+for c in gh python3 node jq uv rg; do
+  printf "%-9s %s\n" "$c" "$(command -v $c || echo MISSING)"
+done
+python3 -V; grep --version | head -1
+```
+
+| Thing | State |
+|---|---|
+| OS / machine | TODO |
+| Editor | TODO |
+| `python3` | TODO — version, and whether it's system or managed |
+| Installed CLIs | TODO |
+| **Not** installed | TODO — this line saves more time than the one above |
+| Cloud drive mounts | TODO |
+| Workspace root | TODO |
+
+### Virtualenvs — which has what
+
+**TODO.** One row per venv, with what it has and — more usefully — what it's
+*missing*. The missing library is what turns into a confusing failure.
+
+| venv | Python | Has | Missing |
+|---|---|---|---|
+| TODO | | | |
+
+### Local gotchas
+
+**TODO.** Anything on this machine that fails in a way that doesn't look like a
+failure. A tool that exits 0 with empty output on an unsupported pattern is worth
+a line here, because an empty result reads as evidence of absence.
+
+---
+
+## 5. What's already automated
+
+**TODO.** What runs without you, and where — scheduled jobs, CI, hosted services.
+This is the section that stops work being redone by hand.
+
+| Job | Schedule | Does |
+|---|---|---|
+| TODO | | |
+
+---
+
+## 6. The Claude Code layer
+
+Everything the toolkit installs **points into your toolkit checkout**: its
+`toolkit-*` plugins, which carry the hooks, load from the `claude-code-toolkit`
+marketplace entry (`claude plugin marketplace list` shows the path), and the
+`~/.local/bin` CLIs are symlinks into it. Edit the checkout, never hunt for a
+second copy. After an update, re-run `./install.sh` from the primary checkout,
+then start a new session (or run `/reload-plugins`) so plugin changes load.
+`./install.sh --check` changes nothing and lists anything that has drifted.
+Your personal values live **outside** the checkout at
+`~/.config/claude-code-toolkit/config.json`.
+
+Run `/hooks` to see what's active in the current session.
+
+**TODO — anything you've installed that isn't from the toolkit.**
+
+---
+
+## 7. Canonical docs — link, don't duplicate
+
+| Topic | Where |
+|---|---|
+| Toolkit conventions and testing standards | the toolkit checkout's `CLAUDE.md` |
+| TODO — a project registry, an API setup guide, anything canonical | TODO — wherever you keep it |
+
+---
+
+## Maintaining this file
+
+1. **Is it canonical somewhere else?** Then link to it here rather than copying it.
+2. **Verify by running something.** A row nobody has exercised is a guess.
+3. **Record the secret-manager reference or env var name — never the value.**
+4. **Date the verification.**
+5. **If access is tied to a personal account, say so.** That's the detail that
+   costs the most to rediscover.
+6. **Fix a wrong row in the same turn you discover it.** A stale registry is worse
+   than no registry, because it gets trusted.
+7. **Keep the digest block in sync.** If a change alters something inside
+   `DIGEST:START…END`, update it there too — that block is what reaches every
+   session.

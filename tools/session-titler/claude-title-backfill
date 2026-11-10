@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+"""One-time backfill: title existing Claude Code sessions.
+
+Usage:
+  claude-title-backfill --dry-run [--limit N]   propose titles, write nothing
+  claude-title-backfill [--limit N]             write titles and index rows
+
+Skips sessions that are already titled or have fewer than two real user
+messages, so it is safe to re-run.
+"""
+
+import argparse
+import importlib.machinery
+import importlib.util
+import glob
+import os
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import title_lib
+
+_spec = importlib.util.spec_from_loader(
+    "hookmod",
+    importlib.machinery.SourceFileLoader(
+        "hookmod", os.path.join(HERE, "claude-title-session")))
+hookmod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(hookmod)
+
+PROJECTS_GLOB = os.path.expanduser("~/.claude/projects/*/*.jsonl")
+
+
+def session_date(transcript_path):
+    """The session's own date, read from the first timestamped entry.
+
+    NOT mtime: appending a title record updates mtime, so after a backfill
+    every transcript looks like it happened today. The embedded timestamp is
+    the only stable record of when the session actually ran.
+    """
+    import datetime
+    import json as _json
+    try:
+        with open(transcript_path, "r", encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                if i > 50:
+                    break
+                if len(line) > 200000:
+                    continue
+                try:
+                    entry = _json.loads(line)
+                except Exception:
+                    continue
+                stamp = entry.get("timestamp") if isinstance(entry, dict) else None
+                if isinstance(stamp, str) and len(stamp) >= 10:
+                    return stamp[:10]
+    except (IOError, OSError):
+        pass
+    return datetime.date.fromtimestamp(
+        os.path.getmtime(transcript_path)).isoformat()
+
+
+def project_cwd(transcript_path):
+    """Recover a readable cwd from the project directory slug."""
+    slug = os.path.basename(os.path.dirname(transcript_path))
+    return "/" + slug.lstrip("-").replace("-", "/")
+
+
+def remove_index_rows(session_id, index_path):
+    """Drop any existing index row for this session id.
+
+    Used by --force: the transcript's `custom-title` record is always
+    appended (findLast makes the newest one win), but the index would
+    otherwise carry one row per re-title. Rewriting the index to drop the
+    stale row keeps it one-row-per-session.
+    """
+    if not os.path.exists(index_path):
+        return
+    with open(index_path, "r", encoding="utf-8", errors="replace") as fh:
+        lines = fh.readlines()
+    kept = []
+    for line in lines:
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) >= 2 and fields[1] == session_id:
+            continue
+        kept.append(line)
+    with open(index_path, "w", encoding="utf-8") as fh:
+        fh.writelines(kept)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--force", action="store_true",
+                         help="retitle sessions that already carry a title")
+    args = parser.parse_args()
+
+    paths = sorted(glob.glob(PROJECTS_GLOB), key=os.path.getmtime, reverse=True)
+    print("{0} transcripts found\n".format(len(paths)))
+
+    done = 0
+    for path in paths:
+        if args.limit and done >= args.limit:
+            break
+        session_id = os.path.basename(path)[:-len(".jsonl")]
+
+        if not args.force and title_lib.has_title(path):
+            continue
+        sample = title_lib.sample_transcript(path)
+        if not title_lib.is_titleworthy(sample):
+            continue
+
+        cwd = project_cwd(path)
+        title = hookmod.generate_title(sample, cwd)
+        if not title:
+            print("  !! no title: {0}".format(session_id[:8]))
+            continue
+
+        if args.dry_run:
+            print("  [dry] {0}  {1}".format(session_id[:8], title))
+        else:
+            if not title_lib.append_title_record(path, session_id, title):
+                # No record, no index row: see claude-title-session.
+                print("  !! not written: {0}".format(session_id[:8]))
+                continue
+            if args.force:
+                # A re-title still only appends to the transcript --
+                # findLast makes the newest custom-title record win -- but
+                # the index gets one row per session, not a duplicate.
+                remove_index_rows(session_id, title_lib.INDEX_PATH)
+            # Date the row when the session actually happened, not today.
+            # Backfilling 90 sessions all stamped "today" makes the date
+            # column worthless for narrowing a search.
+            title_lib.append_index_row(
+                session_id, cwd, title,
+                date_str=session_date(path))
+            print("  [ok]  {0}  {1}".format(session_id[:8], title))
+        done += 1
+        time.sleep(1)  # be polite to the API
+
+    print("\n{0} session(s) {1}".format(
+        done, "proposed" if args.dry_run else "titled"))
+    return 0
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

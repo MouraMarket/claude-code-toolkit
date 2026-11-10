@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+#
+# Global git pre-commit hook. Installed by scripts/setup-git.sh, which points
+# core.hooksPath at the directory this is symlinked into.
+#
+# Two things it must do, in order:
+#
+#   1. Scan the staged change for credentials, and block the commit if any are
+#      found. See tools/secret-scan/claude-secret-scan for why that check fails
+#      closed rather than open.
+#
+#   2. Chain to the repository's own .git/hooks/pre-commit if it has one.
+#      core.hooksPath REPLACES per-repo hooks rather than adding to them, so
+#      without this step, installing secret scanning would silently disable
+#      every existing pre-commit hook on the machine — husky, lint-staged,
+#      whatever a future repo brings. Losing a lint hook quietly is a bad trade
+#      for gaining a secret hook.
+#
+# Every other client-side hook type goes through git-hook-forward instead.
+#
+# If claude-secret-scan is not installed at all, this exits 0 and gets out of
+# the way. That is the one case where passing is right: no scanner installed is
+# not the same as a scanner that could not finish.
+set -uo pipefail
+
+# Resolve the scanner as this hook's SIBLING, not through $HOME or $PATH.
+#
+# realpath, not dirname alone: this file is reached through a symlink in
+# core.hooksPath, so $0 is the symlink and its dirname is the hooks directory,
+# not the repo. Same rule as everything else in this toolkit that is
+# $0-relative — see the realpath note in CLAUDE.md.
+#
+# This was $HOME/.local/bin/claude-secret-scan and that was wrong twice over: it
+# assumed one install layout, and it made the hook silently no-op whenever HOME
+# pointed somewhere else — which is what a test with a sandboxed HOME looks
+# like, and also what a machine that installs elsewhere looks like.
+SELF="$(realpath "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+SCANNER="$(dirname "$SELF")/claude-secret-scan"
+
+# Fall back to PATH only if the sibling is missing.
+[[ -x "$SCANNER" ]] || SCANNER="$(command -v claude-secret-scan 2>/dev/null || true)"
+
+if [[ -n "$SCANNER" && -x "$SCANNER" ]]; then
+  "$SCANNER" || exit $?
+fi
+
+# CLAUDE.md size cap. Runs AFTER the scanner, never before: a credential in the
+# staged diff must be reported even on a commit this would also block, and the
+# scanner's message is the one that must not get buried.
+#
+# NOT a sibling like the scanner above — this one lives in tools/context-lint/,
+# so resolve one level up and across. Same realpath rule and the same PATH
+# fallback, for the same reasons documented above.
+LINT="$(dirname "$SELF")/../context-lint/claude-context-lint"
+[[ -x "$LINT" ]] || LINT="$(command -v claude-context-lint 2>/dev/null || true)"
+
+# Fails OPEN by design, unlike the scanner: the cost of missing a size check is
+# a file that grows by a few dozen lines and gets caught next commit. The cost
+# of a line-counting tool wedging every commit on the machine is everything.
+# An absent linter is therefore simply not a check, and that is fine.
+if [[ -n "$LINT" && -x "$LINT" ]]; then
+  "$LINT" --staged || exit $?
+fi
+
+# The repo's own hook, if it kept one.
+#
+# NOT `git rev-parse --git-path hooks`: that resolves THROUGH core.hooksPath, so
+# once this hook is installed it returns our own directory and the repo's real
+# hook is never found. Verified by testing rather than reasoning — the first
+# version used --git-path, reported success, and silently ran nothing.
+#
+# --git-common-dir, not --git-dir: hooks live in the main checkout and are
+# shared by every worktree, so a worktree's own gitdir has no hooks/ at all.
+git_dir="$(git rev-parse --git-common-dir 2>/dev/null)" \
+  || git_dir="$(git rev-parse --git-dir 2>/dev/null)" || git_dir=""
+
+if [[ -n "$git_dir" ]]; then
+  own="$git_dir/hooks/pre-commit"
+  # Recursion guard: if a repo's own hook IS this file (someone symlinked it
+  # per-repo as well as globally), calling it again would loop.
+  if [[ -x "$own" && "$(realpath "$own" 2>/dev/null)" != "$(realpath "$0" 2>/dev/null)" ]]; then
+    "$own" || exit $?
+  fi
+fi
+
+exit 0

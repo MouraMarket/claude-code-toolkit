@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+#
+# claude-worktree-guard -- PreToolUse hook.
+#
+# Enforces which checkout git commands (and, for Rule C, direct file edits)
+# land in. Git already refuses to check out or delete a branch that ANOTHER
+# worktree holds, in both directions -- verified empirically. What it does
+# not protect is the checkout you are standing in right now, and it has no
+# opinion at all about a command reaching into a completely different
+# checkout via `git -C` or a leading `cd &&`. Three rules:
+#
+#   Rule A (active whenever `cwd` itself is inside a git repo) -- a
+#   state-mutating git command whose resolved target repository differs
+#   from the checkout `cwd` is in.
+#
+#   Rule B (active only when the target checkout has >=2 worktrees
+#   registered) -- switching that checkout's own branch, or otherwise
+#   moving its working tree, while another session may depend on it
+#   staying put.
+#
+#   Rule C (active only when worktree_guard.canonical_root is configured --
+#   see config.example.json) -- Edit/Write/MultiEdit/NotebookEdit, `git
+#   commit`, `git rebase`, a non-fast-forward `git merge`, a
+#   history-rewriting `git push`, or a `git push` that deletes a remote
+#   branch, all landing directly on a canonical checkout's OWN default
+#   branch.
+#
+# It exits 2 to block. That is deliberate: exit 2 is the documented
+# behaviour that stops a call BEFORE permission rules are evaluated, so it
+# overrides even a broad `Bash` allow rule.
+#
+# Companion to claude-danger-guard, which handles a different concern
+# (blast radius of a single command). This one handles which branch/
+# checkout work lands in.
+#
+# Everything it does not positively recognise as dangerous, it allows. A
+# guard that misfires on ordinary work gets disabled, and a disabled guard
+# protects nothing.
+#
+# Escape hatch: WORKTREE_ALLOW=1 disables it for that session. WT_ALLOW_MAIN=1
+# is accepted as a synonym -- both spellings have existed on different
+# machines and both keep working, on purpose.
+#
+# Accepted-unreachable set -- deliberately out of reach, same principle as
+# claude-danger-guard's BLOCKED/EXEMPT lists: this is "we decided", not "we
+# forgot". All of these need real shell emulation to see through, which this
+# hook does not do: `sh -c '...'`/`bash -lc "..."` (an opaque string handed
+# to another shell), `eval "..."` (same), `xargs -I{} ...` (the git
+# invocation is built at runtime, per input line), `$(...)`/`` `...` ``
+# (command substitution -- the inner command is not on this command line at
+# all), `pushd` (changes directory like `cd`, but this hook only tracks `cd`
+# and parenthesised subshells).
+#
+# No network I/O -- it runs on every Bash call and must stay fast.
+#
+# Design decisions about this file that look like accidental complexity are
+# recorded in docs/decisions.md. Read the relevant one before simplifying
+# anything here.
+#
+# This began as a zsh script, which bounded git with a perl `alarm`, read
+# JSON with `jq` and tokenized with `${(z)}`/`${(Q)}`. The Python version
+# needs none of those. All of its logic -- the bounded git runner,
+# machine-local config, the command walk, and every rule -- lives in
+# worktree_lib.py, a plain sibling import; this file is the entry point
+# only: read stdin, build a Context from the process environment, call
+# worktree_lib.evaluate, and turn its Verdict into an exit code. Same split
+# as claude-danger-guard/guard_lib.py.
+import json
+import sys
+
+GUARD = "claude-worktree-guard"
+NOUN = "command"
+
+
+def _crash_report(exc):
+    # A crashed guard allows (house rule: fail open), but it must not look
+    # like a guard that checked and allowed. Two channels: systemMessage for
+    # the human, additionalContext for Claude -- which reaches Claude on every
+    # surface, so Claude can tell the human where the warning does not render.
+    # permissionDecision is OMITTED: "allow" would bypass other rules. The
+    # literal "<guard> crashed" prefix is the marker every test harness, the
+    # corpus diff, and the smoke checks key on.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". This guard's check did not run; "
+                                 "other guards and permission rules still "
+                                 "apply. Tell the user this guard is broken.",
+        },
+    }
+
+
+# Defined above this import on purpose: a guard whose own library fails to
+# import must still be able to say so. The failure is kept and reported from
+# main(); the name stays a module attribute so a test can patch it.
+_IMPORT_ERROR = None
+try:
+    import worktree_lib
+except Exception as exc:  # noqa: BLE001 -- any import failure, not just ImportError
+    worktree_lib = None
+    _IMPORT_ERROR = exc
+
+ALLOW, BLOCK = 0, 2
+
+
+def main():
+    if _IMPORT_ERROR is not None:
+        print(json.dumps(_crash_report(_IMPORT_ERROR)))
+        sys.exit(ALLOW)
+
+    # stdin read + json.loads share this crash boundary with the evaluate
+    # call below: a pathologically nested payload (thousands of levels of
+    # `[` ) exhausts Python's recursion limit inside the JSON decoder itself,
+    # before `evaluate` ever runs, and that RecursionError must be reported
+    # the same way any other crash is -- never let it propagate past main()
+    # as a bare traceback. Ordinary malformed JSON (ValueError) and a
+    # well-formed non-dict payload both still allow silently, unchanged.
+    #
+    # Read BYTES and let json.loads decode them as the UTF-8 Claude Code
+    # writes: `sys.stdin.read()` decodes with the ambient encoding (cp1252 by
+    # default on Windows), which turns a non-ASCII path into a different
+    # string that git cannot resolve -- an allow. Invalid UTF-8 raises
+    # UnicodeDecodeError, a ValueError, so it allows silently like any other
+    # malformed payload.
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        sys.exit(ALLOW)
+    except Exception as exc:  # noqa: BLE001 -- includes RecursionError
+        print(json.dumps(_crash_report(exc)))
+        sys.exit(ALLOW)
+
+    if not isinstance(payload, dict):
+        sys.exit(ALLOW)
+
+    try:
+        # Called through the module attribute, not a locally bound name, so
+        # a caller that monkeypatches worktree_lib.evaluate (TestACrashIsVisible)
+        # changes what actually runs here.
+        verdict = worktree_lib.evaluate(payload, worktree_lib.context_from_environment())
+    except Exception as exc:  # noqa: BLE001 -- a crashed guard must still exit 0
+        print(json.dumps(_crash_report(exc)))
+        sys.exit(ALLOW)
+
+    if verdict.blocked:
+        sys.stderr.write(verdict.message)
+        sys.exit(BLOCK)
+    sys.exit(ALLOW)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    main()

@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""SessionEnd hook: drop this session's claims.
+
+The clean path. It does NOT fire on a crash, a force-quit, a VS Code reload or
+kill -9 -- which is why claim_lib.prune() independently drops claims whose
+owning process is gone. Between them, a claim cannot outlive its session.
+"""
+
+import json
+import os
+import sys
+
+
+def main():
+    try:
+        json.loads(sys.stdin.buffer.read())          # drained, not used; several hooks share this event
+    except Exception:
+        pass
+
+    here = os.path.dirname(os.path.realpath(__file__))
+    sys.path.insert(0, here)
+
+    import breaker_lib
+    import claim_lib
+    import identity_lib
+
+    for var, module, attribute in (
+            ("CLAIM_CLAIMS_PATH", claim_lib, "CLAIMS_PATH"),
+            ("CLAIM_BREAKER_PATH", breaker_lib, "BREAKER_PATH"),
+            ("CLAIM_LOG_PATH", breaker_lib, "LOG_PATH")):
+        if os.environ.get(var):
+            setattr(module, attribute, os.environ[var])
+
+    owner = identity_lib.resolve_hook_owner()
+    if owner is None:
+        return
+    # One start-time table for both liveness passes below, same as the claim
+    # hook: this event has a 10s ceiling of its own, and a `ps` per record
+    # would put an unbounded term inside it.
+    starts = identity_lib.start_times()
+    # Same lock as the claim path, for the same reason: releasing is a
+    # read-modify-write on a file other sessions are also rewriting.
+    with claim_lib.locked():
+        records = claim_lib.release(claim_lib.load_claims(), owner["pid"])
+        claim_lib.save_claims(claim_lib.prune(records, starts))
+    breaker_lib.reset(owner["pid"], starts=starts)
+    breaker_lib.log_decision("release", pid=owner["pid"])
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception:
+        pass
+    sys.exit(0)

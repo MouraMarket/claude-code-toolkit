@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+#
+# claude-danger-guard -- PreToolUse hook.
+#
+# Blocks a small set of genuinely destructive command shapes that permission
+# RULES cannot express. Rules match per-subcommand and can't see argument
+# paths, so `Bash(curl * | sh)` never fires and no rule can tell `rm -rf build`
+# from `rm -rf ~/Documents`. This hook sees the whole command and can.
+#
+# It exits 2 to block. That is deliberate: exit 2 is the documented behaviour
+# that stops a call BEFORE permission rules are evaluated, so it overrides even
+# a broad `Bash` allow rule. A JSON "deny" decision on exit 0 is only
+# documented to interact with the prompt flow, not to beat allow rules.
+#
+# Companion to claude-worktree-guard, which handles a different concern (which
+# branch/checkout work lands in). This one handles blast radius.
+#
+# Everything it does not positively recognise as dangerous, it allows. A guard
+# that misfires on ordinary work gets disabled, and a disabled guard protects
+# nothing.
+#
+# Escape hatch: DANGER_ALLOW=1 disables it for that session.
+#
+# No network I/O -- it runs on every Bash call and must stay fast.
+#
+# Design decisions about this file that look like accidental complexity are
+# recorded in docs/decisions.md. Read the relevant one before simplifying
+# anything here.
+#
+# This was a zsh script before it was ported to Python (comments below that
+# mention "the zsh original" refer to that version). All of its logic -- the tokenizer, quote removal, heredoc
+# stripping, and every rule -- lives in guard_lib.py, a plain sibling import;
+# this file is the entry point only: read stdin, build a Context from the
+# process environment, call guard_lib.evaluate, and turn its Verdict into an
+# exit code.
+import json
+import sys
+
+GUARD = "claude-danger-guard"
+NOUN = "command"
+
+
+def _crash_report(exc):
+    # A crashed guard allows (house rule: fail open), but it must not look
+    # like a guard that checked and allowed. Two channels: systemMessage for
+    # the human, additionalContext for Claude -- which reaches Claude on every
+    # surface, so Claude can tell the human where the warning does not render.
+    # permissionDecision is OMITTED: "allow" would bypass other rules. The
+    # literal "<guard> crashed" prefix is the marker every test harness, the
+    # corpus diff, and the smoke checks key on.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". This guard's check did not run; "
+                                 "other guards and permission rules still "
+                                 "apply. Tell the user this guard is broken.",
+        },
+    }
+
+
+# Defined above this import on purpose: a guard whose own library fails to
+# import must still be able to say so. The failure is kept and reported from
+# main(); the name stays a module attribute so a test can patch it.
+_IMPORT_ERROR = None
+try:
+    import guard_lib
+except Exception as exc:  # noqa: BLE001 -- any import failure, not just ImportError
+    guard_lib = None
+    _IMPORT_ERROR = exc
+
+ALLOW, BLOCK = 0, 2
+
+
+def main():
+    if _IMPORT_ERROR is not None:
+        print(json.dumps(_crash_report(_IMPORT_ERROR)))
+        sys.exit(ALLOW)
+
+    # Read BYTES and let json.loads decode them as the UTF-8 Claude Code
+    # writes: `sys.stdin.read()` decodes with the ambient encoding (cp1252 by
+    # default on Windows), which turns a non-ASCII path into a different
+    # string the rules cannot match -- an allow. Invalid UTF-8 raises
+    # UnicodeDecodeError, a ValueError, so it allows silently like any other
+    # malformed payload.
+    #
+    # This also shares its crash boundary with the evaluate call below: a
+    # pathologically nested payload (thousands of levels of `[`) exhausts
+    # Python's recursion limit inside the JSON decoder itself, before
+    # `evaluate` ever runs, and that RecursionError must be reported the
+    # same way any other crash is -- never let it propagate past main() as a
+    # bare traceback. Ordinary malformed JSON (ValueError) and a
+    # well-formed non-dict payload both still allow silently, unchanged.
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        sys.exit(ALLOW)
+    except Exception as exc:  # noqa: BLE001 -- includes RecursionError
+        print(json.dumps(_crash_report(exc)))
+        sys.exit(ALLOW)
+
+    if not isinstance(payload, dict):
+        sys.exit(ALLOW)
+
+    try:
+        verdict = guard_lib.evaluate(payload, guard_lib.context_from_environment())
+    except Exception as exc:  # noqa: BLE001 -- a crashed guard must still exit 0
+        print(json.dumps(_crash_report(exc)))
+        sys.exit(ALLOW)
+
+    if verdict.blocked:
+        sys.stderr.write(verdict.message)
+        sys.exit(BLOCK)
+    sys.exit(ALLOW)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    main()

@@ -1,0 +1,129 @@
+# Independent Claude review of a pull request, posted as one GitHub review.
+#
+# The reviewer's rubric (skills/maintainer/review-pr-ci/SKILL.md and
+# agents/code-reviewer.md) is read from THIS repository at the tag the caller
+# pins in `uses:`, never from the pull request under review, so a PR cannot edit
+# the instructions it is judged by. $GITHUB_ACTION_PATH points inside the
+# checkout the runner makes of this repository.
+#
+# Green means the review was posted and verified: the run ends with one review
+# from this run on the PR's head commit whose body follows the posting contract.
+# A red run means no verified review exists; the PR comment says why.
+#
+# Copy workflow-template.yml in this folder to the caller's
+# .github/workflows/claude-pr-review.yml to wire it up.
+name: Claude PR review
+description: Review a pull request against the repository's own CLAUDE.md rules and post one GitHub review.
+
+inputs:
+  pr_number:
+    description: Number of the pull request to review.
+    required: true
+  github_token:
+    description: Token that reads the pull request and posts the review.
+    required: true
+  claude_code_oauth_token:
+    description: Claude Code OAuth token (from `claude setup-token`).
+    required: true
+  model:
+    description: Claude model alias used for the review.
+    required: false
+    default: opus
+  reviewer_login:
+    description: Login the github_token posts reviews as. Change it only when github_token is not the workflow's GITHUB_TOKEN.
+    required: false
+    default: github-actions[bot]
+
+runs:
+  using: composite
+  steps:
+    - id: validate
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pr-review.sh" validate'
+      env:
+        PR_NUMBER: ${{ inputs.pr_number }}
+        MODEL: ${{ inputs.model }}
+        OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        STATE_DIR: ${{ runner.temp }}/claude-pr-review
+
+    - id: checkout
+      uses: actions/checkout@v7
+      with:
+        ref: refs/pull/${{ inputs.pr_number }}/head
+        fetch-depth: 0
+        persist-credentials: false
+
+    - id: base
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pr-review.sh" base'
+      env:
+        WORKSPACE: ${{ github.workspace }}
+        STATE_DIR: ${{ runner.temp }}/claude-pr-review
+
+    - id: prompt
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pr-review.sh" prompt'
+      env:
+        ACTION_ROOT: ${{ github.action_path }}/../..
+        GH_REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        STATE_DIR: ${{ runner.temp }}/claude-pr-review
+
+    - id: snapshot
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pr-review.sh" snapshot'
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_REPO: ${{ github.repository }}
+        STATE_DIR: ${{ runner.temp }}/claude-pr-review
+
+    - id: review
+      uses: anthropics/claude-code-action@v1
+      with:
+        prompt: ${{ steps.prompt.outputs.text }}
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        github_token: ${{ inputs.github_token }}
+        claude_args: >-
+          --model ${{ inputs.model }}
+          --tools Read,Glob,Grep,Bash
+          --allowedTools "Read,Glob,Grep,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr review:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*)"
+          --disallowedTools "mcp__*"
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_REPO: ${{ github.repository }}
+
+    - id: verify
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pr-review.sh" verify'
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+        REVIEWER_LOGIN: ${{ inputs.reviewer_login }}
+        STATE_DIR: ${{ runner.temp }}/claude-pr-review
+
+    - id: report
+      if: always()
+      shell: bash
+      run: '"$GITHUB_ACTION_PATH/pr-review.sh" report'
+      env:
+        PR_NUMBER: ${{ inputs.pr_number }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        STATE_DIR: ${{ runner.temp }}/claude-pr-review
+
+    - id: log
+      if: failure()
+      uses: actions/upload-artifact@v7
+      with:
+        name: claude-pr-review-log
+        path: ${{ steps.review.outputs.execution_file }}
+        if-no-files-found: warn
+        retention-days: 7
