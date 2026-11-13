@@ -459,5 +459,108 @@ class ShimUninstallTests(unittest.TestCase):
         self.assertEqual(self.plugins(), [("a@m", "project"), ("a@m", "user")])
 
 
+class TestPluginVersionRefresh(PluginInstallTestCase):
+    """`claude plugin list` reports the commit a directory-marketplace plugin
+    was installed at and keeps it until `claude plugin update`, while the hooks
+    run from the checkout. So after --update/--rollback the obvious check shows
+    the old version (row 75). install.sh refreshes a plugin whose listed
+    commit is not the checkout's, and never fails the run over it."""
+
+    CONTINUITY = "toolkit-continuity@claude-code-toolkit"
+    STALE = "0000deadbeef"
+
+    def setUp(self):
+        super().setUp()
+        self.head12 = git("rev-parse", "HEAD", cwd=self.repo).stdout.strip()[:12]
+
+    def seed(self, version, enabled=True):
+        fx.seed_installed(self.state, self.repo)
+        with open(self.state) as handle:
+            state = json.load(handle)
+        for plugin in state["plugins"]:
+            plugin["enabled"] = enabled
+            if version is not None:
+                plugin["version"] = version
+        with open(self.state, "w") as handle:
+            json.dump(state, handle)
+
+    def versions(self):
+        with open(self.state) as handle:
+            return {p["id"]: p.get("version") for p in json.load(handle)["plugins"]}
+
+    def latest(self):
+        return {"CLAUDE_SHIM_LATEST": json.dumps(
+            {fx.PLUGIN_ID: self.head12, self.CONTINUITY: self.head12})}
+
+    def updates(self):
+        return [line for line in self.log() if line.startswith("plugin update")]
+
+    def test_a_stale_plugin_is_refreshed_to_the_checkout(self):
+        self.seed(self.STALE)
+        proc = self.run_install(extra_env=self.latest())
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual(sorted(["plugin update %s --scope user" % fx.PLUGIN_ID,
+                                 "plugin update %s --scope user" % self.CONTINUITY]),
+                         sorted(self.updates()))
+        self.assertEqual({fx.PLUGIN_ID: self.head12, self.CONTINUITY: self.head12},
+                         self.versions())
+        self.assertIn("refreshing plugin %s (shows %s, the checkout is at %s)"
+                      % (fx.PLUGIN_ID, self.STALE, self.head12), proc.stdout)
+        self.assertNotIn("still shows", proc.stdout)
+
+    def test_a_disabled_stale_plugin_is_enabled_then_refreshed(self):
+        self.seed(self.STALE, enabled=False)
+        proc = self.run_install(extra_env=self.latest())
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        log = self.log()
+        self.assertIn(ENABLE, log)
+        self.assertIn("plugin update %s --scope user" % fx.PLUGIN_ID, log)
+        self.assertLess(log.index(ENABLE), log.index("plugin update %s --scope user" % fx.PLUGIN_ID))
+        self.assertEqual(self.head12, self.versions()[fx.PLUGIN_ID])
+
+    def test_a_plugin_at_the_checkout_commit_is_not_refreshed(self):
+        self.seed(self.head12)
+        proc = self.run_install(extra_env=self.latest())
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual([], self.updates())
+
+    def test_no_reported_version_means_no_refresh(self):
+        # The shim's own default, and an older CLI's shape: nothing to compare.
+        self.seed(None)
+        proc = self.run_install(extra_env=self.latest())
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual([], self.updates())
+
+    def test_a_manifest_version_is_not_compared(self):
+        self.seed("1.2.0")
+        proc = self.run_install(extra_env=self.latest())
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual([], self.updates())
+
+    def test_check_reports_the_stale_version_and_refreshes_nothing(self):
+        self.seed(self.STALE)
+        proc = self.run_install(["--check"], extra_env=self.latest())
+        self.assertIn("plugin %s shows %s, the checkout is at %s (would refresh)"
+                      % (fx.PLUGIN_ID, self.STALE, self.head12), proc.stdout)
+        self.assertEqual([], self.updates())
+        self.assertEqual(self.STALE, self.versions()[fx.PLUGIN_ID])
+
+    def test_a_refused_refresh_is_reported_and_the_install_succeeds(self):
+        self.seed(self.STALE)
+        proc = self.run_install(extra_env=dict(self.latest(), CLAUDE_SHIM_FAIL="update"))
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("until you run: claude plugin update %s --scope user" % fx.PLUGIN_ID,
+                      proc.stdout)
+        self.assertEqual(self.STALE, self.versions()[fx.PLUGIN_ID])
+
+    def test_a_refresh_that_changes_nothing_is_reported(self):
+        # The CLI says it updated, but the listing still shows the old commit.
+        self.seed(self.STALE)
+        proc = self.run_install()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertIn("plugin %s still shows %s after refreshing it, not the checkout's %s"
+                      % (fx.PLUGIN_ID, self.STALE, self.head12), proc.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

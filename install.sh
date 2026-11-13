@@ -1134,8 +1134,72 @@ def run_or_fail(*args):
         fail(out)
 
 
+def checkout_commit():
+    """The checkout's HEAD as 12 hex characters, or None. For a plugin served
+    from a directory marketplace with no manifest `version`, this is the version
+    `claude plugin list` reports, read once when the plugin is installed."""
+    env = dict(os.environ)
+    env.pop("GIT_DIR", None)
+    env.pop("GIT_WORK_TREE", None)
+    try:
+        proc = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True,
+                              universal_newlines=True, env=env, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    head = proc.stdout.strip()
+    if proc.returncode != 0 or not is_commit(head[:12]):
+        return None
+    return head[:12]
+
+
+def is_commit(value):
+    return (isinstance(value, str) and len(value) == 12
+            and all(char in "0123456789abcdef" for char in value))
+
+
+head12 = checkout_commit()
+
+
+def stale_version(entry):
+    """The commit `entry` shows when it is not the checkout's, else None.
+
+    The hooks always run from the checkout itself, but `claude plugin list`
+    keeps showing the commit read at install time until `claude plugin update`
+    refreshes it, so after an --update or --rollback the obvious check says the
+    old version is still installed. Only a 12-hex version is compared: a CLI
+    that reports no version, or a manifest version, says nothing about the
+    checkout."""
+    shown = entry.get("version") if entry else None
+    if head12 is not None and is_commit(shown) and shown != head12:
+        return shown
+    return None
+
+
 # What the deselected-profile step removed this run, for the end-state check.
 uninstalled_now = []
+# The plugins this run refreshed, for the end-state check.
+refreshed_now = []
+
+
+def refresh_if_stale(entry, pid):
+    """Refresh one installed plugin whose listed version is not the checkout's.
+    A refresh that fails is reported and never fails the run: the hooks already
+    run from the checkout, so only the version `claude plugin list` shows is wrong."""
+    shown = stale_version(entry)
+    if shown is None:
+        return
+    if check:
+        print("%s plugin %s shows %s, the checkout is at %s (would refresh)"
+              % (ACT, pid, shown, head12))
+        return
+    print("%s refreshing plugin %s (shows %s, the checkout is at %s)" % (ACT, pid, shown, head12))
+    ok, out = cli("plugin", "update", pid, "--scope", "user")
+    if ok:
+        refreshed_now.append(pid)
+    else:
+        print("%s %s — the hooks still run from the checkout, but `claude plugin list` "
+              "shows %s until you run: claude plugin update %s --scope user"
+              % (BAD, out, shown, pid))
 
 
 def uninstall_deselected(plugins, markets):
@@ -1273,8 +1337,10 @@ if have_claude:
                 else:
                     print("%s enabling plugin %s" % (ACT, pid))
                     run_or_fail("plugin", "enable", pid, "--scope", "user")
+                refresh_if_stale(entry, pid)
             else:
                 print("%s plugin %s enabled" % (OK, pid))
+                refresh_if_stale(entry, pid)
         deselected_handled = uninstall_deselected(plugins, markets or [])
         # Another toolkit plugin the user enabled by hand is theirs: say so, change nothing.
         for entry in plugins:
@@ -1308,6 +1374,13 @@ if have_claude:
             for problem in problems:
                 print("%s %s" % (BAD, problem))
             fail("hooks NOT installed; your existing settings hooks were left as they are")
+        # A refresh the CLI reported as done but that left the old version
+        # showing: say so, as for a refused one (the hooks are fine either way).
+        for pid in refreshed_now:
+            shown = stale_version(plugin_entry(plugins, pid))
+            if shown is not None:
+                print("%s plugin %s still shows %s after refreshing it, not the checkout's %s; "
+                      "the hooks run from the checkout either way" % (BAD, pid, shown, head12))
         report_prerequisites(plugins)
 
 # --- Step 5: remove only the hook commands the old template wrote -----------

@@ -516,6 +516,16 @@ class TestListTools(unittest.TestCase):
         names = {tool["name"] for group in data["groups"] for tool in group["tools"]}
         self.assertEqual(names, EXPECTED_CATALOGUE_TOOLS)
 
+    def test_secret_scan_explanation_says_it_is_off_until_git_setup(self):
+        """Row 80: /onboard explains Tier 1 from this list, and secret scanning is
+        the one Tier 1 check install.sh does not turn on (setup-git.sh does, and a
+        user may decline it). An unconditional explanation reads as always on."""
+        data = json.loads(self.run_list_tools().stdout)
+        found = [tool for group in data["groups"] for tool in group["tools"]
+                 if tool["name"] == "secret-scan"]
+        self.assertEqual(len(found), 1)
+        self.assertIn("off until the git setup step runs", found[0]["explanation"])
+
     def test_every_tool_has_a_non_empty_plain_language_explanation(self):
         data = json.loads(self.run_list_tools().stdout)
         for group in data["groups"]:

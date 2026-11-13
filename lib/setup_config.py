@@ -90,7 +90,8 @@ TOOL_CATALOGUE = [
                     "Before a save to one of your code projects is "
                     "recorded, checks it for anything that looks like a "
                     "password or a secret key, and stops the save if it "
-                    "finds one."),
+                    "finds one. Unlike the two above, it is off until the "
+                    "git setup step runs later in onboarding."),
                 "doc_keywords": ["stops passwords reaching github"],
             },
         ],
