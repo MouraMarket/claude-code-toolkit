@@ -1,0 +1,47 @@
+[
+  {
+    "prompt": "For each of these 15 coffee roasters, check whether their website lists a subscription plan and free shipping: Blue Harbor, Copper Kettle, Driftwood, Ember & Oak, Fieldstone, Granite Peak, Hollow Pine, Ironbark, Juniper Lane, Kestrel, Lantern Hill, Maple Ridge, Northfork, Oxbow, Pinecrest.",
+    "expect": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Research every competitor on this list and summarize their current pricing tiers in parallel: Notion, Coda, Airtable, Asana, Trello.",
+    "expect": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Is Opus overkill for rewriting 40 meta descriptions? Should I switch to Sonnet for this?",
+    "expect": "skill-model-routing:model-routing",
+    "control": "positive"
+  },
+  {
+    "prompt": "I keep hitting my usage limit. What model and effort should I be using for everyday copywriting work?",
+    "expect": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Use subagents to pull the feature list from each of these 8 product pages, then give me one comparison table.",
+    "expect": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "What effort level should I set for drafting next year's budget recommendation?",
+    "expect": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Explain the difference between Opus and Sonnet like I'm brand new to Claude.",
+    "forbid": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Why did this function start returning None after my last commit?",
+    "forbid": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Improve this prompt before you run it: write Facebook ads for our fall sale.",
+    "forbid": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Write 15 Google Ads headlines for our fall sale.",
+    "forbid": "skill-model-routing:model-routing"
+  },
+  {
+    "prompt": "Rename these 3 files to kebab-case: MyNotes.md, ProjectPlan.md, TodoList.md.",
+    "forbid": "skill-model-routing:model-routing"
+  }
+]

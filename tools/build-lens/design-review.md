@@ -6,6 +6,10 @@ build: which pieces exist, what calls what, and which problem each piece is
 answering. Every architectural build runs it, at step 7 of
 `brainstorming.md` in the same directory as this file, before you write the plan, not after
 — the review is meant to change the plan, not to grade one already written.
+It is skipped for the design revision a design-moment `architecture-review`
+reviewed (a mission marked `Architecture review: yes`); that review carries
+these lenses. A material change after it still runs this gate, per step 8 of
+`brainstorming.md`.
 
 The reason to run it at all, rather than folding this into Plan Review, is
 cost. A design defect caught here costs one conversation turn; the same

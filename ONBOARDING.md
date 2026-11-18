@@ -1,7 +1,9 @@
 # Getting set up with Claude Code
 
 This sets up Claude Code on your Mac with the toolkit's safety checks and
-workflow tools. It takes about ten minutes, and Claude does almost all of it.
+workflow tools. Plan on an hour to an hour and a half: most of that is the
+toolkit testing itself while you do something else, and Claude does almost all
+of the rest.
 
 **You don't need to understand any of it to start.** There are two things for
 you to do. After that Claude takes over and explains as it goes.
@@ -75,14 +77,20 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bash_profile
 ```
 
-**Install this even if you'll mostly use the desktop app or VS
-Code:** setup runs `claude` in Terminal, and the VS Code extension doesn't add
-that command. You'll sign in to your Claude account the first time `claude`
+**Most people work in the Claude desktop app (or VS Code) day to day, and this
+command is still needed:** setup runs `claude` in Terminal, and neither the desktop
+app nor the VS Code extension adds that command. After setup you'll rarely open
+Terminal yourself. You'll sign in to your Claude account the first time `claude`
 starts.
 
 You also need `git` and `python3`. If either is missing, macOS offers to install
 its developer tools the first time you run one; say yes. GitHub's own
 command-line tool (`gh`) is optional: only the pull-request features use it.
+
+Setup and updates only download, so **read access** to the toolkit repo is all they
+need. If you work on a repo you can't push to, a `git push` that fails with a
+permission error is expected, not a broken setup. Ask Claude to save your fix as a
+patch file (`git format-patch`) and send that file to whoever maintains the repo.
 
 ## Step 2: Hand it over to Claude
 
@@ -134,6 +142,35 @@ installs and what each part writes on its own.
 
 That's it. The rest of this page is for when you're curious, or when something
 looks wrong. You don't need to read it now.
+
+---
+
+## Local, Cloud, or SSH: which environment to pick
+
+When you start a session in the desktop app, it asks where Claude should run.
+**Pick Local for anything that uses this setup.**
+
+| Option | Where Claude runs | What it can see | This setup |
+|---|---|---|---|
+| **Local** | Your Mac | Your work folder, your connectors, your password manager | All of it: safety checks, plugins, memory, your `CLAUDE.md` |
+| **Cloud** | A computer Anthropic runs, separate from your Mac (see the cloud environments doc for how long it keeps your files) | Only the GitHub repos you give it. Nothing else on your Mac. | None of it. It reads only what's committed in that repo. |
+| **SSH** (under **+ New environment**) | A server you connect to yourself | That server's files | Whatever is installed on that server |
+
+**Cloud is useful** for a contained job on GitHub repos that should keep running
+while your laptop is closed, like "fix this failing test and open a PR." It works on
+a branch and pushes it back, and `/teleport` pulls the session onto your Mac
+afterwards.
+
+**What to know before using it:** the safety checks don't run there, so keep it to
+repo work you'd review as a PR anyway. It can't reach files on your Mac that live in
+no repo. An *environment* such as "Default" is that cloud computer's settings:
+internet access, environment variables, and a setup script. Never put a password or
+API key in its variables, because anyone using that environment can read them. Cloud
+sessions spend the same Claude usage limit as everything else.
+
+Source: Anthropic's [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web),
+[cloud environments](https://code.claude.com/docs/en/cloud-environments), and
+[desktop](https://code.claude.com/docs/en/desktop) docs.
 
 ---
 
@@ -211,7 +248,11 @@ Claude can see how much of your usage limit is left, so a long piece of work
 stops cleanly at a good boundary instead of dying mid-task. This reading only
 exists in a terminal window. In VS Code or the desktop app it genuinely can't
 see it and says "unknown" rather than going quiet, so silence never means
-there's room left. An estimate for those apps ships switched off.
+there's room left. You can see the number yourself: it's the usage ring next to
+the model picker. Before a long task, glance at it and tell Claude, for example
+"I'm at 40% of my usage." Claude estimates from there for the rest of that usage
+window and tells you when it's getting high. An automatic estimate for those apps
+ships switched off.
 
 **A running record of what work actually costs, if you say yes (builder
 profile).** A private log of how much of your usage each piece of work spent,

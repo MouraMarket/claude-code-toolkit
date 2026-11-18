@@ -378,10 +378,13 @@ run_suites_check() {
     # file, so a failing suite's traceback survives to be printed below. The
     # `.rc` file is written only when the suite returns: a missing one below
     # means the suite never finished, which is a FAIL, never a pass.
+    # env -u: suites re-point HOME at fixtures; CLAUDE_CONFIG_DIR and
+    # GIT_CONFIG_GLOBAL would follow the maintainer's real setup past it (as
+    # in install.sh's sweep; pinned by test_install_checks_every_suite.py).
     # PYTHONUNBUFFERED: a test's print() is stdout, block-buffered into the
     # file and flushed at exit, so it landed AFTER unittest's stderr summary
     # and the tail read like a passing test.
-    ( cd "$base" && HOME="$HOME/s$ran" PATH="$shim:$PATH" PYTHONUNBUFFERED=1 python3 "tests/$(basename "$suite")" >"$results/$ran.log" 2>&1 </dev/null; echo "$?" > "$results/$ran.rc" ) &
+    ( cd "$base" && HOME="$HOME/s$ran" PATH="$shim:$PATH" PYTHONUNBUFFERED=1 env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$suite")" >"$results/$ran.log" 2>&1 </dev/null; echo "$?" > "$results/$ran.rc" ) &
   done < <(find tools lib skills evals scripts -path '*/tests/test_*.py' -type f | sort)
   wait
 
@@ -562,8 +565,8 @@ run_selftest_check() {
   while IFS= read -r suite; do
     label2="ci/$(basename "$suite")"
     ran=$((ran + 1))
-    # </dev/null for the same reason as in run_suites_check.
-    if ( cd ci && PATH="$shim:$PATH" python3 "tests/$(basename "$suite")" >"$diagfile" 2>&1 </dev/null ); then
+    # </dev/null and env -u for the same reasons as in run_suites_check.
+    if ( cd ci && PATH="$shim:$PATH" env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$suite")" >"$diagfile" 2>&1 </dev/null ); then
       :
     else
       failed=$((failed + 1))

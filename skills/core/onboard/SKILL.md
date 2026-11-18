@@ -38,10 +38,9 @@ Everything else is a recommendation you make and apply, never a choice they cann
 they know why it exists. So where something is in the way, stop, show the difference, and let them
 decide. **A collision is never resolved by your preference alone, and never resolved silently.**
 
-**The deliberate exception is the consent prompts in Phase 2** (profiles, tool groups, the Workflow
-setting): permission to turn things on, which nobody else can give, so the recommended answer is one
-keypress. **Detect first, then ask:** Phase 1b looks silently, so each question names what is at
-stake here.
+**The deliberate exception is the consent prompts in Phase 2** (profiles, tool groups; the Workflow
+setting has no recommended answer): permission nobody else can give, so the recommended answer is one
+keypress. **Detect first, then ask:** Phase 1b looks silently, so each question names the stakes.
 
 **Plain language, always**: translate a term the first time ("a hook is a small script Claude runs
 automatically"). **Never show a wall of terminal output**: report the outcome in a sentence.
@@ -49,7 +48,7 @@ automatically"). **Never show a wall of terminal output**: report the outcome in
 **Never apply the autonomous permission grant.** `./install.sh --autonomous` and
 `skills/core/autonomy-permissions/` are advanced opt-ins for later, and wrong for someone new. If
 they ask, say it exists, say it's for later, move on. Tell them at the start what will happen and
-that it takes about ten minutes.
+that it takes an hour to an hour and a half, mostly unattended test runs. Never promise less.
 
 ## Their level — ask this first
 
@@ -211,10 +210,10 @@ set; if they declined it, say in words that it is left out on purpose. Re-run `-
 
 **The Workflow setting, builder only.** Ask only when they chose builder and either their config
 already has `build.enable_workflows: true`, or this session has no `Workflow` tool, neither loaded
-nor in your deferred-tool list. Say it turns on one Claude Code setting for every session, not only
-`/build`; `/build` works without it (one reviewer dispatch, checked the same way); `install.sh`
-writes, records and removes it. With no Workflow tool, offer *turn it on*, or *leave it* (nothing
-written):
+nor in your deferred-tool list. Say it is one Claude Code setting for every session; `/build` works
+without it; `install.sh` writes, records and removes it. With no Workflow tool, offer *turn it on*,
+or *leave it* (nothing written), **tag neither** (no "Recommended", nothing pre-selected), and never
+as one tab of a multi-question form: a default submitted unread is a choice they never made.
 
 ```bash
 python3 lib/setup_config.py ~/.config/claude-code-toolkit/config.json "$(pwd)" \
@@ -321,12 +320,13 @@ work folder from Phase 1:
 cp -n CLAUDE.md.template "<workspace_root>/CLAUDE.md"   # -n: never overwrite
 ```
 
-**`-n` is load-bearing, and not the whole fix**: a bare `cp` destroys a real file on a re-run; a
-silent skip loses every template improvement. **If it skipped, the file is theirs:** port a personal
-section (About me, Tone, My machine) only if theirs lacks it; old toolkit-policy copies are Phase 6b
-step 6's `legacy-copy`. Explain it in one sentence: a file Claude reads every time, so they don't
-repeat themselves. Toolkit policy loads separately, is replaced when the toolkit updates, and their
-file overrides only its defaults. **You fill it in**, working through the `TODO` markers:
+**Run it; never hand-write the file**, even into an empty folder. **`-n` is load-bearing, and not
+the whole fix**: a bare `cp` destroys a real file on a re-run; a silent skip loses every template
+improvement. **If it skipped, the file is theirs:** port a personal section (About me, Tone, My
+machine) only if theirs lacks it; old toolkit-policy copies are Phase 6b step 6's `legacy-copy`.
+Explain it in one sentence: a file Claude reads every time, so they don't repeat themselves. Toolkit
+policy loads separately, is replaced when the toolkit updates, and their file overrides only its
+defaults. **You fill it in**, working through the `TODO` markers:
 
 - **About me.** Ask what they do, what they own end-to-end, and what parts of this are new to them (people under-report that, so ask directly). Draft two or three sentences and show them. **Include the level they chose at the start, in plain words** ("new to Claude Code and the terminal: explain steps as we go"), since later sessions read it.
 - **Tone.** Ask, with concrete options: concise and businesslike; warm and direct with some humour; or thorough, with the reasoning spelled out.
@@ -363,12 +363,12 @@ After connectors, since it records which ones came up:
 cp -n TOOLING.md.template "<workspace_root>/TOOLING.md"   # -n: never overwrite
 ```
 
-**Same rule as Phase 4, and it bites harder**: hand-measured facts nobody can regenerate. If `-n`
-skipped, merge the template's new rows in; their measured rows always win. It is the map of their
-machine, so Claude looks things up instead of asking. Until the map exists, an enabled tooling
-digest prints a notice at every session start, which stops once the map exists or when
-`tooling_digest.enabled` is false. **Ask them nothing**: fill it by observation, reading
-`references/tooling-map.md` and following it.
+**Same rule as Phase 4 (run it; never hand-write the file), and it bites harder**: hand-measured
+facts nobody can regenerate. If `-n` skipped, merge the template's new rows in; their measured rows
+always win. It is the map of their machine, so Claude looks things up instead of asking. Until the
+map exists, an enabled tooling digest prints a notice at every session start, which stops once the
+map exists or when `tooling_digest.enabled` is false. **Ask them nothing**: fill it by observation,
+reading `references/tooling-map.md` and following it.
 
 ## Phase 6 — Check it works, then restart
 

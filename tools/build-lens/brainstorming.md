@@ -47,10 +47,22 @@ choice is still needed.
 6. **Self-review** — placeholders, internal contradictions, scope (one plan's
    worth, or several?), ambiguity (could a requirement be read two ways?). Fix
    inline.
-7. **Design Review** — as `design-review.md` in the same directory as this file describes,
-   handing it the design and the requirements it answers. Check every finding
-   against the repo; fixes go into the design text; findings and dispositions
-   go in the ledger.
+7. **Design Review** — first, **very large missions ask once.** If the build
+   belongs to a mission spec with `## MVP` and no `Architecture review:` line,
+   ask via `AskUserQuestion` whether the mission warrants a frontier
+   architecture review, and write `Architecture review: yes` or
+   `Architecture review: no` under `## MVP`; the question never repeats within
+   a mission. Then branch, dispatching exactly one review:
+   - **`yes`:** run the `architecture-review` skill at moment `design` and do
+     **not** dispatch Design Review. Its fact-checked findings stand in for
+     Design Review's at step 8, and step 8's material-change re-run is a normal
+     Design Review, never a second frontier review. At the end, `/build`
+     Phase 6 offers its final review.
+   - **Otherwise** (`no`, or no mission spec): Design Review, as
+     `design-review.md` in the same directory as this file describes, handing
+     it the design and the requirements it answers.
+   Either way, check every finding against the repo; fixes go into the design
+   text; findings and dispositions go in the ledger.
 8. **The user reviews the written spec** — in the turn's final text message:
    the design file as a link, about two sentences on what it does, and one
    table of high-level callouts only (what Design Review found and what you

@@ -1563,6 +1563,177 @@ class TestRunKillsAHangingPull(SyncRunTestCase):
         self.assertIn("timed out", result.failed[0][1])
 
 
+def _write_slow_pull_shim(tmp_dir, slow_seconds_by_repo_name, log_path=None):
+    """A git shim that sleeps during a `pull` whose `-C` target's basename is
+    in `slow_seconds_by_repo_name`, around a call to the real `git`. Matching
+    the `-C` path rather than any argv element is what lets two repos in one
+    run get DIFFERENT delays -- `_write_git_shim` can only slow every pull
+    equally, which cannot make workers finish out of candidate order.
+
+    With `log_path`, each slowed pull appends `start <name>` before sleeping
+    and `end <name>` after git returns. The ORDER of those lines is what the
+    concurrency tests assert -- not elapsed time, which is ambient state.
+    """
+    path = os.path.join(tmp_dir, "slow-pull-shim")
+    log = shlex.quote(log_path) if log_path else "/dev/null"
+    lines = ["#!/bin/bash", 'target=""; is_pull=0; prev=""',
+             'for a in "$@"; do',
+             '  if [ "$prev" = "-C" ]; then target="$a"; fi',
+             '  if [ "$a" = "pull" ]; then is_pull=1; fi',
+             '  prev="$a"', "done",
+             'name="$(basename "$target")"; delay=""',
+             'if [ "$is_pull" = 1 ]; then', '  case "$name" in']
+    for name, seconds in slow_seconds_by_repo_name.items():
+        lines.append("    {0}) delay={1} ;;".format(shlex.quote(name), seconds))
+    lines += ["  esac", "fi",
+              'if [ -z "$delay" ]; then exec git "$@"; fi',
+              'echo "start $name" >> {0}'.format(log),
+              'sleep "$delay"',
+              'git "$@"; status=$?',
+              'echo "end $name" >> {0}'.format(log),
+              'exit $status']
+    with open(path, "w") as handle:
+        handle.write("\n".join(lines) + "\n")
+    os.chmod(path, 0o755)
+    return path
+
+
+class TestRunPullsConcurrently(SyncRunTestCase):
+    """The fix for a starved sync phase: pulls are network round-trips of
+    ~0.7-2s each over SSH, so a serial loop under a whole-phase budget only
+    ever reached the first repo or two -- always the same ones, since the
+    candidate order is sorted.
+
+    Overlap is asserted from the ORDER of start/end events the shim logs,
+    never from elapsed time: concurrent means every pull started before any
+    finished; serial means each start follows the previous end. The sleep
+    only holds each pull open long enough for the order to be observable,
+    and is far longer than admitting three repos takes.
+    """
+
+    SLOW = 1.5
+    NAMES = ("alpha", "beta", "gamma")
+
+    def _three_stale_repos(self):
+        clones = []
+        for name in self.NAMES:
+            _, remote, clone = self._build_repo(name)
+            self._advance_remote(remote, "remote-update")
+            clones.append(clone)
+        return clones
+
+    def _run_with_shim(self, shim):
+        # NET_BUDGET is pinned high so these tests measure concurrency and
+        # ordering only -- left at the production value, a later budget cut
+        # would fail the serial control with a message blaming the pool.
+        with mock.patch.dict(os.environ, {
+            "SYNC_TEST_GIT_BIN": shim,
+            "SYNC_TEST_NET_TIMEOUT": "10",
+            "SYNC_TEST_NET_BUDGET": "60",
+            "CLAUDE_TOOLKIT_CONFIG": _SANDBOX_CONFIG,
+        }):
+            return sync_lib.run(self.root)
+
+    def _events(self, log_path):
+        with open(log_path) as handle:
+            return [line.split() for line in handle.read().splitlines()]
+
+    def test_pulls_overlap_rather_than_running_one_after_another(self):
+        clones = self._three_stale_repos()
+        log_path = os.path.join(self._tmp, "pulls.log")
+        shim = _write_slow_pull_shim(
+            self._tmp, {name: self.SLOW for name in self.NAMES}, log_path)
+
+        result = self._run_with_shim(shim)
+
+        self.assertEqual(result.synced, clones)
+        self.assertEqual((result.failed, result.unchecked), ([], 0))
+        events = self._events(log_path)
+        self.assertEqual(len(events), 6, events)
+        self.assertEqual(
+            sorted(kind for kind, _ in events[:3]), ["start"] * 3,
+            "a pull finished before all three had started -- they ran "
+            "serially, not in parallel: %r" % events)
+
+    def test_positive_control_one_worker_really_is_serial(self):
+        # Without this, the overlap test above could pass because the shim
+        # never held a pull open. Same fixture, pool forced to one slot:
+        # every start must follow the previous pull's end.
+        clones = self._three_stale_repos()
+        log_path = os.path.join(self._tmp, "pulls.log")
+        shim = _write_slow_pull_shim(
+            self._tmp, {name: self.SLOW for name in self.NAMES}, log_path)
+
+        with mock.patch.object(sync_lib, "MAX_PARALLEL_PULLS", 1):
+            result = self._run_with_shim(shim)
+
+        self.assertEqual(result.synced, clones)
+        self.assertEqual(
+            self._events(log_path),
+            [[kind, name] for name in self.NAMES for kind in ("start", "end")])
+
+    def test_results_keep_candidate_order_when_workers_finish_out_of_order(self):
+        # alpha is slowest, so it finishes LAST -- `synced` must still list
+        # it first, matching candidate order rather than completion order.
+        # The pool is cut to TWO slots on purpose: completion order only
+        # leaks in when admission has to wait for a free slot (beta finishes
+        # first and is collected while alpha is still running). With a slot
+        # per repo, collection happens in submission order regardless, and a
+        # mutation emitting completion order went uncaught -- measured.
+        clones = self._three_stale_repos()
+        shim = _write_slow_pull_shim(self._tmp, {"alpha": self.SLOW})
+
+        with mock.patch.object(sync_lib, "MAX_PARALLEL_PULLS", 2):
+            result = self._run_with_shim(shim)
+
+        self.assertEqual(result.synced, clones)
+
+
+class TestRunStopsAdmittingAtTheDeadline(SyncRunTestCase):
+    """What keeps a pool of concurrent pulls inside the hook timeout:
+    `run()` waits for a free slot BEFORE checking the deadline, and checks
+    the deadline before every admission. `TestTimeoutBudget` only does
+    arithmetic on constants, so it cannot see either rule break. Two
+    plausible regressions both stayed green before this test existed:
+    checking the deadline BEFORE waiting for a slot (one extra pull admitted
+    after the deadline), and dropping the slot wait entirely because "the
+    executor already caps workers" (every repo admitted at once, so the
+    budget stops nothing).
+
+    This one has to use real time: the property IS "stop admitting once the
+    deadline passes while waiting on a full pool", and a scripted `_now()`
+    reads the same whether or not `run()` waited, so it passes both mutants.
+    The margins are what keep it from being a budget assertion: the deadline
+    lands at 2s and the first two pulls cannot end before 3s, so a slow
+    machine only widens the gap the assertion relies on, except for the
+    admission of the first two repos, which must happen inside 2s.
+    """
+
+    def test_admission_stops_at_the_deadline_while_the_pool_is_full(self):
+        clones = []
+        for name in ("a1", "a2", "a3", "a4", "a5", "a6"):
+            _, remote, clone = self._build_repo(name)
+            self._advance_remote(remote, "remote-update")
+            clones.append(clone)
+        shim = _write_slow_pull_shim(self._tmp, {name: 3 for name in
+                                                 ("a1", "a2", "a3", "a4", "a5", "a6")})
+
+        with mock.patch.dict(os.environ, {
+            "SYNC_TEST_GIT_BIN": shim,
+            "SYNC_TEST_NET_TIMEOUT": "10",
+            "SYNC_TEST_NET_BUDGET": "2",
+            "CLAUDE_TOOLKIT_CONFIG": _SANDBOX_CONFIG,
+        }), mock.patch.object(sync_lib, "MAX_PARALLEL_PULLS", 2):
+            result = sync_lib.run(self.root)
+
+        # Two slots, both busy until ~3s; the next admission waits for a
+        # slot, then finds the 2s deadline passed. Exactly the first two
+        # pulled, the other four never started.
+        self.assertEqual(
+            (result.synced, result.unchecked, result.failed),
+            (clones[:2], 4, []))
+
+
 class TestRunRespectsTheWholePhaseBudget(SyncRunTestCase):
 
     def test_a_budget_smaller_than_one_repo_counts_the_rest_as_unchecked(self):
@@ -1749,8 +1920,8 @@ class TestTimeoutBudget(unittest.TestCase):
     time it on your own machine. Its worst case is no longer 12 calls at
     the old `GIT_TIMEOUT_SECONDS=5` (60s) -- this branch tightened that to 2
     AND wrapped the report loop in a `Deadline`, so the real bound is the
-    21s `report_end` `TestWholeHookTimeoutBudget` derives below (against a
-    23s ceiling), a wedged-repo or network-filesystem bound, not anything a
+    25s `report_end` `TestWholeHookTimeoutBudget` derives below (against a
+    28s ceiling), a wedged-repo or network-filesystem bound, not anything a
     person has sat through.
 
     The fetch-ordering defect this paragraph used to describe -- each repo's
@@ -1958,8 +2129,8 @@ class TestWholeHookTimeoutBudget(unittest.TestCase):
     computed at hook start -- fits inside the single timeout
     `plugin/hooks/hooks.json` declares for it.
 
-    `report_end`'s model, expected values `sync_end = 13`, `report_end = 21`
-    against ceiling `25 - MARGIN 2 = 23` (headroom 2) with everything in
+    `report_end`'s model, expected values `sync_end = 17`, `report_end = 25`
+    against ceiling `30 - MARGIN 2 = 28` (headroom 3) with everything in
     place today, live in `_whole_hook_worst_case()` above rather than
     repeated here -- see its own docstring for the arithmetic and why it is
     additive.
@@ -2024,11 +2195,11 @@ class TestWholeHookTimeoutBudget(unittest.TestCase):
         `max(sync_end, REPORT_DEADLINE_SECONDS)` as the WHOLE expression,
         discarding the sync term the moment it was smaller than the report
         deadline -- with `REPORT_DEADLINE_SECONDS` fixed at 13 and `sync_end`
-        also at 13 today, that revision could not have told a `NET_BUDGET` of
-        2 from one of 6, making it a "cross-module" test that was
-        single-module in effect.
+        also at 13 at the time (NET_BUDGET was 2), that revision could not
+        have told a `NET_BUDGET` of 2 from one of 6, making it a
+        "cross-module" test that was single-module in effect.
         """
-        raised = sync_lib.NET_BUDGET + 4  # 2 -> 6, matching this docstring's example above
+        raised = sync_lib.NET_BUDGET + 4  # 6 -> 10: pushes report_end 25 -> 29, past the 28 ceiling
         with mock.patch.object(sync_lib, "NET_BUDGET", raised):
             declared, _sync_end, report_end, _calls, _deadline = (
                 _whole_hook_worst_case())

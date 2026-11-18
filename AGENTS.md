@@ -29,7 +29,7 @@ exits non-zero on any failing suite **and** when it finds no suites at all:
 failed=0; ran=0
 while read -r t; do
   ran=$((ran + 1))
-  (cd "$(dirname "$(dirname "$t")")" && python3 "tests/$(basename "$t")" </dev/null) || { echo "FAIL $t"; failed=1; }
+  (cd "$(dirname "$(dirname "$t")")" && env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$t")" </dev/null) || { echo "FAIL $t"; failed=1; }
 done < <(find tools lib skills evals scripts ci -path '*/tests/test_*.py' -type f | sort)
 echo "$ran suites run"; [ "$ran" -gt 0 ] && [ "$failed" -eq 0 ]
 ```

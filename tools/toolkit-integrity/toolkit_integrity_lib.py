@@ -196,6 +196,16 @@ CANARY_STRIPPED_ENV = ("DANGER_ALLOW", "MODEL_GUARD_ALLOW", "WORKTREE_ALLOW",
 CANARY_MAX_SECONDS = 2.0
 CANARY_MARGIN_SECONDS = 0.5
 
+# A canary record's `got` is "denied" or "allowed" (a verdict), "unidentified"
+# (session-claim's, below), or one of two ways of having NO verdict, kept apart
+# because they call for opposite advice. TIMED_OUT: the run's budget was spent
+# before the probe started, or the probe hit its own cap -- a busy machine
+# produces both, so it is no evidence the guard changed. UNCHECKED: the guard
+# ran and returned something that is not a verdict (crashed, bad exit,
+# unreadable output) -- that is evidence, and gets the repair advice.
+TIMED_OUT = "timed-out"
+UNCHECKED = "unchecked"
+
 _CANARY_COMMON = {"session_id": "toolkit-integrity-canary",
                   "hook_event_name": "PreToolUse",
                   "transcript_path": "/dev/null"}
@@ -753,13 +763,15 @@ def _canary_env(extra_env=None) -> dict:
 
 def run_canary(path: str, payload: dict, timeout: float,
                extra_env: Optional[dict] = None) -> str:
-    """"denied", "allowed" or "unchecked" for one payload through one guard."""
+    """"denied", "allowed", TIMED_OUT or UNCHECKED for one payload."""
     env = _canary_env(extra_env)
     try:
         done = subprocess.run([path], input=json.dumps(payload),
                               capture_output=True, text=True,
                               encoding="utf-8", errors="replace",
                               timeout=timeout, env=env)
+    except subprocess.TimeoutExpired:
+        return TIMED_OUT
     except (subprocess.SubprocessError, OSError, ValueError):
         return "unchecked"
     if done.returncode == 2:
@@ -792,7 +804,7 @@ def canary_problems(repo: str, deadline: float,
     """Probes whose verdict was not the expected one.
 
     `deadline` is a time.monotonic() value. Once too little of it remains the
-    rest are recorded `unchecked` without being run. A guard that is missing or
+    rest are recorded TIMED_OUT without being run. A guard that is missing or
     not executable is skipped: `_plugin_problems` already reports it. So is a
     guard whose profile this machine neither selects nor enables; when that
     cannot be told, every canary runs.
@@ -828,7 +840,7 @@ def canary_problems(repo: str, deadline: float,
             timeout = min(CANARY_MAX_SECONDS,
                           deadline - time.monotonic() - CANARY_MARGIN_SECONDS)
             if timeout <= 0:
-                got = "unchecked"
+                got = TIMED_OUT
             else:
                 got = run_canary(path, dict(payload, cwd=home_dir), timeout)
             if got != expected:
@@ -856,20 +868,27 @@ class _FixtureError(Exception):
     pass
 
 
+class _FixtureTimeout(_FixtureError):
+    """The fixture ran out of time: its probes are TIMED_OUT, not UNCHECKED."""
+
+
 def _fixture_timeout(deadline: float) -> float:
     return min(CANARY_MAX_SECONDS,
                deadline - time.monotonic() - CANARY_MARGIN_SECONDS)
 
 
 def _fixture_step(argv: list, deadline: float) -> None:
-    """One fixture command; raises _FixtureError on any failure or no budget."""
+    """One fixture command; raises _FixtureError on any failure, and its
+    _FixtureTimeout subclass when the budget is spent or the step hits it."""
     timeout = _fixture_timeout(deadline)
     if timeout <= 0:
-        raise _FixtureError("no time left")
+        raise _FixtureTimeout("no time left")
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL,
                               capture_output=True, timeout=timeout,
                               env=_canary_env())
+    except subprocess.TimeoutExpired as exc:
+        raise _FixtureTimeout(str(exc))
     except (subprocess.SubprocessError, OSError, ValueError) as exc:
         raise _FixtureError(str(exc))
     if done.returncode != 0:
@@ -979,8 +998,9 @@ def stateful_canary_problems(repo: str, deadline: float,
     worktree-guard, distill-write-guard and session-claim are probed against a
     throwaway fixture under `tmp_parent` (default: the system temp dir), removed
     on every path. Gated like canary_problems; the fixture is not built at all
-    when no guard survives. If the fixture cannot be built in time, every probe
-    that would have run is recorded `unchecked` and no guard runs.
+    when no guard survives. If the fixture cannot be built, every probe that
+    would have run is recorded and no guard runs: TIMED_OUT when it ran out of
+    time, UNCHECKED when a step failed.
     """
     if _manifest is None:
         return []
@@ -1010,23 +1030,26 @@ def stateful_canary_problems(repo: str, deadline: float,
     if not selected:
         return []
 
-    def all_unchecked():
-        return [{"guard": os.path.basename(path), "probe": probe,
-                 "got": "unchecked"}
+    def every_probe(got):
+        # `cause`: no guard ran, so an UNCHECKED here is not a guard's crash.
+        return [{"guard": os.path.basename(path), "probe": probe, "got": got,
+                 "cause": "fixture"}
                 for _relpath, path in selected for probe in ("deny", "allow")]
 
     try:
         root = tempfile.mkdtemp(prefix="toolkit-canary-", dir=tmp_parent)
     except OSError:
-        return all_unchecked()
+        return every_probe(UNCHECKED)
     try:
         # realpath: the claim guard compares a realpath-derived toplevel with
         # the record's string, and macOS $TMPDIR sits under a /var symlink.
         root = os.path.realpath(root)
         try:
             probes = _stateful_probes({r for r, _p in selected}, root, deadline)
+        except _FixtureTimeout:
+            return every_probe(TIMED_OUT)
         except (_FixtureError, OSError):
-            return all_unchecked()
+            return every_probe(UNCHECKED)
         records = []
         for relpath, path in selected:
             deny_payload, allow_payload, extra_env = probes[relpath]
@@ -1035,7 +1058,7 @@ def stateful_canary_problems(repo: str, deadline: float,
                     ("allow", allow_payload, "allowed")):
                 timeout = _fixture_timeout(deadline)
                 if timeout <= 0:
-                    got = "unchecked"
+                    got = TIMED_OUT
                 else:
                     got = run_canary(path, payload, timeout,
                                      extra_env=extra_env)
@@ -1064,22 +1087,42 @@ def canaries_signature(records: list) -> str:
 
 
 _CANARY_HEADER = "=== TOOLKIT INTEGRITY: A GUARD FAILED ITS CANARY ==="
+# Only TIMED_OUT records: still printed, because silence must never read as a
+# passed canary, but without the FAILED header or the repair advice, which
+# would send someone hunting for a change that does not exist.
+_TIMED_OUT_HEADER = ("=== TOOLKIT INTEGRITY: GUARD CANARIES NOT CHECKED "
+                     "(OUT OF TIME) ===")
+_TIMED_OUT_ADVICE = (
+    "The machine was too busy to finish these canaries inside the hook's time "
+    "budget. Nothing points to a changed guard, and they run again next "
+    "session. If this repeats on an idle machine, a guard may be hanging: tell "
+    "the toolkit maintainer.")
 
 
 def render_canaries(records: list) -> str:
     if not records:
         return ""
-    lines = [_CANARY_HEADER, ""]
+    timed_out_only = all(r["got"] == TIMED_OUT for r in records)
+    lines = [_TIMED_OUT_HEADER if timed_out_only else _CANARY_HEADER, ""]
     for record in records:
         guard, probe, got = record["guard"], record["probe"], record["got"]
         if got == "unidentified":
             lines.append("%s could not tell which session is calling it (%s), "
                          "so it allows every edit - it is NOT protecting this "
                          "machine's checkouts." % (guard, record["detail"]))
-        elif got == "unchecked":
-            lines.append("%s's %s canary could not be checked (%s) - its "
-                         "behaviour is unverified this session."
-                         % (guard, probe, got))
+        elif got == TIMED_OUT:
+            lines.append("%s's %s canary ran out of time and was not checked - "
+                         "its behaviour is unverified this session."
+                         % (guard, probe))
+        elif got == UNCHECKED and record.get("cause") == "fixture":
+            lines.append("%s's %s canary could not be checked (its throwaway "
+                         "test fixture could not be built, so the guard never "
+                         "ran) - its behaviour is unverified this session."
+                         % (guard, probe))
+        elif got == UNCHECKED:
+            lines.append("%s's %s canary returned no verdict (it crashed or "
+                         "printed something unreadable) - its behaviour is "
+                         "unverified this session." % (guard, probe))
         elif probe == "deny":
             lines.append("%s let a harmless canary through that it must "
                          "refuse - it is NOT protecting this machine." % guard)
@@ -1087,7 +1130,9 @@ def render_canaries(records: list) -> str:
             lines.append("%s refused a harmless canary it must allow - it is "
                          "over-blocking." % guard)
     lines.append("")
-    if any(r["got"] != "unidentified" for r in records):
+    if timed_out_only:
+        lines.append(_TIMED_OUT_ADVICE)
+    elif any(r["got"] not in ("unidentified", TIMED_OUT) for r in records):
         lines.append(_REPAIR_ADVICE)
     else:
         lines.append("session-claim identifies a session from the process tree "
@@ -1438,6 +1483,10 @@ AUDIT_STATE = os.path.join(".claude", "claude-code-toolkit", "heartbeat-audit.js
 AUDIT_SECONDS = 1.0
 AUDIT_STRIKES = 3
 AUDIT_REPORTED_DAYS = 30
+# A separate file: fires_audit writes its state dict whole, so a shared file
+# would lose the other audit's keys.
+TOOL_RULES_AUDIT_STATE = os.path.join(".claude", "claude-code-toolkit",
+                                      "tool-rules-audit.json")
 
 
 def _audit_seconds():
@@ -1451,10 +1500,10 @@ def _audit_seconds():
     return AUDIT_SECONDS
 
 
-def _load_audit_state(home):
+def _load_audit_state(home, name=AUDIT_STATE):
     empty = {"judged": {}, "reported": {}, "strikes": {}}
     try:
-        with open(os.path.join(home, AUDIT_STATE), encoding="utf-8") as handle:
+        with open(os.path.join(home, name), encoding="utf-8") as handle:
             loaded = json.load(handle)
     except (OSError, ValueError):
         return empty
@@ -1466,9 +1515,9 @@ def _load_audit_state(home):
     return loaded
 
 
-def save_fires_audit_state(home, state):
+def save_fires_audit_state(home, state, name=AUDIT_STATE):
     """Atomic write (temp file in the same dir + os.replace); creates the dir."""
-    path = os.path.join(home, AUDIT_STATE)
+    path = os.path.join(home, name)
     folder = os.path.dirname(path)
     os.makedirs(folder, exist_ok=True)
     handle, temp = tempfile.mkstemp(dir=folder, prefix=".heartbeat-audit.")
@@ -1568,3 +1617,118 @@ def fires_audit(home, session, deadline, repo, now=None):
         new_reported[key] = now
     return notice, {"judged": result["judged"], "reported": new_reported,
                     "strikes": strikes}
+
+
+# ------------------------------------------------------------ tool-rules audit
+
+def _import_tool_rules_lib():
+    """`tool_rules_lib`, found beside this file's realpath -- never via `repo`,
+    which is a test seam that may point at a fixture checkout."""
+    import sys
+    folder = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.realpath(__file__))), "tool-rules")
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    import tool_rules_lib
+    return tool_rules_lib
+
+
+def tool_rules_era(state, default):
+    """The stored era (epoch) from a tool-rules audit state, else `default`."""
+    era = state.get("era")
+    if isinstance(era, (int, float)) and not isinstance(era, bool):
+        return era
+    return default
+
+
+def tool_rules_audit(home, session, deadline, repo, now=None):
+    """Earlier sessions where a live tool-rules page should have loaded and left
+    no `tool-rules-state` record.
+
+    Returns (notice, new_state), same contract as `fires_audit`; `new_state` is
+    None when the audit is inactive (no live pages). Never writes the state.
+
+    Test seam: TOOLKIT_INTEGRITY_TOOL_RULES_AUDIT_CRASH=1 raises RuntimeError.
+    """
+    if os.environ.get("TOOLKIT_INTEGRITY_TOOL_RULES_AUDIT_CRASH") == "1":
+        raise RuntimeError("TOOLKIT_INTEGRITY_TOOL_RULES_AUDIT_CRASH")
+    tool_rules_lib = _import_tool_rules_lib()
+    import toolkit_config
+
+    now = time.time() if now is None else now
+    workspace_root = toolkit_config.workspace_root()
+    state = _load_audit_state(home, TOOL_RULES_AUDIT_STATE)
+    # The era: this audit's first active run. The hook's durable state ships in
+    # the same checkout, so a call before it may predate that -- never judged.
+    era = tool_rules_era(state, now)
+    result = tool_rules_lib.audit(
+        home, workspace_root=workspace_root, exclude_session=session,
+        deadline=min(deadline, time.monotonic() + _audit_seconds()),
+        cache=state["judged"], skip=set(state["reported"]), now=now, since=era)
+    if not result["active"]:
+        return "", None
+
+    reported = state["reported"]
+    strikes = {}
+    items = []     # (key, session, project, text) -- a page should have loaded
+    unchecked = []  # same shape -- the audit could not check these
+    interrupted = False
+
+    def key_of(entry):
+        return entry["session"] or "dir:" + entry["project"]
+
+    for entry in result["flagged"]:
+        if entry["session"] in reported:
+            continue
+        started = (entry["started_at"] or "?")[:10]
+        items.append((entry["session"], entry["session"], entry["project"],
+                      "started %s  %d matching call(s), no tool-rules record "
+                      "(%s)" % (started, entry["calls"],
+                                ", ".join(entry["pages"]))))
+    for entry in result["unchecked"]:
+        key = key_of(entry)
+        if entry["reason"] == "unreadable":
+            if key not in reported:
+                unchecked.append((key, entry["session"], entry["project"],
+                                  "could not be read"))
+        elif entry["reason"] == "deadline":
+            # Only the FIRST deadline entry was being worked on when time ran
+            # out; the rest were queued behind it, so they keep their count.
+            previous = int(state["strikes"].get(key, 0))
+            count = previous if interrupted else previous + 1
+            interrupted = True
+            if count:
+                strikes[key] = count
+            if count >= AUDIT_STRIKES and key not in reported:
+                size = entry["size"]
+                megabytes = "?" if size is None else "%.1f" % (size / 1e6)
+                unchecked.append((key, entry["session"], entry["project"],
+                                  "could not be checked in %d tries (%s MB) -- "
+                                  "run %s/tools/toolkit-integrity/"
+                                  "claude-toolkit-integrity --tool-rules-audit"
+                                  % (AUDIT_STRIKES, megabytes,
+                                     shlex.quote(repo))))
+
+    notice = ""
+    if items or unchecked:
+        lines = []
+        for header, group in (
+                ("Tool-rules pages did not load in %d earlier session(s)", items),
+                ("The tool-rules audit could not check %d earlier session(s)",
+                 unchecked)):
+            if group:
+                lines.append(header % len(group))
+                for _, sid, project, text in group:
+                    lines.append("  %s  %s  %s" % ((sid or "(dir)")[:8], project, text))
+        pages_dir = tool_rules_lib.tool_rules_dir(workspace_root)
+        lines.append("Check that the toolkit-continuity plugin is enabled (/plugin), "
+                     "then start a fresh session. Pages: %s." % pages_dir)
+        notice = "\n".join(lines) + "\n"
+
+    new_reported = {k: v for k, v in reported.items()
+                    if isinstance(v, (int, float))
+                    and now - v < AUDIT_REPORTED_DAYS * 86400}
+    for key, _, _, _ in items + unchecked:
+        new_reported[key] = now
+    return notice, {"judged": result["judged"], "reported": new_reported,
+                    "strikes": strikes, "era": era}

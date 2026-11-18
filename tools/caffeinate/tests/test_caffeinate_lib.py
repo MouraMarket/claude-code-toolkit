@@ -47,9 +47,19 @@ CLAUDE_PID = 300
 
 NOW = 1_700_000_000
 
+# A Bash-tool background shell's real command line, measured 2026-10-20, and a
+# hook shell's — the two are both `/bin/zsh` children of claude.
+JOB_COMMAND = (
+    "/bin/zsh -c source /Users/x/.claude/shell-snapshots/snapshot-zsh-1792543545638"
+    "-tnt82o.sh 2>/dev/null || true && eval 'sleep 90' < /dev/null")
+HOOK_SHELL_COMMAND = (
+    "/bin/zsh -c \"/Users/x/repo/plugin\"/tools/caffeinate/claude-caffeinate acquire")
+JOB_PID = 700
+
 # Read from the module rather than restated, so shortening the throttle cannot
 # leave these tests advancing the clock by less than it and passing vacuously.
 STAMP_THROTTLE = lib.STAMP_THROTTLE_SECONDS
+RENEW_INTERVAL = lib.RENEW_INTERVAL_SECONDS
 
 
 def process_tree():
@@ -89,6 +99,8 @@ class FakeSystem:
         self.spawned = []
         self.terminated = []
         self.table_reads = 0
+        self.command_reads = 0
+        self.commands = {}
         self.power_reads = 0
         self.terminate_raises = False
         self._next_pid = first_pid
@@ -102,6 +114,19 @@ class FakeSystem:
     def process_table(self):
         self.table_reads += 1
         return dict(self.table)
+
+    def command_lines(self, pids):
+        self.command_reads += 1
+        return {pid: self.commands[pid] for pid in pids if pid in self.commands}
+
+    def start_job(self, pid, command=None):
+        """A Bash-tool background job: a snapshot-sourcing shell under claude."""
+        self.table[pid] = (CLAUDE_PID, "/bin/zsh")
+        self.commands[pid] = command or JOB_COMMAND
+
+    def end_job(self, pid):
+        self.table.pop(pid, None)
+        self.commands.pop(pid, None)
 
     def power_state(self):
         self.power_reads += 1
@@ -450,10 +475,15 @@ class TestOverrideExpiryInAcquire(CaffeinateTestCase):
                              hold_seconds=7200)
         system = self.battery()
         lib.acquire(config, system, "s1", HOOK_PID)
-        system.advance(600)
+        # Age the stamp past the throttle by hand: the renewal interval is
+        # shorter than the throttle, so the clock alone cannot get a fast-path
+        # call and a due stamp into the same moment.
+        lib.write_stamp(lib.stamp_path(config), NOW - STAMP_THROTTLE)
+        system.advance(RENEW_INTERVAL // 2)
         self.assertEqual(
             lib.acquire(config, system, "s1", HOOK_PID), "already-held")
-        self.assertEqual(lib.read_stamp(lib.stamp_path(config)), NOW + 600)
+        self.assertEqual(
+            lib.read_stamp(lib.stamp_path(config)), NOW + RENEW_INTERVAL // 2)
 
     def test_the_stamp_is_throttled_rather_than_written_every_batch(self):
         config = self.config(require_ac=False, battery_override_hours=24)
@@ -535,8 +565,20 @@ class TestConfig(unittest.TestCase):
     def test_the_settle_window_is_five_minutes_by_default(self):
         self.assertEqual(lib.settle_seconds(FakeConfig()), 300)
 
-    def test_the_ceiling_is_two_hours_by_default(self):
-        self.assertEqual(lib.hold_seconds(FakeConfig()), 7200)
+    def test_the_idle_timer_is_thirty_minutes_by_default(self):
+        # The maintainer's number.
+        self.assertEqual(lib.hold_seconds(FakeConfig()), 1800)
+
+    def test_the_job_cap_is_one_hour_by_default(self):
+        # The maintainer's number (an earlier 4h cap was judged too long).
+        self.assertEqual(lib.job_hold_seconds(FakeConfig()), 3600)
+
+    def test_bad_job_caps_fall_back(self):
+        for bad in ("soon", None, True, 0, -5):
+            self.assertEqual(
+                lib.job_hold_seconds(FakeConfig({"job_hold_seconds": bad})), 3600)
+        self.assertEqual(
+            lib.job_hold_seconds(FakeConfig({"job_hold_seconds": 600})), 600)
 
     def test_the_ceiling_comfortably_exceeds_the_settle_window(self):
         # A ceiling below the settle window would make `settle` EXTEND the hold.
@@ -713,8 +755,10 @@ class TestAcquire(CaffeinateTestCase):
         self.assertGreater(second["expires_at"], first["expires_at"])
         self.assertIn(first["caffeinate_pid"], system.terminated)
 
-    def test_a_fresh_hold_is_not_renewed_and_costs_no_process_table_read(self):
-        # The fast path is what makes this affordable on PostToolBatch.
+    def test_a_fresh_hold_is_not_renewed_and_costs_one_table_read(self):
+        # The fast path spawns nothing. It does read the process table once —
+        # the job scan needs it on every call — and only once: the session hold
+        # and the scan share it, which is what TestTimeoutBudget's sum assumes.
         config = self.config(hold_seconds=7200)
         system = FakeSystem()
         lib.acquire(config, system, "s1", HOOK_PID)
@@ -723,15 +767,65 @@ class TestAcquire(CaffeinateTestCase):
         system.advance(60)
         self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "already-held")
         self.assertEqual(len(system.spawned), 1)
-        self.assertEqual(system.table_reads, reads_after_first)
+        self.assertEqual(system.table_reads, reads_after_first + 1)
+        self.assertEqual(system.command_reads, 0)   # no candidate shells
 
-    def test_a_hold_past_half_its_life_is_renewed(self):
+    def test_a_hold_older_than_the_renew_interval_is_renewed(self):
         config = self.config(hold_seconds=7200)
         system = FakeSystem()
         lib.acquire(config, system, "s1", HOOK_PID)
-        system.advance(3601)
+        system.advance(RENEW_INTERVAL + 1)
         self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
         self.assertEqual(len(system.spawned), 2)
+        self.assertEqual(
+            self.recorded(config)["expires_at"], NOW + RENEW_INTERVAL + 1 + 7200)
+
+    def test_the_deadline_runs_from_the_LAST_activity(self):
+        # THE 2026-10-20 FIX. The old rule renewed only past half-life, so after
+        # three busy hours the deadline sat one hour past the last activity,
+        # not two — the machine slept on a per-session block, not an idle timer.
+        config = self.config(hold_seconds=7200)
+        system = FakeSystem()
+        for _ in range(36):                 # a tool batch every 5 min for 3h
+            lib.acquire(config, system, "s1", HOOK_PID)
+            system.advance(300)
+        system.advance(-300)
+        last_activity = system.now()
+
+        expires_at = self.recorded(config)["expires_at"]
+        self.assertGreater(expires_at, last_activity + 7200 - RENEW_INTERVAL)
+        self.assertLessEqual(expires_at, last_activity + 7200)
+
+    def test_a_small_ceiling_still_renews_before_it_expires(self):
+        # The interval is capped at half the ceiling. The ceiling here must be
+        # under 2 * RENEW_INTERVAL for the cap to bind at all — at 300s it did
+        # not, and an uncapped mutant survived.
+        ceiling = RENEW_INTERVAL * 2 - 40
+        config = self.config(hold_seconds=ceiling)
+        system = FakeSystem()
+        lib.acquire(config, system, "s1", HOOK_PID)
+        system.advance(ceiling // 2 + 1)
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
+
+    def test_renewal_spawns_the_new_hold_before_dropping_the_old(self):
+        # Drop-then-spawn leaves a moment with no assertion, and on a machine
+        # whose idle timer already ran out that moment is enough to sleep it.
+        config = self.config(hold_seconds=7200)
+        system = FakeSystem()
+        lib.acquire(config, system, "s1", HOOK_PID)
+        old = self.recorded(config)["caffeinate_pid"]
+        spawned_at_terminate = []
+        real_terminate = system.terminate
+
+        def terminate(pid):
+            spawned_at_terminate.append(len(system.spawned))
+            real_terminate(pid)
+        system.terminate = terminate
+
+        system.advance(RENEW_INTERVAL + 1)
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
+        self.assertEqual(system.terminated, [old])
+        self.assertEqual(spawned_at_terminate, [2])
 
     def test_a_dead_recorded_hold_is_replaced_not_trusted(self):
         config = self.config()
@@ -761,6 +855,270 @@ class TestAcquire(CaffeinateTestCase):
         system = FakeSystem(table={HOOK_PID: (1, "/usr/bin/python3")})
         lib.acquire(config, system, "s1", HOOK_PID)
         self.assertIsNone(self.recorded(config)["claude_pid"])
+
+
+class TestJobHolds(CaffeinateTestCase):
+    """A background job gets its own hold, bound to the job, capped at 1h."""
+
+    def job_records(self, config):
+        return sorted(n for n in os.listdir(self.tmp.name) if lib.JOB_RECORD_INFIX in n)
+
+    def test_a_background_job_gets_a_hold_bound_to_it(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held+1-jobs")
+        self.assertIn(
+            ["caffeinate", "-i", "-s", "-t", "3600", "-w", str(JOB_PID)], system.spawned)
+        self.assertEqual(
+            lib.read_state(lib.job_path(config, "s1", JOB_PID))["expires_at"], NOW + 3600)
+
+    def test_it_is_found_on_the_fast_path_too(self):
+        # A job is launched BY a tool batch, nearly always under a fresh hold.
+        config = self.config()
+        system = FakeSystem()
+        lib.acquire(config, system, "s1", HOOK_PID)
+        system.start_job(JOB_PID)
+        system.advance(5)
+        self.assertEqual(
+            lib.acquire(config, system, "s1", HOOK_PID), "already-held+1-jobs")
+
+    def test_on_battery_the_job_hold_omits_dash_s(self):
+        config = self.config(require_ac=False)
+        system = FakeSystem(on_ac=False, percent=80)
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        self.assertIn(["caffeinate", "-i", "-t", "3600", "-w", str(JOB_PID)], system.spawned)
+
+    def test_a_parallel_hook_shell_is_not_a_job(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID, command=HOOK_SHELL_COMMAND)
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
+        self.assertEqual(self.job_records(config), [])
+
+    def test_this_hooks_own_shell_is_never_a_job(self):
+        # Even if its command line looked like one: excluded by ancestry.
+        config = self.config()
+        system = FakeSystem()
+        system.commands[400] = JOB_COMMAND
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
+        self.assertEqual(self.job_records(config), [])
+
+    def test_a_shell_under_another_claude_is_not_this_sessions_job(self):
+        config = self.config()
+        system = FakeSystem()
+        system.table[650] = (1, "/usr/local/bin/claude")
+        system.table[JOB_PID] = (650, "/bin/zsh")
+        system.commands[JOB_PID] = JOB_COMMAND
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
+
+    def test_a_held_job_is_not_held_twice(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        spawned = len(system.spawned)
+        system.advance(30)
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "already-held")
+        self.assertEqual(len(system.spawned), spawned)
+
+    def test_the_cap_holds_even_through_renewals_and_sweeps(self):
+        # THE CEILING TEST. A job still running past its hour must not be re-held —
+        # not by the next acquire, and not after a sweep on the slow path
+        # clears expired records, which is how a cap quietly becomes "forever".
+        config = self.config(hold_seconds=1800)
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        job_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+
+        system.advance(3601)
+        system.table.pop(job_hold)          # `-t` ended it, as the kernel would
+        verdict = lib.acquire(config, system, "s1", HOOK_PID)   # slow path + sweep
+        self.assertEqual(verdict, "held")
+        system.advance(10)
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "already-held")
+        job_spawns = [a for a in system.spawned if a[-2:] == ["-w", str(JOB_PID)]]
+        self.assertEqual(len(job_spawns), 1)
+
+    def test_a_reused_pid_inside_the_cap_gets_its_own_hold(self):
+        # The job exits (its `-w` assertion goes with it) and a NEW job takes
+        # the same PID before any sweep clears the old record. The record must
+        # not stand in for the new job's hold.
+        config = self.config(hold_seconds=1800)
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        old_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+
+        system.end_job(JOB_PID)
+        system.table.pop(old_hold)          # `-w` ended it with the job
+        system.start_job(JOB_PID)           # the PID is reused
+        system.advance(1)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        job_spawns = [a for a in system.spawned if a[-2:] == ["-w", str(JOB_PID)]]
+        self.assertEqual(len(job_spawns), 2)
+
+    def test_a_finished_jobs_record_is_swept_once_expired(self):
+        config = self.config(hold_seconds=1800)
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        job_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+
+        system.end_job(JOB_PID)
+        system.table.pop(job_hold)          # `-w` ended it
+        system.advance(3601)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        self.assertEqual(self.job_records(config), [])
+
+    def test_release_drops_job_holds_too(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        job_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+        self.assertEqual(lib.release(config, system, "s1"), "released")
+        self.assertIn(job_hold, system.terminated)
+        self.assertEqual(self.job_records(config), [])
+
+    def test_unplugging_drops_job_holds(self):
+        config = self.config()                      # require_ac defaults true
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        job_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+        system.on_ac = False
+        lib.acquire(config, system, "s1", HOOK_PID)
+        self.assertIn(job_hold, system.terminated)
+        self.assertEqual(self.job_records(config), [])
+
+    def test_the_battery_floor_drops_job_holds_at_settle(self):
+        config = self.config(require_ac=False, battery_floor_percent=20)
+        system = FakeSystem(on_ac=False, percent=60)
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        job_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+        system.percent = 15
+        self.assertEqual(
+            lib.settle(config, system, "s1", HOOK_PID), "released-battery-floor")
+        self.assertIn(job_hold, system.terminated)
+
+    def test_the_floor_drops_a_job_hold_after_the_session_hold_expired(self):
+        # Codex's repro, 2026-10-20: THE case this tool serves — the session
+        # went quiet for 30 minutes, the job carried on, then the battery fell.
+        config = self.config(require_ac=False, battery_floor_percent=20)
+        system = FakeSystem(on_ac=False, percent=60)
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        session_hold = self.recorded(config)["caffeinate_pid"]
+        job_hold = lib.read_state(lib.job_path(config, "s1", JOB_PID))["caffeinate_pid"]
+
+        system.advance(1801)
+        system.table.pop(session_hold)      # `-t` ended the idle timer
+        system.percent = 15
+        self.assertEqual(
+            lib.settle(config, system, "s1", HOOK_PID), "released-battery-floor")
+        self.assertIn(job_hold, system.terminated)
+        self.assertEqual(self.job_records(config), [])
+
+    def test_disabling_drops_job_holds_with_no_session_record(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        lib.clear_state(self.state_file(config))
+        self.assertEqual(
+            lib.settle(self.config(enabled=False), system, "s1", HOOK_PID),
+            "released-disabled")
+        self.assertEqual(self.job_records(config), [])
+
+    def test_settle_with_only_a_live_job_hold_leaves_it(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        lib.clear_state(self.state_file(config))
+        self.assertEqual(lib.settle(config, system, "s1", HOOK_PID), "stale")
+        self.assertEqual(system.terminated, [])
+        self.assertEqual(len(self.job_records(config)), 1)
+
+    def test_settle_leaves_job_holds_alone_in_a_live_session(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        self.assertEqual(lib.settle(config, system, "s1", HOOK_PID), "session-alive")
+        self.assertEqual(system.terminated, [])
+
+    def test_release_reaches_jobs_even_without_a_session_record(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        lib.clear_state(self.state_file(config))
+        self.assertEqual(lib.release(config, system, "s1"), "released")
+        self.assertEqual(self.job_records(config), [])
+
+    def test_another_sessions_jobs_are_not_released(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        lib.release(config, system, "s2")
+        self.assertEqual(len(self.job_records(config)), 1)
+
+    def test_a_failing_scan_does_not_cost_the_session_hold(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+
+        def broken(pids):
+            raise OSError("ps hung")
+        system.command_lines = broken
+        self.assertEqual(lib.acquire(config, system, "s1", HOOK_PID), "held")
+
+    def test_status_reports_job_holds_as_jobs(self):
+        config = self.config()
+        system = FakeSystem()
+        system.start_job(JOB_PID)
+        lib.acquire(config, system, "s1", HOOK_PID)
+        rows = lib.held_sessions(config, system)
+        self.assertEqual(sorted(r["job_pid"] for r in rows if r["job_pid"]), [JOB_PID])
+        self.assertEqual({r["session"] for r in rows}, {"s1"})
+
+
+@unittest.skipUnless(sys.platform == "darwin", "runs the real /bin/ps")
+class TestPsShim(unittest.TestCase):
+    """The executable tests' `ps` shim must blind the job scan AND nothing else."""
+
+    def run_shim(self, *args):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        holder = type("Holder", (), {"tmp": tmp})()
+        shim = TestHookExecutable.shim_ps(holder)
+        return subprocess.run([os.path.join(shim, "ps")] + list(args),
+                              capture_output=True, text=True, timeout=10).stdout
+
+    def test_it_hides_command_lines(self):
+        self.assertEqual(self.run_shim("-o", "pid=,args=", "-p", str(os.getpid())), "")
+
+    def test_it_passes_the_process_table_through(self):
+        # Positive control: the real `ps` answers this with our own pid.
+        self.assertIn(str(os.getpid()), self.run_shim("-Ao", "pid=,ppid=,comm="))
+
+
+@unittest.skipUnless(sys.platform == "darwin", "reads the real process table")
+class TestRealCommandLines(unittest.TestCase):
+    def test_reads_this_processs_command_line(self):
+        lines = lib.System().command_lines([os.getpid()])
+        self.assertIn("test_caffeinate_lib", lines.get(os.getpid(), ""))
+
+    def test_an_exited_pid_is_simply_absent(self):
+        child = subprocess.Popen(["true"])
+        child.wait()
+        self.assertEqual(lib.System().command_lines([child.pid]), {})
 
 
 class TestAcquireBatteryFloor(CaffeinateTestCase):
@@ -1361,8 +1719,9 @@ class TestTimeoutBudget(unittest.TestCase):
         for event, declared in timeouts.items():
             self.assertEqual(declared, lib.HOOK_TIMEOUT, event)
 
-    def test_the_declared_timeout_covers_both_subprocesses_with_margin(self):
-        worst_case = lib.PS_TIMEOUT + lib.PMSET_TIMEOUT
+    def test_the_declared_timeout_covers_every_subprocess_with_margin(self):
+        # pmset, the process table, and the candidate shells' command lines.
+        worst_case = 2 * lib.PS_TIMEOUT + lib.PMSET_TIMEOUT
         self.assertLess(worst_case, lib.HOOK_TIMEOUT)
         self.assertGreaterEqual(lib.HOOK_TIMEOUT - worst_case, 2)
 
@@ -1425,6 +1784,25 @@ class TestHookExecutable(unittest.TestCase):
         os.chmod(path, 0o755)
         return shim
 
+    def shim_ps(self):
+        """Put a `ps` on PATH that sees NO background jobs.
+
+        Run from inside a Claude Code session, the hook's real ancestry reaches
+        a real `claude`, and any `run_in_background` job that session has going
+        is a real job — measured 2026-10-20, four tests here picked one up. So
+        the command-line lookup the job scan depends on answers nothing, and
+        every other `ps` call passes through, which the end-to-end tests need
+        to see their own real `caffeinate`. TestPsShim is the positive control.
+        """
+        shim = os.path.join(self.tmp.name, "shim")
+        os.makedirs(shim, exist_ok=True)
+        path = os.path.join(shim, "ps")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('#!/bin/sh\ncase "$*" in *args=*) exit 0;; esac\n'
+                         'exec /bin/ps "$@"\n')
+        os.chmod(path, 0o755)
+        return shim
+
     def run_hook(self, mode, payload='{"session_id":"probe"}', config=None,
                  power=None):
         environment = dict(os.environ)
@@ -1433,6 +1811,7 @@ class TestHookExecutable(unittest.TestCase):
         # Default AC, which is what every test here was written against and
         # what CI runners report. A test that cares about the battery branch
         # asks for it by name.
+        self.shim_ps()
         shim = self.shim_pmset(self.AC_OUTPUT if power is None else power)
         environment["PATH"] = shim + os.pathsep + environment.get("PATH", "")
         argv = [sys.executable, HOOK] + ([mode] if mode else [])

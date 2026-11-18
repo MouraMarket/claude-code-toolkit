@@ -47,10 +47,10 @@ _CLONE_HEADER = "=== NEWLY CLONED ==="
 # one. See the module docstring, "One shared deadline, not two", for why it
 # is measured from hook start.
 #
-#   sync_end   <= sync_lib.NET_BUDGET 2 + sync_tail 7 + gh_repo_list 4 = 13
-#   report_end <= max(sync_end 13, REPORT_DEADLINE_SECONDS 13)
-#                 + 4 x freshness_lib.GIT_TIMEOUT_SECONDS 2            = 21
-#                 <= declared 25 - MARGIN 2 = 23        (headroom 2)
+#   sync_end   <= sync_lib.NET_BUDGET 6 + sync_tail 7 + gh_repo_list 4 = 17
+#   report_end <= max(sync_end 17, REPORT_DEADLINE_SECONDS 13)
+#                 + 4 x freshness_lib.GIT_TIMEOUT_SECONDS 2            = 25
+#                 <= declared 30 - MARGIN 2 = 28        (headroom 3)
 REPORT_DEADLINE_SECONDS = 13
 
 

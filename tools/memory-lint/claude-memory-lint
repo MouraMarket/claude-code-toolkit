@@ -95,7 +95,11 @@ def run_hook():
         return
 
     memory_dir = lint_lib.memory_dir_from_transcript(payload.get("transcript_path"))
-    notice = lint_lib.build(memory_dir)
+    notice = lint_lib.build(
+        memory_dir,
+        source=payload.get("source"),
+        session_id=payload.get("session_id"),
+    )
     if not notice:
         return
 

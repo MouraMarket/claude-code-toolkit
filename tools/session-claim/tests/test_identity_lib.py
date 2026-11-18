@@ -19,29 +19,51 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import identity_lib
 
 
+# The desktop app's Claude Code binary, as `ps comm=` shows it (observed on this
+# Mac 2026-10-21). The space in "Application Support" is the whole point.
+DESKTOP_CLAUDE = ("/Users/x/Library/Application Support/Claude/claude-code/2.1.295/"
+                  "9d6405864fdc/claude.app/Contents/MacOS/claude")
+VSCODE_CLAUDE = ("/Users/x/.vscode/extensions/anthropic.claude-code-2.1.300-darwin-arm64/"
+                 "resources/native-binary/claude")
+
+
 class TestWalkToClaude(unittest.TestCase):
-    """The walk is pure: it takes a table and returns a pid or None."""
+    """The walk is pure: it takes a table of EXECUTABLE paths (`ps comm=`) and
+    returns a pid or None."""
 
     def test_finds_claude_at_the_top(self):
         table = {
-            10: (5, "/usr/bin/python3 /x/hook"),
-            5: (2, "/bin/zsh -c something"),
-            2: (1, "/Applications/foo/native-binary/claude --flag"),
+            10: (5, "/usr/bin/python3"),
+            5: (2, "/bin/zsh"),
+            2: (1, VSCODE_CLAUDE),
+        }
+        self.assertEqual(identity_lib.walk_to_claude(10, table), 2)
+
+    def test_finds_the_desktop_apps_claude_under_a_path_with_spaces(self):
+        # The old argv split read this as ".../Application" and the
+        # guard allowed every edit in the desktop app.
+        table = {
+            10: (5, "/usr/bin/python3"),
+            5: (2, "/bin/zsh"),
+            2: (1, DESKTOP_CLAUDE),
         }
         self.assertEqual(identity_lib.walk_to_claude(10, table), 2)
 
     def test_finds_bare_claude_command(self):
-        table = {7: (3, "/usr/bin/python3 x"), 3: (1, "claude")}
+        table = {7: (3, "/usr/bin/python3"), 3: (1, "claude")}
         self.assertEqual(identity_lib.walk_to_claude(7, table), 3)
 
     def test_returns_none_when_no_claude_ancestor(self):
-        table = {9: (4, "/usr/bin/python3 x"), 4: (1, "/bin/zsh")}
+        table = {9: (4, "/usr/bin/python3"), 4: (1, "/bin/zsh")}
         self.assertIsNone(identity_lib.walk_to_claude(9, table))
 
-    def test_does_not_match_claude_as_an_argument(self):
-        # `vim claude-notes.md` is not a claude process. Only argv[0] counts.
-        table = {8: (1, "/usr/bin/vim claude-notes.md")}
+    def test_does_not_match_an_executable_merely_named_like_claude(self):
+        # Exact basename only: a `claude-notes` tool, or a directory called
+        # claude, is not the claude binary.
+        table = {8: (1, "/usr/local/bin/claude-notes"),
+                 7: (1, "/Users/x/claude/bin/vim")}
         self.assertIsNone(identity_lib.walk_to_claude(8, table))
+        self.assertIsNone(identity_lib.walk_to_claude(7, table))
 
     def test_stops_at_pid_one_without_looping(self):
         table = {6: (1, "/bin/sh"), 1: (1, "/sbin/launchd")}
@@ -349,6 +371,48 @@ class TestResolveOwner(unittest.TestCase):
         table = {12345: (pid, "/usr/bin/python3 h"), pid: (1, "/x/claude")}
         owner = identity_lib.resolve_owner(12345, table=table)
         self.assertEqual(owner["name"], "sess-lon")
+
+
+class TestProcessTableReader(unittest.TestCase):
+    """The reader is wiring: the walk can only be right if the table it is
+    handed carries whole executable paths. A fake `ps` answers each format the
+    way the real one does, so reading `command=` (argv, args appended) instead
+    of `comm=` loses the desktop app here, exactly as it did live."""
+
+    def _fake_ps(self, rows):
+        # rows: [(pid, ppid, executable, args)]
+        def run(argv, **kwargs):
+            fmt = argv[2] if len(argv) > 2 else ""
+            lines = []
+            for pid, ppid, exe, args in rows:
+                if "comm=" in fmt:
+                    lines.append("%5d %5d %s" % (pid, ppid, exe))
+                else:
+                    lines.append("%5d %5d %s %s" % (pid, ppid, exe, args))
+            return subprocess.CompletedProcess(argv, 0, "\n".join(lines) + "\n", "")
+        return run
+
+    def test_a_desktop_session_resolves_through_the_real_reader(self):
+        rows = [(300, 200, "/usr/bin/python3", "/x/hook"),
+                (200, 100, "/bin/zsh", "-c true"),
+                (100, 1, DESKTOP_CLAUDE, "--output-format stream-json")]
+        real_run = identity_lib.subprocess.run
+        identity_lib.subprocess.run = self._fake_ps(rows)
+        try:
+            table = identity_lib.process_table()
+        finally:
+            identity_lib.subprocess.run = real_run
+        self.assertEqual(table[100], (1, DESKTOP_CLAUDE))
+        self.assertEqual(identity_lib.walk_to_claude(300, table), 100)
+
+    def test_parse_keeps_a_path_with_spaces_whole(self):
+        text = "  100     1 %s\n  200   100 /bin/zsh\n" % DESKTOP_CLAUDE
+        table = identity_lib.parse_process_table(text)
+        self.assertEqual(table, {100: (1, DESKTOP_CLAUDE), 200: (100, "/bin/zsh")})
+
+    def test_parse_skips_malformed_lines(self):
+        table = identity_lib.parse_process_table("garbage\n  12\n x y z\n  5 1 /bin/sh\n")
+        self.assertEqual(table, {5: (1, "/bin/sh")})
 
 
 class TestLiveSelfResolution(unittest.TestCase):

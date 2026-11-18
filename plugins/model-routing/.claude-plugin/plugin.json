@@ -1,0 +1,7 @@
+{
+  "name": "skill-model-routing",
+  "description": "Pick the cheapest model and effort that still does the work well, for each subagent and for your own session, and say what that trades away.",
+  "author": {
+    "name": "mouramarket"
+  }
+}

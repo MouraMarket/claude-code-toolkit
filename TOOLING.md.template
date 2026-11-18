@@ -9,7 +9,9 @@ default).** Over the cap the block is **withheld entirely** — the session gets
 two-line overage notice and no map at all. That is deliberate: a block trimmed to
 the cap reads exactly like a complete one, so a map can quietly lose its tail for
 days. Demote rows into the body below the block rather than raising the cap; the
-body is read on demand and costs nothing per session.
+body is read on demand and costs nothing per session. **It is also withheld
+past 9,500 characters of hook output**, however few lines it has: past ~10,000
+the harness shows Claude only a 2KB preview. No setting moves that limit.
 
 **The easy way is `/onboard`** — Claude copies this file and fills in the `TODO`
 sections by *checking your machine*, which is most of them. Filling them by hand

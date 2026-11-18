@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.join(REPO, "tools", "context-lint"))
 sys.path.insert(0, os.path.join(REPO, "tools", "tooling-digest"))
 import budget_lib
 import context_lint_lib
+import digest_lib
 import growth_lib
 import hook_manifest
 import instruction_lib
@@ -1525,6 +1526,33 @@ class TestDigestPathResolution(unittest.TestCase):
         self.assertEqual(os.path.realpath(row["path"]),
                           os.path.realpath(self.root_tooling))
         self.assertEqual(row["value"], 3)
+
+    def _output_row(self, config):
+        surfaces = budget_lib.scan(self.t.path, self.mem, [], config=config)
+        rows = [s for s in surfaces if s["name"] == "TOOLING digest output"]
+        return rows[0] if rows else None
+
+    def test_a_map_under_its_LINE_cap_but_over_the_CHAR_limit_reads_over(self):
+        """The report certified 40/80 lines while the
+        hook withheld the map. The chars row must show what the hook sees."""
+        body = "\n".join("row %d %s" % (i, "x" * 300) for i in range(40))
+        wide = self.t.write("wide.md", "<!-- DIGEST:START -->\n%s\n"
+                                       "<!-- DIGEST:END -->\n" % body)
+        config = _FakeToolingDigestConfig(path=wide, max_lines=80)
+
+        self.assertLessEqual(self._digest_row(config)["value"], 80)
+        row = self._output_row(config)
+        self.assertEqual(row["unit"], "chars")
+        self.assertEqual(row["cap"], digest_lib.HARNESS_MAX_CHARS)
+        self.assertGreater(row["value"], digest_lib.HARNESS_MAX_CHARS)
+        # The report and the hook agree on the SAME quantity.
+        self.assertTrue(digest_lib.build(config).startswith("DIGEST OVER CHARACTER LIMIT"))
+
+    def test_a_small_map_reads_the_hooks_exact_output_length(self):
+        config = _FakeToolingDigestConfig(path=self.custom_tooling)
+        row = self._output_row(config)
+        self.assertEqual(row["value"], len(digest_lib.build(config)))
+        self.assertLess(row["value"], digest_lib.HARNESS_MAX_CHARS)
 
 
 class TestReportShowsResolverReasonOnce(unittest.TestCase):

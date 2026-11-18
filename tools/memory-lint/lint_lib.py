@@ -195,6 +195,47 @@ def max_index_chars(config=None):
                INDEX_TRUNCATION_CHARS - 1)
 
 
+DEFAULT_DISTILL_AT_CHARS = 22000
+
+
+def distill_at_chars(config=None):
+    """Index size at which a startup/clear session is told to distill.
+
+    Clamped below the cap, like max_index_chars(): a value at or past the cap
+    would fire after the warning it is meant to precede.
+    """
+    cap = max_index_chars(config)
+    config = config or _config()
+    value = DEFAULT_DISTILL_AT_CHARS
+    if config is not None:
+        try:
+            configured = config.get("memory_lint", "distill_at_chars",
+                                    default=None)
+        except Exception:
+            configured = None
+        if (isinstance(configured, int) and not isinstance(configured, bool)
+                and configured > 0):
+            value = configured
+    if value < cap:
+        return value
+    # At or past the cap: 1000 under it, but never below half the cap (or 1).
+    # A plain `cap - 1000` reaches 0 or less on a small configured cap, and a
+    # threshold of 0 reads every index as due.
+    return max(cap - 1000, cap // 2, 1)
+
+
+def distill_skill_shipped():
+    """True iff the skill the notice names exists in this toolkit checkout.
+
+    Until Part B ships it the distill block is never emitted; it turns on by
+    itself when the SKILL.md lands.
+    """
+    here = os.path.dirname(os.path.realpath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+    return os.path.isfile(os.path.join(
+        root, "skills", "continuity", "memory-index-distill", "SKILL.md"))
+
+
 def max_index_lines(config=None):
     # Same shape and same clamp reason as max_index_chars(): a configured cap
     # at or past INDEX_TRUNCATION_LINES could never fire before the harness
@@ -1076,21 +1117,79 @@ def findings(result, config=None):
     return lines
 
 
-def build(memory_dir, config=None):
+def _distill_claim():
+    try:
+        import distill_claim
+
+        return distill_claim
+    except Exception:
+        return None
+
+
+_DISTILL_IN_PROGRESS = (
+    "MEMORY INDEX NEAR CHARACTER LIMIT — distillation in progress")
+
+
+def _distill_block(result, config, session_id):
+    """The near-cap block, or None when the index is below the trigger."""
+    if not result.get("readable"):
+        return None
+    chars = result.get("index_chars") or 0
+    threshold = distill_at_chars(config)
+    if chars < threshold:
+        return None
+    holder = None
+    claims = _distill_claim()
+    if claims is not None:
+        try:
+            holder = claims.read_live()
+        except Exception:
+            holder = None
+    if holder is not None and holder.get("session_id") != session_id:
+        return (
+            _DISTILL_IN_PROGRESS + " in another "
+            "session since %s. Nothing to do here. Don't write memory until "
+            "it finishes." % claims.local_hhmm(holder)
+        )
+    return (
+        "MEMORY INDEX NEAR CHARACTER LIMIT — MEMORY.md is %d / %d chars (distill at %d). "
+        "Past ~25,000 the harness drops rows silently. In your FIRST reply, "
+        "tell the user and offer three choices: (1) make this the "
+        "distillation session (run /toolkit-continuity:memory-index-distill); "
+        "(2) hand off: give a one-line kickoff for a dedicated session and "
+        "carry on here; (3) later. Distillation pauses the other running "
+        "sessions via /handover, so it runs in a session of its own."
+        % (chars, max_index_chars(config), threshold)
+    )
+
+
+def build(memory_dir, config=None, source=None, session_id=None):
     """The notice text for a session, or None when there is nothing to say."""
     if not is_enabled(config):
         return None
-    lines = findings(scan(memory_dir, config), config)
-    if not lines:
-        return None
-    body = "\n".join("- " + line for line in lines)
-    return (
-        "MEMORY INDEX DRIFT — MEMORY.md is injected every session, so its hooks "
-        "are the only part of memory with a standing token cost.\n"
-        + body
-        + "\nCompress from the FILES, never from the old hooks: a hook rewritten "
-        "from a hook re-blesses whatever framing its file already corrected."
-    )
+    result = scan(memory_dir, config)
+    block = None
+    if source in ("startup", "clear") and distill_skill_shipped():
+        block = _distill_block(result, config, session_id)
+    lines = findings(result, config)
+    drift = None
+    if lines:
+        body = "\n".join("- " + line for line in lines)
+        drift = (
+            "MEMORY INDEX DRIFT — MEMORY.md is injected every session, so its "
+            "hooks are the only part of memory with a standing token cost.\n"
+            + body
+            + "\nCompress from the FILES, never from the old hooks: a hook "
+            "rewritten from a hook re-blesses whatever framing its file "
+            "already corrected."
+        )
+    if block and block.startswith(_DISTILL_IN_PROGRESS):
+        # Another session is distilling: the drift notice's "compress" would
+        # tell this one to write memory while it is told not to.
+        return block
+    if block and drift:
+        return block + "\n\n" + drift
+    return block or drift
 
 
 def _budget_state(result, cap):
@@ -1123,6 +1222,14 @@ def _spare_or_over(value, cap):
     return "%d spare" % (cap - value)
 
 
+def _distill_state(result, config):
+    threshold = distill_at_chars(config)
+    chars = result.get("index_chars") or 0
+    if chars >= threshold:
+        return "%d (due)" % threshold
+    return "%d (%d to go)" % (threshold, threshold - chars)
+
+
 def report(memory_dir, config=None):
     """Full human-readable measurement, printed whether or not anything is wrong."""
     result = scan(memory_dir, config)
@@ -1140,6 +1247,7 @@ def report(memory_dir, config=None):
             _budget_state(result, max_index_chars(config)),
             INDEX_TRUNCATION_CHARS,
         ),
+        "distill at      %s" % _distill_state(result, config),
         "index lines     %d / %d lines — %s (harness drops lines past ~%d)"
         % (
             result["index_lines"],

@@ -51,6 +51,13 @@ DEFAULT_FILENAME = "TOOLING.md"
 DEFAULT_MAX_LINES = 60
 DEFAULT_STALE_AFTER_DAYS = 90
 
+# Past ~10,000 characters the harness saves hook output to a file and shows the
+# model a 2KB preview (an 11,161-char digest arrived as its
+# first 2KB; a 9,871-char PostToolUse injection arrived whole). The line cap
+# never saw it: the live block was 147 lines against a 200-line cap. A constant,
+# not config, because no setting moves the harness's limit.
+HARNESS_MAX_CHARS = 9500
+
 
 def _config():
     """Return the toolkit config module, or None if it cannot be imported.
@@ -192,6 +199,32 @@ def cap_block(body, limit, label="DIGEST", filename=None):
         "Look nothing up from memory — open %s and read it. To restore the "
         "digest, trim the %s block to %d lines or fewer."
         % (label, len(lines), limit, filename or DEFAULT_FILENAME, label, limit)
+    )
+
+
+def cap_chars(output, label="DIGEST", path=None):
+    """Under the harness limit, the output. Over it, the overage INSTEAD.
+
+    Same ruling as `cap_block`: a 2KB preview reads like a complete map, so
+    the whole output is withheld and the notice is the only thing injected.
+    Measured on everything the hook prints, not the block alone, because
+    the harness measures everything the hook prints.
+
+    Names the FULL path, unlike `cap_block`: that notice still gets render's
+    `(Source: <path>)` line beside it, and this one replaces the output that
+    carried it. The session's cwd is any repo, so a bare filename would not
+    resolve.
+    """
+    if len(output) <= HARNESS_MAX_CHARS:
+        return output
+    return (
+        "%s OVER CHARACTER LIMIT — %d/%d characters. The hook's output was NOT injected, "
+        "so this session has NO tooling map.\n"
+        "Look nothing up from memory — open %s and read it. To restore the "
+        "digest, trim the %s block until the output is %d characters or "
+        "fewer; past that the harness shows only a 2KB preview.\n"
+        % (label, len(output), HARNESS_MAX_CHARS,
+           path or DEFAULT_FILENAME, label, HARNESS_MAX_CHARS)
     )
 
 
@@ -377,13 +410,24 @@ def build(config=None, now=None):
         # (`enabled: false` is the opt-out). Say so rather than inject nothing.
         return render_missing(path)
 
+    return cap_chars(assemble(text, path, config, now=now),
+                     label=core_block.marker_label(text) or "DIGEST", path=path)
+
+
+def assemble(text, path, config=None, now=None):
+    """Everything the hook would print for this map, BEFORE `cap_chars`.
+
+    The one measurement of the harness-limited quantity: context-budget and
+    context-growth call this too, so a report or an edit-time notice can never
+    pass a map the hook then withholds.
+    """
     body = extract(text)
     if not body:
         return render_broken(path, text)
 
-    body = cap_block(body, max_lines(config),
-                    label=core_block.marker_label(text) or "DIGEST",
-                    filename=os.path.basename(path) or DEFAULT_FILENAME)
+    label = core_block.marker_label(text) or "DIGEST"
+    filename = os.path.basename(path) or DEFAULT_FILENAME
+    body = cap_block(body, max_lines(config), label=label, filename=filename)
     if core_block.block_count(text) > 1:
         # The earliest pair wins deterministically, but the file
         # is still ambiguous about what it injects, and a second pair is almost

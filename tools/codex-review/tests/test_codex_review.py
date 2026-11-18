@@ -27,6 +27,9 @@ HERE = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.insert(0, HERE)
 import codex_review_lib  # noqa: E402
 
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "build-lens"))
+import review_lib  # noqa: E402
+
 REAL_SESSIONS_ROOT = os.path.expanduser("~/.codex/sessions")
 
 
@@ -639,7 +642,7 @@ class TestGateModelsCoverTheGates(unittest.TestCase):
         self.assertEqual(set(codex_review_lib.GATE_MODELS),
                          set(codex_review_lib.GATES))
         self.assertEqual(set(codex_review_lib.GATES),
-                         {"code", "merge", "plan", "design"})
+                         {"code", "merge", "plan", "design", "architecture"})
 
 
 class TestResolveGateModel(unittest.TestCase):
@@ -1367,6 +1370,11 @@ WRAPPER = os.path.join(HERE, "claude-codex-review")
 #                           `CODEX_SHIM_USED` (default 50), window 10080,
 #                           `resets_at` = now + 86400). Unset -> no rollout
 #                           is written, i.e. today's behaviour exactly.
+#   CODEX_SHIM_REPORT_FILE  Task 4. A file path. When set (and the output
+#                           mode is not a failure mode: none, malformed,
+#                           prose, hang, kill_parent still win), the shim
+#                           copies that file's bytes to the `-o` path
+#                           instead of the default report.
 SHIM_SOURCE = '''#!/usr/bin/env python3
 """Fake `codex`, for claude-codex-review's tests only. See
 CODEX_SHIM_DUMP / CODEX_SHIM_EXIT / CODEX_SHIM_OUTPUT_MODE /
@@ -1507,6 +1515,12 @@ elif mode == "prose":
                 "I reviewed the change and it looks solid overall. The "
                 "error handling could be tightened in a couple of places "
                 "but nothing here is blocking.")
+elif os.environ.get("CODEX_SHIM_REPORT_FILE"):
+    if output_path:
+        with open(os.environ["CODEX_SHIM_REPORT_FILE"], "rb") as src:
+            report_bytes = src.read()
+        with open(output_path, "wb") as handle:
+            handle.write(report_bytes)
 elif mode in REPORTS:
     if output_path:
         with open(output_path, "w", encoding="utf-8") as handle:
@@ -2658,6 +2672,87 @@ class TestExecutableEmptyUpstreamDeltaIsLegitimate(CodexReviewExecutableTestCase
         upstream_idx = stdin_bytes.index(upstream_marker)
         upstream_block = stdin_bytes[upstream_idx + len(upstream_marker):]
         self.assertEqual(upstream_block, b"")
+
+
+def _make_local_only_merge_repo(root):
+    """A repo with NO remote at all (row 77): `main` with a common ancestor,
+    a `feature` branch with one commit, then one more commit on `main` so the
+    upstream block is non-empty. Left on `feature`. Returns the repo path."""
+    repo = os.path.join(root, "local-only")
+    os.makedirs(repo)
+    _git("init", "-q", repo, cwd=root)
+    _git("symbolic-ref", "HEAD", "refs/heads/main", cwd=repo)
+    _git("config", "user.email", "t@example.com", cwd=repo)
+    _git("config", "user.name", "Test", cwd=repo)
+    _write_agents_md(repo)
+    with open(os.path.join(repo, "shared.txt"), "w", encoding="utf-8") as handle:
+        handle.write("start\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "common ancestor", cwd=repo)
+    _git("checkout", "-q", "-b", "feature", cwd=repo)
+    with open(os.path.join(repo, "branch.txt"), "w", encoding="utf-8") as handle:
+        handle.write("branch work\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "branch work", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+    with open(os.path.join(repo, "shared.txt"), "w", encoding="utf-8") as handle:
+        handle.write("start\nupstream change\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-q", "-m", "upstream work", cwd=repo)
+    _git("checkout", "-q", "feature", cwd=repo)
+    return repo
+
+
+class TestExecutableMergeWithNoOriginRemote(CodexReviewExecutableTestCase):
+    """Row 77: full-power Merge Review in a local-only repo merges the LOCAL
+    branch instead of failing on `git fetch origin`; a missing local branch
+    refuses with a runnable fix; and a CONFIGURED origin that cannot be
+    fetched still refuses (keyed on the remote being absent, never on a
+    fetch failing -- same keying as claude-merge-brief's row 72)."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = _make_local_only_merge_repo(self.root)
+
+    def _args(self, ref):
+        return ["--base", "main", "--repo", self.repo, "-o", self.output_path,
+                "--sessions-root", self.sessions_root, "--merge-with", ref]
+
+    def test_merges_the_local_branch_and_reviews_both_blocks(self):
+        result = _run_wrapper(self._args("main"),
+                              env=self.env(output_mode="conforming"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.shim_was_run())
+
+        main_sha = _git("rev-parse", "main", cwd=self.repo).stdout.strip()
+        _, _, base_label, base_sha, _ = _snapshot_line_fields(self, result.stdout)
+        self.assertEqual((base_label, base_sha), ("main", main_sha))
+
+        with open(self.dump_path + ".stdin", "rb") as handle:
+            stdin_bytes = handle.read()
+        upstream_marker = b"=== MOVED UNDER YOU SINCE ===\n"
+        self.assertIn(upstream_marker, stdin_bytes)
+        upstream_block = stdin_bytes[stdin_bytes.index(upstream_marker)
+                                     + len(upstream_marker):]
+        self.assertIn(b"upstream change", upstream_block)
+
+    def test_a_missing_local_branch_refuses_with_a_runnable_fix(self):
+        result = _run_wrapper(self._args("trunk"),
+                              env=self.env(output_mode="conforming"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.shim_was_run())
+        self.assertIn(b"no `origin` remote", result.stderr)
+        self.assertIn(b"--merge-with <branch>", result.stderr)
+        self.assertIn(b"main", result.stderr)  # the local branches are listed
+
+    def test_a_configured_but_unreachable_origin_still_refuses(self):
+        _git("remote", "add", "origin",
+             os.path.join(self.root, "does-not-exist.git"), cwd=self.repo)
+        result = _run_wrapper(self._args("main"),
+                              env=self.env(output_mode="conforming"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.shim_was_run())
+        self.assertIn(b"git fetch origin main failed", result.stderr)
 
 
 class TestExecutableMergeConflict(CodexReviewExecutableTestCase):
@@ -4275,6 +4370,1020 @@ class TestSetterMatchesTheWrapper(unittest.TestCase):
     def test_the_setter_itself_refuses_a_non_string(self):
         for value in (True, False, 1, 1.5, [], {}):
             self.assertFalse(self.setup_config._codex_model_or_null(value, None)[0], repr(value))
+
+
+class TestArchitectureArgv(unittest.TestCase):
+    def setUp(self):
+        self.argv = codex_review_lib.build_architecture_argv(
+            "/r", "/s.json", "/o.json", "the prompt", codex_review_lib.CODEX_MODEL)
+
+    def test_exact_list(self):
+        self.assertEqual(self.argv, [
+            "codex", "exec", "-C", "/r", "-m", codex_review_lib.CODEX_MODEL,
+            "-c", 'model_reasoning_effort="max"',
+            "-c", 'sandbox_mode="read-only"',
+            "--output-schema", "/s.json", "-o", "/o.json", "the prompt"])
+
+    def test_c_values_and_prompt_last(self):
+        self.assertTrue(self.argv)
+        self.assertEqual(self.argv[-1], "the prompt")
+        values = [self.argv[i + 1] for i, a in enumerate(self.argv)
+                  if a == "-c"]
+        self.assertEqual(len(values), 2)
+        self.assertIn("max", values[0])
+        self.assertIn("read-only", values[1])
+
+    def test_constants(self):
+        self.assertEqual(codex_review_lib.ARCHITECTURE_EFFORT, "max")
+        self.assertEqual(codex_review_lib.ARCHITECTURE_SANDBOX, "read-only")
+        self.assertEqual(codex_review_lib.model_for_gate("architecture"),
+                         codex_review_lib.CODEX_MODEL)
+
+
+class TestResumeArgv(unittest.TestCase):
+    def setUp(self):
+        self.argv = codex_review_lib.build_resume_argv(
+            "sess-1", "/s.json", "/o.json", "the prompt",
+            codex_review_lib.CODEX_MODEL)
+
+    def test_exact_list(self):
+        self.assertEqual(self.argv, [
+            "codex", "exec", "resume", "sess-1",
+            "-m", codex_review_lib.CODEX_MODEL,
+            "-c", 'model_reasoning_effort="max"',
+            "-c", 'sandbox_mode="read-only"',
+            "--output-schema", "/s.json", "-o", "/o.json", "the prompt"])
+
+    def test_resume_repasses_effort_and_sandbox(self):
+        # Resume silently reverts both unless each -c pair is re-passed.
+        self.assertTrue(self.argv)
+        self.assertEqual(self.argv[-1], "the prompt")
+        values = [self.argv[i + 1] for i, a in enumerate(self.argv)
+                  if a == "-c"]
+        self.assertEqual(len(values), 2)
+        self.assertIn('model_reasoning_effort="max"', values)
+        self.assertIn('sandbox_mode="read-only"', values)
+
+    def test_no_sandbox_or_cwd_flags(self):
+        self.assertTrue(self.argv)
+        self.assertNotIn("-s", self.argv)
+        self.assertNotIn("-C", self.argv)
+
+
+class TestWeeklyReading(unittest.TestCase):
+    NOW = 1000.0
+
+    def win(self, minutes, used, resets=5000.0):
+        return {"window_minutes": minutes, "used_percent": used,
+                "resets_at": resets}
+
+    def test_unreadable_weekly_primary_does_not_mask_weekly_secondary(self):
+        # Code Review finding: a malformed or expired weekly primary used to
+        # return None outright, hiding a readable 95% secondary and letting
+        # --usage exit 0 instead of 3.
+        for primary in (self.win(10080, "broken"),
+                        self.win(10080, 50, resets=500.0),
+                        self.win(10080, float("nan"))):
+            got = codex_review_lib.weekly_reading(
+                {"primary": primary, "secondary": self.win(10080, 95)},
+                self.NOW)
+            self.assertIsNotNone(got, primary)
+            self.assertEqual(got["used_percent"], 95.0, primary)
+
+    def test_picks_secondary_when_primary_is_short(self):
+        got = codex_review_lib.weekly_reading(
+            {"primary": self.win(300, 10), "secondary": self.win(10080, 95)},
+            self.NOW)
+        self.assertEqual(got, {"used_percent": 95.0, "resets_at": 5000.0,
+                               "window_minutes": 10080})
+        self.assertIsInstance(got["used_percent"], float)
+
+    def test_picks_primary_when_weekly(self):
+        got = codex_review_lib.weekly_reading(
+            {"primary": self.win(10080, 40), "secondary": self.win(300, 90)},
+            self.NOW)
+        self.assertEqual(got["used_percent"], 40.0)
+
+    def test_none_cases(self):
+        w = codex_review_lib.weekly_reading
+        weekly = lambda **kw: {"primary": dict(self.win(10080, 5), **kw)}
+        self.assertIsNone(w(None, self.NOW))
+        self.assertIsNone(w("x", self.NOW))
+        self.assertIsNone(w({"primary": self.win(300, 5),
+                             "secondary": self.win(60, 5)}, self.NOW))
+        self.assertIsNone(w(weekly(resets_at=900.0), self.NOW))
+        self.assertIsNone(w(weekly(resets_at=self.NOW), self.NOW))
+        self.assertIsNone(w(weekly(used_percent=True), self.NOW))
+        self.assertIsNone(w(weekly(used_percent="95"), self.NOW))
+        self.assertIsNone(w(weekly(resets_at=True), self.NOW))
+        self.assertIsNone(w(weekly(resets_at="5000"), self.NOW))
+        self.assertIsNone(w({"primary": {"window_minutes": 10080,
+                                         "resets_at": 5000.0}}, self.NOW))
+        self.assertIsNone(w({"primary": {"window_minutes": 10080,
+                                         "used_percent": 5}}, self.NOW))
+
+    def test_malformed_windows_never_raise(self):
+        w = codex_review_lib.weekly_reading
+        self.assertIsNone(w({}, self.NOW))
+        self.assertIsNone(w({"primary": None, "secondary": 7}, self.NOW))
+        got = w({"primary": "junk", "secondary": self.win(10080, 12)},
+                self.NOW)
+        self.assertEqual(got["used_percent"], 12.0)
+
+
+class TestFormatWeekly(unittest.TestCase):
+    def test_none_says_unknown(self):
+        out = codex_review_lib.format_weekly(None)
+        self.assertEqual(
+            out, "codex weekly: unknown (no readable 7-day window)")
+
+    def test_reading_line(self):
+        reading = {"used_percent": 95.0, "resets_at": 5000.0,
+                   "window_minutes": 10080}
+        out = codex_review_lib.format_weekly(reading)
+        stamp = time.strftime("%a %m-%d %H:%M", time.localtime(5000.0))
+        self.assertEqual(out, "codex weekly: 95.0%% used, resets %s" % stamp)
+
+
+ARCHITECTURE_SCHEMA_PATH = os.path.join(
+    os.path.dirname(HERE), "build-lens",
+    "architecture-review-report.schema.json")
+ARCHITECTURE_CASES_PATH = os.path.join(
+    HERE, "tests", "semantic_cases_architecture.json")
+
+
+def _load_architecture_schema():
+    with open(ARCHITECTURE_SCHEMA_PATH, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _load_architecture_cases():
+    with open(ARCHITECTURE_CASES_PATH, encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+class TestArchitectureSchema(unittest.TestCase):
+    def test_schema_parses(self):
+        self.assertIsInstance(_load_architecture_schema(), dict)
+
+    def test_strict_mode_every_object_node(self):
+        """Every object node lists all its properties in `required` and
+        sets additionalProperties false (OpenAI strict mode)."""
+        objects = []
+
+        def walk(node, path):
+            if isinstance(node, dict):
+                if node.get("type") == "object":
+                    objects.append(path)
+                    props = node.get("properties")
+                    self.assertIsInstance(props, dict, path)
+                    self.assertEqual(sorted(node.get("required", [])),
+                                     sorted(props.keys()), path)
+                    self.assertIs(node.get("additionalProperties"), False,
+                                  path)
+                for key, child in node.items():
+                    walk(child, path + "/" + key)
+            elif isinstance(node, list):
+                for index, child in enumerate(node):
+                    walk(child, "%s[%d]" % (path, index))
+
+        walk(_load_architecture_schema(), "#")
+        # root + context_requests, lens_verdicts, principles, changes,
+        # executed items: a walk that found fewer proves nothing.
+        self.assertGreaterEqual(len(objects), 6)
+
+    def test_every_case_report_is_schema_valid(self):
+        schema = _load_architecture_schema()
+        for case in _load_architecture_cases():
+            violations = review_lib.validate_against_schema(
+                schema, case["report"])
+            self.assertEqual(list(violations), [], case["name"])
+
+
+class TestArchitectureSemanticCases(unittest.TestCase):
+    def test_cases_accept_and_reject(self):
+        cases = _load_architecture_cases()
+        self.assertGreater(len(cases), 0)
+        for case in cases:
+            got = codex_review_lib.architecture_violation(
+                case["report"], case["round"], case["moment"])
+            if case["expect"] == "accept":
+                self.assertIsNone(got, case["name"])
+            else:
+                self.assertEqual(case["expect"], "reject", case["name"])
+                self.assertIsInstance(got, str, case["name"])
+                self.assertNotEqual(got.strip(), "", case["name"])
+
+    def test_cases_cover_every_status_moment_and_rule(self):
+        cases = _load_architecture_cases()
+        accepted = set((c["report"]["status"], c["moment"])
+                       for c in cases if c["expect"] == "accept")
+        for status in ("final", "needs_context"):
+            for moment in ("design", "final"):
+                self.assertIn((status, moment), accepted)
+        rejected = " ".join(c["reason"] for c in cases
+                            if c["expect"] == "reject")
+        for rule in range(1, 9):
+            self.assertIn("rule %d:" % rule, rejected)
+
+    def test_lens_constants(self):
+        self.assertEqual(codex_review_lib.CORE_LENSES,
+                         ("coherence", "elegance", "rebuild", "unaccounted"))
+        self.assertEqual(
+            codex_review_lib.DESIGN_LENSES,
+            ("wrong-premise", "simpler-alternative", "silent-failure",
+             "already-exists", "seams"))
+
+    def test_non_string_content_is_blank(self):
+        accepted = [c for c in _load_architecture_cases()
+                    if c["name"] == "final_design"][0]
+        report = json.loads(json.dumps(accepted["report"]))
+        report["principles"][0]["why"] = 5
+        got = codex_review_lib.architecture_violation(report, 1, "design")
+        self.assertIsInstance(got, str)
+
+
+# --- Architecture-review wrapper flags: parse rules, --check-brief,
+# --usage, --validate-report (Task 3). None of these needs `codex` on PATH.
+
+
+class TestArchitectureParse(CodexReviewExecutableTestCase):
+    """Every parse rule exits 2 and runs nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.brief = os.path.join(self.root, "brief.md")
+        with open(self.brief, "w", encoding="utf-8") as handle:
+            handle.write("# Brief\n\nA clean brief.\n")
+        self.report = os.path.join(self.root, "arch-report.json")
+        self.answers = os.path.join(self.root, "answers.md")
+
+    def assert_usage_error(self, args, fragment=None):
+        result = _run_wrapper(args, env=self.env(output_mode="conforming"))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(self.shim_was_run())
+        if fragment is not None:
+            self.assertIn(fragment.encode("utf-8"), result.stderr)
+
+    def repo_out(self):
+        return ["--repo", self.repo, "-o", self.output_path]
+
+    def test_two_family_flags_conflict(self):
+        self.assert_usage_error(["--usage", "--check-brief", self.brief])
+        self.assert_usage_error(["--check-brief", self.brief,
+                                 "--validate-report", self.report,
+                                 "--round", "1", "--moment", "design"])
+        self.assert_usage_error(["--architecture-review", self.brief,
+                                 "--moment", "design", "--usage"]
+                                + self.repo_out())
+        self.assert_usage_error(["--resume", "abc", "--answers", self.answers,
+                                 "--round", "2", "--moment", "design",
+                                 "--architecture-review", self.brief]
+                                + self.repo_out())
+
+    def test_family_flag_does_not_combine_with_other_modes(self):
+        for family in (["--check-brief", self.brief], ["--usage"]):
+            for other in (["--base", "base"], ["--plan", self.brief],
+                          ["--plan-review", self.brief],
+                          ["--design-review", self.brief, self.brief],
+                          ["--merge-with", "main"]):
+                self.assert_usage_error(family + other + self.repo_out())
+
+    def test_empty_values_are_usage_errors(self):
+        self.assert_usage_error(["--check-brief", ""], "empty")
+        self.assert_usage_error(["--validate-report", "", "--round", "1",
+                                 "--moment", "design"], "empty")
+        self.assert_usage_error(["--architecture-review", "",
+                                 "--moment", "design"] + self.repo_out(),
+                                "empty")
+        self.assert_usage_error(["--resume", "", "--answers", self.answers,
+                                 "--round", "2", "--moment", "design"]
+                                + self.repo_out(), "empty")
+
+    def test_validate_report_needs_round_and_moment(self):
+        self.assert_usage_error(["--validate-report", self.report,
+                                 "--moment", "design"], "--round")
+        self.assert_usage_error(["--validate-report", self.report,
+                                 "--round", "1"], "--moment")
+
+    def test_architecture_review_requirements(self):
+        base = ["--architecture-review", self.brief]
+        self.assert_usage_error(base + ["--repo", self.repo, "-o",
+                                        self.output_path], "--moment")
+        self.assert_usage_error(base + ["--moment", "design", "-o",
+                                        self.output_path], "--repo")
+        self.assert_usage_error(base + ["--moment", "design", "--repo",
+                                        self.repo], "-o")
+        self.assert_usage_error(base + ["--moment", "design", "--round", "1"]
+                                + self.repo_out(), "--round")
+
+    def test_resume_requirements(self):
+        full = ["--resume", "abc", "--answers", self.answers,
+                "--round", "2", "--moment", "design"] + self.repo_out()
+
+        def without(flag):
+            out = list(full)
+            index = out.index(flag)
+            del out[index:index + 2]
+            return out
+
+        self.assert_usage_error(without("--answers"), "--answers")
+        self.assert_usage_error(without("--round"), "--round")
+        self.assert_usage_error(without("--moment"), "--moment")
+        self.assert_usage_error(without("--repo"), "--repo")
+        self.assert_usage_error(without("-o"), "-o")
+        bad_round = list(full)
+        bad_round[bad_round.index("--round") + 1] = "1"
+        self.assert_usage_error(bad_round, "--round")
+
+    def test_check_brief_and_usage_take_no_round_moment_answers(self):
+        for family in (["--check-brief", self.brief], ["--usage"]):
+            for extra in (["--round", "1"], ["--moment", "design"],
+                          ["--answers", self.answers]):
+                self.assert_usage_error(family + extra)
+
+    def test_existing_modes_now_enforce_repo_and_output_in_main(self):
+        self.assert_usage_error(["--base", "base", "-o", self.output_path],
+                                "--repo")
+        self.assert_usage_error(["--base", "base", "--repo", self.repo],
+                                "-o")
+
+
+class TestCheckBrief(CodexReviewExecutableTestCase):
+    def write_brief(self, text):
+        path = os.path.join(self.root, "brief.md")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return path
+
+    def run_check(self, path):
+        return _run_wrapper(["--check-brief", path],
+                            env=self.env(output_mode="conforming"))
+
+    def test_clean_brief_passes(self):
+        result = self.run_check(self.write_brief("# Brief\n\nClean.\n"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"brief check: OK", result.stdout)
+        self.assertNotIn(b"warning", result.stdout)
+        self.assertFalse(self.shim_was_run())
+
+    def test_answer_key_heading_is_refused(self):
+        result = self.run_check(self.write_brief(
+            "# Brief\n\n## Round 2 findings\n\nstuff\n"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"Round 2 findings", result.stderr)
+        self.assertNotIn(b"brief check: OK", result.stdout)
+
+    def test_prose_blocking_warns_and_exits_zero(self):
+        result = self.run_check(self.write_brief(
+            "# Brief\n\nThis is BLOCKING work.\n"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"brief warning: line 3: prose 'BLOCKING'",
+                      result.stdout)
+        self.assertIn(b"brief check: OK with 1 warning(s)", result.stdout)
+
+    def test_missing_and_empty_files_exit_one(self):
+        result = self.run_check(os.path.join(self.root, "nope.md"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        result = self.run_check(self.write_brief("  \n"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+
+class TestUsageFlag(CodexReviewExecutableTestCase):
+    def run_usage(self, block, secondary_only=False):
+        if block is not None:
+            _write_jsonl(os.path.join(self.sessions_root, "rollout-a.jsonl"),
+                         [_event_line(block)])
+        return _run_wrapper(["--usage", "--sessions-root", self.sessions_root],
+                            env=self.env())
+
+    def weekly(self, used, key="primary"):
+        return {key: {"used_percent": used, "window_minutes": 10080,
+                      "resets_at": time.time() + 86400}}
+
+    def setUp(self):
+        super().setUp()
+        os.makedirs(self.sessions_root)
+
+    def test_fifty_percent_exits_zero(self):
+        result = self.run_usage(self.weekly(50.0))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"codex weekly: 50.0% used", result.stdout)
+        self.assertFalse(self.shim_was_run())
+
+    def test_ninety_percent_exits_three_with_stop_line(self):
+        result = self.run_usage(self.weekly(90.0))
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn(b"codex weekly: 90.0% used", result.stdout)
+        self.assertIn(b"STOP: weekly Codex usage at or above 90%",
+                      result.stdout)
+
+    def test_just_under_ninety_exits_zero(self):
+        result = self.run_usage(self.weekly(89.9))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ninety_five_as_secondary_exits_three(self):
+        block = self.weekly(95.0, key="secondary")
+        block["primary"] = {"used_percent": 10.0, "window_minutes": 300,
+                            "resets_at": time.time() + 3600}
+        result = self.run_usage(block)
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn(b"codex weekly: 95.0% used", result.stdout)
+
+    def test_no_weekly_window_is_unknown_and_exits_zero(self):
+        result = self.run_usage({"primary": {"used_percent": 99.0,
+                                             "window_minutes": 300,
+                                             "resets_at": time.time() + 3600}})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"unknown", result.stdout)
+
+    def test_expired_window_is_unknown_and_exits_zero(self):
+        block = self.weekly(99.0)
+        block["primary"]["resets_at"] = time.time() - 60
+        result = self.run_usage(block)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"unknown", result.stdout)
+
+    def test_absent_root_is_unknown_and_exits_zero(self):
+        shutil.rmtree(self.sessions_root)
+        result = self.run_usage(None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"unknown", result.stdout)
+
+
+class TestValidateReport(CodexReviewExecutableTestCase):
+    def case(self, name):
+        for entry in _load_architecture_cases():
+            if entry["name"] == name:
+                return entry
+        self.fail("no architecture case named %r" % name)
+
+    def first_case(self, expect):
+        for entry in _load_architecture_cases():
+            if entry["expect"] == expect:
+                return entry
+        self.fail("no %s architecture case" % expect)
+
+    def run_validate(self, text, round_, moment):
+        path = os.path.join(self.root, "arch-report.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        return _run_wrapper(["--validate-report", path, "--round",
+                             str(round_), "--moment", moment],
+                            env=self.env())
+
+    def test_accepted_case_passes_with_counts(self):
+        entry = self.case("final_design")
+        report = entry["report"]
+        result = self.run_validate(json.dumps(report), entry["round"],
+                                   entry["moment"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            ("architecture report: valid (status %s, round %d, %d change(s), "
+             "%d context request(s))" % (
+                 report["status"], report["round"], len(report["changes"]),
+                 len(report["context_requests"]))).encode("utf-8"),
+            result.stdout)
+        self.assertFalse(self.shim_was_run())
+
+    def test_every_accept_case_passes_and_every_reject_that_is_schema_valid_fails(self):
+        for entry in _load_architecture_cases():
+            result = self.run_validate(json.dumps(entry["report"]),
+                                       entry["round"], entry["moment"])
+            want = 0 if entry["expect"] == "accept" else 1
+            self.assertEqual(result.returncode, want,
+                             (entry["name"], result.stderr))
+
+    def test_semantic_reject_case_fails(self):
+        entry = self.first_case("reject")
+        result = self.run_validate(json.dumps(entry["report"]),
+                                   entry["round"], entry["moment"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn(b"architecture report: valid", result.stdout)
+
+    def test_wrong_expected_round_fails(self):
+        entry = self.case("final_design")
+        result = self.run_validate(json.dumps(entry["report"]), 2,
+                                   entry["moment"])
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_non_json_fails(self):
+        result = self.run_validate("this is not json", 1, "design")
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_missing_file_fails(self):
+        result = _run_wrapper(["--validate-report",
+                               os.path.join(self.root, "nope.json"),
+                               "--round", "1", "--moment", "design"],
+                              env=self.env())
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_schema_invalid_report_fails(self):
+        report = json.loads(json.dumps(self.case("final_design")["report"]))
+        del report["lens_verdicts"]
+        result = self.run_validate(json.dumps(report), 1, "design")
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"lens_verdicts", result.stderr)
+
+    def test_non_object_json_fails(self):
+        result = self.run_validate("[1, 2]", 1, "design")
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+
+
+ARCHITECTURE_BRIEF_FILE = os.path.join(HERE, "architecture-brief.md")
+DESIGN_LENS_FILE = os.path.join(os.path.dirname(HERE), "build-lens",
+                                "design-review.md")
+
+
+def _make_architecture_wrapper_copy(root, c3_text):
+    """A throwaway `tools/codex-review/` holding the wrapper, the lib and a
+    caller-chosen `architecture-brief.md` (the real C3 is never edited),
+    with `tools/build-lens` and `tools/merge-brief` symlinked beside it so
+    the schema and the brief scan still resolve."""
+    tools = os.path.join(root, "arch-copy", "tools")
+    dest_dir = os.path.join(tools, "codex-review")
+    os.makedirs(dest_dir)
+    copied_exe = os.path.join(dest_dir, "claude-codex-review")
+    shutil.copy2(WRAPPER, copied_exe)
+    shutil.copy2(os.path.join(HERE, "codex_review_lib.py"),
+                 os.path.join(dest_dir, "codex_review_lib.py"))
+    with open(os.path.join(dest_dir, "architecture-brief.md"), "w",
+              encoding="utf-8") as handle:
+        handle.write(c3_text)
+    for name in ("build-lens", "merge-brief"):
+        os.symlink(os.path.join(os.path.dirname(HERE), name),
+                   os.path.join(tools, name))
+    # The wrapper reads the toolkit config (codex_review.models) from lib/.
+    os.symlink(os.path.join(os.path.dirname(os.path.dirname(HERE)), "lib"),
+               os.path.join(root, "arch-copy", "lib"))
+    os.chmod(copied_exe, 0o755)
+    return copied_exe
+
+
+def _session_rollout(path, cwd, session_id, now, mtime):
+    _write_jsonl(path, [
+        {"type": "session_meta",
+         "payload": {"id": session_id, "cwd": cwd,
+                     "originator": "codex_exec",
+                     "timestamp": _iso_utc(now)}},
+        _turn_context_line("gpt-6-astra"),
+        _token_count_line(200000, 100000),
+    ])
+    _touch_mtime(path, mtime)
+
+
+class TestRolloutSessionId(unittest.TestCase):
+    def setUp(self):
+        self.cwd = tempfile.mkdtemp(prefix="codex-review-cwd-")
+        self.addCleanup(shutil.rmtree, self.cwd, ignore_errors=True)
+        self.now = time.time()
+
+    def test_single_attributed_rollout_returns_its_id(self):
+        with TempSessionsRoot() as root:
+            _session_rollout(os.path.join(root, "rollout-a.jsonl"), self.cwd,
+                             "sess-123", self.now, self.now + 1)
+            self.assertEqual(
+                codex_review_lib.rollout_session_id(root, self.cwd, self.now),
+                "sess-123")
+
+    def test_cwd_is_compared_by_realpath(self):
+        link = self.cwd + "-link"
+        os.symlink(self.cwd, link)
+        self.addCleanup(os.unlink, link)
+        with TempSessionsRoot() as root:
+            _session_rollout(os.path.join(root, "rollout-a.jsonl"), link,
+                             "sess-link", self.now, self.now + 1)
+            self.assertEqual(
+                codex_review_lib.rollout_session_id(root, self.cwd, self.now),
+                "sess-link")
+
+    def test_two_matches_are_ambiguous(self):
+        with TempSessionsRoot() as root:
+            for name, sid in (("rollout-a.jsonl", "one"), ("rollout-b.jsonl", "two")):
+                _session_rollout(os.path.join(root, name), self.cwd, sid,
+                                 self.now, self.now + 1)
+            self.assertIsNone(
+                codex_review_lib.rollout_session_id(root, self.cwd, self.now))
+
+    def test_other_cwd_old_mtime_old_timestamp_do_not_match(self):
+        other = tempfile.mkdtemp(prefix="codex-review-other-")
+        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+        with TempSessionsRoot() as root:
+            _session_rollout(os.path.join(root, "rollout-cwd.jsonl"), other,
+                             "x", self.now, self.now + 1)
+            _session_rollout(os.path.join(root, "rollout-mtime.jsonl"), self.cwd,
+                             "y", self.now, self.now - 100)
+            _session_rollout(os.path.join(root, "rollout-ts.jsonl"), self.cwd,
+                             "z", self.now - 3600, self.now + 1)
+            self.assertIsNone(
+                codex_review_lib.rollout_session_id(root, self.cwd, self.now))
+
+    def test_absent_root_and_non_string_id_are_none(self):
+        self.assertIsNone(codex_review_lib.rollout_session_id(
+            "/nonexistent-sessions-root", self.cwd, self.now))
+        with TempSessionsRoot() as root:
+            path = os.path.join(root, "rollout-a.jsonl")
+            _session_rollout(path, self.cwd, "ignored", self.now, self.now + 1)
+            lines = open(path, encoding="utf-8").read().splitlines()
+            first = json.loads(lines[0])
+            first["payload"]["id"] = 7
+            lines[0] = json.dumps(first)
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+            _touch_mtime(path, self.now + 1)
+            self.assertIsNone(
+                codex_review_lib.rollout_session_id(root, self.cwd, self.now))
+
+    def test_agrees_with_run_cost_on_the_same_file(self):
+        with TempSessionsRoot() as root:
+            path = os.path.join(root, "rollout-a.jsonl")
+            _session_rollout(path, self.cwd, "same", self.now, self.now + 1)
+            cost = codex_review_lib.run_cost(root, self.cwd, self.now)
+            self.assertIsNotNone(cost)
+            self.assertEqual(cost["path"], path)
+            self.assertEqual(
+                codex_review_lib.rollout_session_id(root, self.cwd, self.now),
+                "same")
+
+
+class ArchitectureWrapperTestCase(CodexReviewExecutableTestCase):
+    def setUp(self):
+        super().setUp()
+        self.brief = os.path.join(self.root, "brief.md")
+        with open(self.brief, "w", encoding="utf-8") as handle:
+            handle.write("# Brief\n\nObjectives, verbatim.\n")
+        self.shim_report = os.path.join(self.root, "shim-report.json")
+
+    def case(self, name):
+        for entry in _load_architecture_cases():
+            if entry["name"] == name:
+                return entry
+        self.fail("no architecture case named %r" % name)
+
+    def arch_env(self, report, extra=None, **kwargs):
+        """`report` is a dict (written as JSON), a str (written verbatim)."""
+        with open(self.shim_report, "w", encoding="utf-8") as handle:
+            handle.write(report if isinstance(report, str)
+                         else json.dumps(report))
+        e = {"CODEX_SHIM_REPORT_FILE": self.shim_report}
+        if extra:
+            e.update(extra)
+        return self.env(extra=e, **kwargs)
+
+    def stdin_bytes(self):
+        with open(self.dump_path + ".stdin", "rb") as handle:
+            return handle.read()
+
+    def stdout_lines(self, result):
+        return result.stdout.decode("utf-8").splitlines()
+
+    def real_output(self):
+        return os.path.realpath(self.output_path)
+
+
+class TestArchitectureDispatch(ArchitectureWrapperTestCase):
+    def arch_args(self, moment="design", brief=None):
+        return ["--architecture-review", brief or self.brief,
+                "--moment", moment, "--repo", self.repo,
+                "-o", self.output_path, "--sessions-root", self.sessions_root]
+
+    def expected_prompt(self):
+        with open(ARCHITECTURE_BRIEF_FILE, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        return text.replace("{DESIGN_LENS_FILE}", DESIGN_LENS_FILE)
+
+    def test_round_one_argv_stdin_and_cwd(self):
+        entry = self.case("final_design")
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            entry["report"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dump = self.shim_dump()
+        prompt = self.expected_prompt()
+        self.assertEqual(dump["argv"], codex_review_lib.build_architecture_argv(
+            os.path.realpath(self.repo), ARCHITECTURE_SCHEMA_PATH,
+            self.real_output(), prompt, codex_review_lib.CODEX_MODEL)[1:])
+        self.assertIn(DESIGN_LENS_FILE, dump["argv"][-1])
+        self.assertTrue(os.path.isabs(DESIGN_LENS_FILE))
+        self.assertNotIn("{DESIGN_LENS_FILE}", dump["argv"][-1])
+        with open(self.brief, "rb") as handle:
+            self.assertEqual(self.stdin_bytes(), handle.read())
+        self.assertEqual(dump["cwd"], os.path.realpath(self.repo))
+
+    def test_output_lines(self):
+        entry = self.case("final_design")
+        report = entry["report"]
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            report, extra={"CODEX_SHIM_ROLLOUT": self.shim_rollout_path()}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.stdout_lines(result)
+        gate = "codex gate: architecture review (design) on gpt-6-astra (default) at max"
+        self.assertIn(gate, lines)
+        self.assertIn("codex session: shim-session", lines)
+        self.assertTrue(any(l.startswith("codex weekly:") for l in lines),
+                        lines)
+        self.assertLess(
+            [i for i, l in enumerate(lines) if l.startswith("codex weekly:")][0],
+            lines.index(gate))
+        # The shipped calibration table has no rate for the shim's plan, so
+        # the per-run line is the token count (as the diff gates' tests).
+        self.assertTrue(any(l.startswith("codex run used 100,000 uncached input "
+                                         "tokens on gpt-6-astra")
+                            for l in lines), lines)
+        self.assertEqual(lines[-1],
+                         "architecture report: %s (status %s, %d change(s), "
+                         "%d context request(s))" % (
+                             self.real_output(), report["status"],
+                             len(report["changes"]),
+                             len(report["context_requests"])))
+
+    def test_needs_context_with_a_session_exits_zero(self):
+        entry = self.case("needs_context_design")
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            entry["report"],
+            extra={"CODEX_SHIM_ROLLOUT": self.shim_rollout_path()}))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"codex session: shim-session", result.stdout)
+
+    def test_needs_context_without_a_session_exits_one(self):
+        entry = self.case("needs_context_design")
+        result = _run_wrapper(self.arch_args(),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"codex session: unknown", result.stdout)
+        self.assertIn(b"resum", result.stderr)
+
+    def test_final_without_a_session_is_still_ok(self):
+        entry = self.case("final_design")
+        result = _run_wrapper(self.arch_args(),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"codex session: unknown", result.stdout)
+
+    def test_answer_key_brief_is_refused_before_dispatch(self):
+        with open(self.brief, "w", encoding="utf-8") as handle:
+            handle.write("# Brief\n\n## Round 2 findings\n\nstuff\n")
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+    def test_brief_warnings_are_printed_and_dispatch_continues(self):
+        with open(self.brief, "w", encoding="utf-8") as handle:
+            handle.write("# Brief\n\nThis is BLOCKING work.\n")
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(b"brief warning: ", result.stdout)
+
+    def test_missing_brief_file_exits_one(self):
+        result = _run_wrapper(
+            self.arch_args(brief=os.path.join(self.root, "nope.md")),
+            env=self.arch_env(self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+    def test_c3_without_the_placeholder_is_refused(self):
+        exe = _make_architecture_wrapper_copy(
+            self.root, "# Architecture review\n\nNo placeholder here.\n")
+        result = subprocess.run(
+            [sys.executable, exe] + self.arch_args(),
+            env=self.arch_env(self.case("final_design")["report"]),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"DESIGN_LENS_FILE", result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+    def test_c3_copy_with_the_placeholder_dispatches(self):
+        # Positive control for the copy helper: the refusal above must come
+        # from the missing placeholder, not from a broken copy.
+        exe = _make_architecture_wrapper_copy(
+            self.root, "# Architecture review\n\nLenses: {DESIGN_LENS_FILE}\n")
+        result = subprocess.run(
+            [sys.executable, exe] + self.arch_args(),
+            env=self.arch_env(self.case("final_design")["report"]),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.shim_dump()["argv"][-1].startswith(
+            "# Architecture review\n\nLenses: "))
+
+    def test_missing_c3_is_refused(self):
+        exe = _make_architecture_wrapper_copy(self.root, "")
+        result = subprocess.run(
+            [sys.executable, exe] + self.arch_args(),
+            env=self.arch_env(self.case("final_design")["report"]),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=30)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+    def test_missing_agents_md_is_refused(self):
+        os.remove(os.path.join(self.repo, "AGENTS.md"))
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+    def test_moment_mismatch_exits_one(self):
+        result = _run_wrapper(self.arch_args(moment="final"),
+                              env=self.arch_env(
+                                  self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertNotIn(b"architecture report:", result.stdout)
+
+    def test_report_failures_exit_one(self):
+        good = self.case("final_design")["report"]
+        broken = json.loads(json.dumps(good))
+        del broken["lens_verdicts"]
+        broken_ran = self.case("ran_true_no_commands")["report"]
+        cases = [
+            ("semantic", lambda: self.arch_env(broken_ran)),
+            ("schema", lambda: self.arch_env(broken)),
+            ("not json", lambda: self.arch_env("{nope,,")),
+            ("empty", lambda: self.arch_env("  \n")),
+            ("nonzero", lambda: self.arch_env(good, exit_code=3)),
+            ("no output", lambda: self.arch_env(good, output_mode="none")),
+        ]
+        for label, make_env in cases:
+            # Built lazily: every arch_env call rewrites the shim's report.
+            result = _run_wrapper(self.arch_args(), env=make_env())
+            self.assertEqual(result.returncode, 1, (label, result.stderr))
+            self.assertNotIn(b"architecture report:", result.stdout, label)
+
+    def test_stale_report_is_not_mistaken_for_fresh(self):
+        with open(self.output_path, "w", encoding="utf-8") as handle:
+            json.dump(self.case("final_design")["report"], handle)
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"], output_mode="none"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(os.path.exists(self.output_path))
+
+
+class TestArchitectureGateModel(ArchitectureWrapperTestCase):
+    """The architecture gate takes its model from `codex_review.models` like
+    every other gate, so an account that does not serve the pin can still
+    run it, and a refused model exits 4 rather than 1."""
+
+    MEASURED = TestModelRejectedExitsFour.MEASURED
+    arch_args = TestArchitectureDispatch.arch_args
+
+    def write_config(self, content):
+        _ConfigWritingTestCase.write_config(self, content)
+
+    def test_configured_model_reaches_the_argv_and_the_label(self):
+        self.write_config({"codex_review": {"models": {"architecture": "my-model"}}})
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = self.shim_dump()["argv"]
+        self.assertEqual(argv[argv.index("-m") + 1], "my-model")
+        self.assertIn("codex gate: architecture review (design) on my-model "
+                      "(configured) at max", self.stdout_lines(result))
+
+    def test_rejected_model_exits_four_and_leaves_no_report(self):
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"], exit_code=1,
+            extra={"CODEX_SHIM_STDERR": self.MEASURED}))
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertTrue(self.shim_was_run())
+        self.assertIn(b"codex_review.models.architecture", result.stderr)
+        self.assertFalse(os.path.exists(self.output_path))
+
+    def test_bad_config_value_refuses_before_dispatch(self):
+        self.write_config({"codex_review": {"models": {"architecture": "a b"}}})
+        result = _run_wrapper(self.arch_args(), env=self.arch_env(
+            self.case("final_design")["report"]))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+
+class TestArchitectureResume(ArchitectureWrapperTestCase):
+    ANSWERS = "## c1\n\nThe sourced answer, line two.\n"
+
+    def setUp(self):
+        super().setUp()
+        self.answers = os.path.join(self.root, "answers.md")
+        with open(self.answers, "w", encoding="utf-8") as handle:
+            handle.write(self.ANSWERS)
+
+    def resume_args(self, round_="2", moment="final", answers=None):
+        return ["--resume", "sess-abc", "--answers", answers or self.answers,
+                "--round", round_, "--moment", moment, "--repo", self.repo,
+                "-o", self.output_path, "--sessions-root", self.sessions_root]
+
+    def test_round_two_argv_and_empty_stdin(self):
+        entry = self.case("needs_context_final")
+        result = _run_wrapper(self.resume_args(),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        dump = self.shim_dump()
+        argv = dump["argv"]
+        self.assertEqual(argv[:3], ["exec", "resume", "sess-abc"])
+        reference = codex_review_lib.build_resume_argv(
+            "sess-abc", ARCHITECTURE_SCHEMA_PATH, self.real_output(),
+            "x", codex_review_lib.CODEX_MODEL)[1:]
+        self.assertEqual(argv[:-1], reference[:-1])
+        self.assertIn('model_reasoning_effort="max"', argv)
+        self.assertIn('sandbox_mode="read-only"', argv)
+        self.assertEqual(argv[argv.index('model_reasoning_effort="max"') - 1],
+                         "-c")
+        self.assertEqual(argv[argv.index('sandbox_mode="read-only"') - 1],
+                         "-c")
+        prompt = argv[-1]
+        self.assertTrue(prompt.endswith(self.ANSWERS), prompt)
+        self.assertIn("`round` = 2", prompt)
+        self.assertNotIn("FINAL round", prompt)
+        self.assertEqual(self.stdin_bytes(), b"")
+        self.assertEqual(dump["cwd"], os.path.realpath(self.repo))
+
+    def test_round_three_prompt_says_final_round(self):
+        entry = self.case("final_design_round3")
+        result = _run_wrapper(self.resume_args(round_="3", moment="design"),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        prompt = self.shim_dump()["argv"][-1]
+        self.assertTrue(prompt.endswith(self.ANSWERS), prompt)
+        self.assertIn("`round` = 3", prompt)
+        self.assertIn("FINAL round", prompt)
+        self.assertIn("`status: final`", prompt)
+        self.assertIn("unverified", prompt)
+
+    def test_output_lines(self):
+        entry = self.case("needs_context_final")
+        report = entry["report"]
+        result = _run_wrapper(self.resume_args(),
+                              env=self.arch_env(report))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = self.stdout_lines(result)
+        self.assertIn("codex gate: architecture resume round 2 (final) on "
+                      "gpt-6-astra (default) at max", lines)
+        self.assertIn("codex session: sess-abc", lines)
+        self.assertTrue(any("not attributable" in l for l in lines), lines)
+        self.assertEqual(lines[-1],
+                         "architecture report: %s (status %s, %d change(s), "
+                         "%d context request(s))" % (
+                             self.real_output(), report["status"],
+                             len(report["changes"]),
+                             len(report["context_requests"])))
+
+    def test_needs_context_on_round_three_exits_one(self):
+        entry = self.case("round3_needs_context")
+        result = _run_wrapper(self.resume_args(round_="3", moment="design"),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_moment_mismatch_exits_one(self):
+        entry = self.case("needs_context_final")
+        result = _run_wrapper(self.resume_args(moment="design"),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_round_mismatch_exits_one(self):
+        entry = self.case("final_design_round3")
+        result = _run_wrapper(self.resume_args(round_="2", moment="design"),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+
+    def test_missing_or_empty_answers_exit_one_without_dispatch(self):
+        entry = self.case("needs_context_final")
+        result = _run_wrapper(
+            self.resume_args(answers=os.path.join(self.root, "nope.md")),
+            env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
+        with open(self.answers, "w", encoding="utf-8") as handle:
+            handle.write("  \n")
+        result = _run_wrapper(self.resume_args(),
+                              env=self.arch_env(entry["report"]))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
+
+    def test_dispatch_failures_exit_one(self):
+        good = self.case("needs_context_final")["report"]
+        for label, make_env in (
+                ("nonzero", lambda: self.arch_env(good, exit_code=3)),
+                ("no output", lambda: self.arch_env(good, output_mode="none")),
+                ("not json", lambda: self.arch_env("{nope,,"))):
+            result = _run_wrapper(self.resume_args(), env=make_env())
+            self.assertEqual(result.returncode, 1, (label, result.stderr))
+
+    def test_stale_report_is_not_mistaken_for_fresh(self):
+        good = self.case("needs_context_final")["report"]
+        with open(self.output_path, "w", encoding="utf-8") as handle:
+            json.dump(good, handle)
+        result = _run_wrapper(self.resume_args(), env=self.arch_env(
+            good, output_mode="none"))
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(os.path.exists(self.output_path))
+
+    def test_no_codex_is_refused(self):
+        env = self.arch_env(self.case("needs_context_final")["report"])
+        env["PATH"] = "/usr/bin:/bin"
+        result = _run_wrapper(self.resume_args(), env=env)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertFalse(self.shim_was_run())
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ or config. The suite passes on a fresh clone with no config at all.
 """
 
 import atexit
+import datetime
 import json
 import os
 import pty
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 TOOL_DIR = os.path.dirname(HERE)
@@ -2248,6 +2250,280 @@ class TestRulePlacement(unittest.TestCase):
         )
         self.assertEqual(len(many_facts), 1)
         self.assertIn("3 fact memories have a row in Always", many_facts[0])
+
+
+_REAL_SKILL_SHIPPED = getattr(lint_lib, "distill_skill_shipped", None)
+
+
+def _index_of_exact_chars(target):
+    """Rows whose index (rows joined by newline, plus a final newline) is
+    exactly `target` characters. Hooks stay under the length notice."""
+    rows, size, i = [], 0, 0
+    while True:
+        name = "m%04d.md" % i
+        step = len(row(name, "h" * 140)) + 1
+        if size + step > target:
+            break
+        rows.append([name, 140])
+        size += step
+        i += 1
+    remainder = target - size
+    for entry in rows:
+        add = min(remainder, 40)
+        entry[1] += add
+        remainder -= add
+    assert remainder == 0, remainder
+    return [(name, "h" * length) for name, length in rows]
+
+
+class _DistillConfig(object):
+    """A config double: explicit values, never this machine's config."""
+
+    def __init__(self, distill=None, cap=None):
+        self.distill = distill
+        self.cap = cap
+
+    def get_int(self, _section, key, default=None):
+        if key == "max_index_chars" and self.cap is not None:
+            return self.cap
+        return default
+
+    def get(self, _section, key, default=None):
+        if key == "distill_at_chars" and self.distill is not None:
+            return self.distill
+        return default
+
+
+class DistillEnv(unittest.TestCase):
+    """Sandboxed HOME and claim dir for every test that touches the claim."""
+
+    def setUp(self):
+        self.sandbox = tempfile.mkdtemp(prefix="memlint-distill-")
+        self.addCleanup(shutil.rmtree, self.sandbox, ignore_errors=True)
+        self.claim = os.path.join(self.sandbox, "claim")
+        saved = {k: os.environ.get(k) for k in
+                 ("HOME", "USERPROFILE", "CLAUDE_INDEX_DISTILL_CLAIM")}
+
+        def restore():
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        self.addCleanup(restore)
+        os.environ["HOME"] = self.sandbox
+        os.environ["USERPROFILE"] = self.sandbox
+        os.environ["CLAUDE_INDEX_DISTILL_CLAIM"] = self.claim
+        shipped = mock.patch.object(lint_lib, "distill_skill_shipped",
+                                    return_value=True)
+        shipped.start()
+        self.addCleanup(shipped.stop)
+
+    def memory(self, chars):
+        d = MemoryDir(_index_of_exact_chars(chars))
+        self.addCleanup(d.cleanup)
+        self.assertEqual(lint_lib.scan(d.path)["index_chars"], chars)
+        return d
+
+    def write_claim(self, session_id, hours_ago):
+        stamp = (datetime.datetime.now(datetime.timezone.utc)
+                 - datetime.timedelta(hours=hours_ago))
+        os.makedirs(self.claim)
+        with open(os.path.join(self.claim, "holder.json"), "w") as fh:
+            json.dump({"session_id": session_id,
+                       "claimed_at": stamp.strftime("%Y-%m-%dT%H:%M:%SZ")}, fh)
+
+
+class TestDistillTrigger(DistillEnv):
+    START = "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 22000 /"
+
+    def test_b1_startup_and_clear_fire_first(self):
+        d = self.memory(22000)
+        for source in ("startup", "clear"):
+            out = lint_lib.build(d.path, source=source, session_id="me")
+            self.assertTrue(out.startswith(self.START), (source, out[:80]))
+
+    def test_b1_exact_text(self):
+        d = self.memory(22000)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        first = out.split("\n")[0]
+        self.assertEqual(
+            first,
+            "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 22000 / 24000 chars "
+            "(distill at 22000). Past ~25,000 the harness drops rows silently. "
+            "In your FIRST reply, tell the user and offer three choices: (1) "
+            "make this the distillation session (run "
+            "/toolkit-continuity:memory-index-distill); (2) hand off: give a "
+            "one-line kickoff for a dedicated session and carry on here; (3) "
+            "later. Distillation pauses the other running sessions via "
+            "/handover, so it runs in a session of its own.")
+
+    def test_b2_other_sources_stay_silent(self):
+        d = self.memory(22000)
+        for source in ("compact", "resume", None):
+            out = lint_lib.build(d.path, source=source, session_id="me")
+            self.assertNotIn("NEAR CHARACTER LIMIT", out or "", source)
+
+    def test_b3_one_under_is_silent(self):
+        d = self.memory(21999)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertNotIn("NEAR CHARACTER LIMIT", out or "")
+
+    def test_b4_other_sessions_live_claim(self):
+        d = self.memory(22000)
+        self.write_claim("other", 1)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        first = out.split("\n")[0]
+        self.assertRegex(
+            first,
+            r"^MEMORY INDEX NEAR CHARACTER LIMIT \u2014 distillation in progress in another "
+            r"session since \d\d:\d\d\. Nothing to do here\. Don't write "
+            r"memory until it finishes\.$")
+
+    def test_b4_own_claim_gets_the_normal_text(self):
+        d = self.memory(22000)
+        self.write_claim("me", 1)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertTrue(out.startswith(self.START))
+
+    def test_b4_stale_claim_gets_the_normal_text(self):
+        d = self.memory(22000)
+        self.write_claim("other", 25)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertTrue(out.startswith(self.START))
+        self.assertNotIn("in progress", out)
+
+    def test_b5_threshold_clamped_below_cap(self):
+        cfg = _DistillConfig(distill=30000, cap=24000)
+        self.assertEqual(lint_lib.distill_at_chars(cfg), 23000)
+
+    def test_b5_default_and_bad_values(self):
+        self.assertEqual(lint_lib.distill_at_chars(_DistillConfig()), 22000)
+        for bad in (0, -5, "x", True, 1.5):
+            self.assertEqual(
+                lint_lib.distill_at_chars(_DistillConfig(distill=bad)), 22000, bad)
+        self.assertEqual(
+            lint_lib.distill_at_chars(_DistillConfig(distill=21000)), 21000)
+
+    def test_b6_report_row(self):
+        due = self.memory(22000)
+        self.assertRegex(lint_lib.report(due.path),
+                         r"distill at\s+22000 \(due\)")
+        under = self.memory(21000)
+        self.assertRegex(lint_lib.report(under.path),
+                         r"distill at\s+22000 \(1000 to go\)")
+
+    def test_b6_report_row_sits_right_after_index_budget_row(self):
+        d = self.memory(22000)
+        lines = lint_lib.report(d.path).split("\n")
+        i = [n for n, l in enumerate(lines) if l.startswith("index budget")][0]
+        self.assertTrue(lines[i + 1].startswith("distill at"), lines[i + 1])
+
+    def test_b11_skill_not_shipped_means_no_block(self):
+        d = self.memory(22000)
+        with mock.patch.object(lint_lib, "distill_skill_shipped",
+                               return_value=False):
+            out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertNotIn("NEAR CHARACTER LIMIT", out or "")
+
+    def test_block_precedes_drift_notice(self):
+        d = MemoryDir([("a.md", "x" * 400)] + _index_of_exact_chars(22000)[:-1])
+        self.addCleanup(d.cleanup)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        # A precondition, asserted: a fixture that slipped under 22000 would
+        # otherwise skip every assertion below and pass vacuously.
+        self.assertGreaterEqual(lint_lib.scan(d.path)["index_chars"], 22000)
+        self.assertTrue(out.startswith("MEMORY INDEX NEAR CHARACTER LIMIT"))
+        self.assertIn("\n\nMEMORY INDEX DRIFT", out)
+
+    def test_live_claim_suppresses_the_drift_notice(self):
+        # Same fixture as above, so drift findings exist: with another
+        # session's live claim, the notice says "don't write memory" and must
+        # not go on to say "compress".
+        d = MemoryDir([("a.md", "x" * 400)] + _index_of_exact_chars(22000)[:-1])
+        self.addCleanup(d.cleanup)
+        self.assertTrue(lint_lib.findings(lint_lib.scan(d.path)))
+        self.write_claim("other", 1)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertIn("distillation in progress", out)
+        self.assertNotIn("MEMORY INDEX DRIFT", out)
+        self.assertNotIn("Compress", out)
+
+    def test_b5_threshold_stays_positive_on_a_small_cap(self):
+        for cap, want in ((1000, 500), (1500, 750), (2000, 1000),
+                          (3000, 2000), (1, 1)):
+            cfg = _DistillConfig(distill=30000, cap=cap)
+            self.assertEqual(lint_lib.distill_at_chars(cfg), want, cap)
+
+    def test_skill_shipped_checks_the_real_path(self):
+        # The unpatched function, captured before setUp patches it.
+        want = os.path.exists(os.path.join(
+            REPO, "skills", "continuity", "memory-index-distill", "SKILL.md"))
+        self.assertEqual(_REAL_SKILL_SHIPPED(), want)
+
+
+class TestDistillExecutable(DistillEnv):
+    """B7, through the executable. The shipped-skill gate is real in a
+    subprocess, so the test runs a COPY of the tool inside a temp toolkit tree
+    that carries (or lacks) the SKILL.md."""
+
+    def _tree(self, with_skill):
+        root = tempfile.mkdtemp(prefix="memlint-tree-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        shutil.copytree(os.path.join(REPO, "lib"), os.path.join(root, "lib"),
+                        ignore=shutil.ignore_patterns("tests", "__pycache__"))
+        tool = os.path.join(root, "tools", "memory-lint")
+        os.makedirs(tool)
+        for name in ("claude-memory-lint", "lint_lib.py"):
+            shutil.copy(os.path.join(TOOL_DIR, name), tool)
+        if with_skill:
+            skill = os.path.join(root, "skills", "continuity",
+                                 "memory-index-distill")
+            os.makedirs(skill)
+            open(os.path.join(skill, "SKILL.md"), "w").write("x\n")
+        return os.path.join(tool, "claude-memory-lint")
+
+    def _run(self, hook, payload):
+        return subprocess.run(
+            [sys.executable, hook], input=json.dumps(payload),
+            capture_output=True, text=True, timeout=15,
+            env=dict(os.environ, HOME=self.sandbox, USERPROFILE=self.sandbox,
+                     CLAUDE_TOOLKIT_CONFIG="/nonexistent.json",
+                     CLAUDE_INDEX_DISTILL_CLAIM=self.claim))
+
+    def test_b7_source_gates_the_notice(self):
+        d = self.memory(22000)
+        claude = os.path.join(self.sandbox, ".claude")
+        os.makedirs(claude)
+        with open(os.path.join(claude, "settings.json"), "w") as fh:
+            json.dump({"autoMemoryDirectory": d.path}, fh)
+        hook = self._tree(with_skill=True)
+        compact = self._run(hook, {"source": "compact", "session_id": "me"})
+        self.assertEqual(compact.returncode, 0)
+        self.assertNotIn("NEAR CHARACTER LIMIT", compact.stdout)
+        startup = self._run(hook, {"source": "startup", "session_id": "me"})
+        self.assertEqual(startup.returncode, 0)
+        ctx = json.loads(startup.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertTrue(ctx.startswith("MEMORY INDEX NEAR CHARACTER LIMIT"), ctx[:80])
+
+    def test_b7_no_skill_no_block_through_the_executable(self):
+        d = self.memory(22000)
+        claude = os.path.join(self.sandbox, ".claude")
+        os.makedirs(claude)
+        with open(os.path.join(claude, "settings.json"), "w") as fh:
+            json.dump({"autoMemoryDirectory": d.path}, fh)
+        startup = self._run(self._tree(with_skill=False),
+                            {"source": "startup", "session_id": "me"})
+        self.assertNotIn("NEAR CHARACTER LIMIT", startup.stdout)
+
+
+class TestExampleConfigDistill(unittest.TestCase):
+    def test_distill_key_documented_with_default(self):
+        section = json.load(open(os.path.join(REPO, "config.example.json"),
+                                 encoding="utf-8"))["memory_lint"]
+        self.assertEqual(section["distill_at_chars"], 22000)
+        self.assertIn("//distill_at_chars", section)
 
 
 if __name__ == "__main__":

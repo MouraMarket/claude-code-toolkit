@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""PostToolUse hook: load a tool-rules page the first time a matching tool runs.
+
+    <payload> | claude-tool-rules [--dir <pages dir>]   PostToolUse
+    <payload> | claude-tool-rules --reset               SessionStart
+
+--reset empties what a session already loaded when its source is "compact", so
+the rules come back after the context that held them was summarised away.
+
+Inert without `workspace_root` in the toolkit config (or --dir). Best-effort by
+construction: every failure prints nothing and exits 0, because a broken hook
+must never cost someone a tool call.
+"""
+
+import json
+import os
+import sys
+
+
+def _load_libs():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+    import tool_rules_lib
+
+    return tool_rules_lib
+
+
+def _dir_arg(argv):
+    if "--dir" in argv:
+        index = argv.index("--dir")
+        if index + 1 < len(argv):
+            return argv[index + 1]
+    return None
+
+
+def main(argv):
+    lib = _load_libs()
+    payload = json.loads(sys.stdin.buffer.read())
+    if not isinstance(payload, dict):
+        return
+    if "--reset" in argv:
+        if payload.get("source") == "compact":
+            lib.reset_session(payload.get("session_id"))
+        return
+
+    lib.prune_stale_state()
+    pages_dir = _dir_arg(argv)
+    if pages_dir is None:
+        import toolkit_config
+
+        resolved = lib.tool_rules_dir(toolkit_config.workspace_root())
+        pages_dir = str(resolved) if resolved is not None else None
+    if not pages_dir or not os.path.isdir(pages_dir):
+        return
+    text = lib.respond(payload, pages_dir, lib.max_bytes())
+    if text:
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse", "additionalContext": text}},
+            ensure_ascii=False))  # \uXXXX escapes would inflate the capped text
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main(sys.argv[1:])
+    except BaseException:
+        pass
+    sys.exit(0)

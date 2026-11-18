@@ -1170,6 +1170,7 @@ KEY_VALIDATORS = {
     "codex_review.models.merge": _codex_model_or_null,   # codex_review_lib.resolve_gate_model
     "codex_review.models.plan": _codex_model_or_null,    # codex_review_lib.resolve_gate_model
     "codex_review.models.design": _codex_model_or_null,  # codex_review_lib.resolve_gate_model
+    "codex_review.models.architecture": _codex_model_or_null,  # codex_review_lib.resolve_gate_model
     # Numeric keys: each mirrors its reader's own silent-fallback rule.
     "local_ci.max_concurrent": _int_in_range(1),                # local_ci_lib.max_concurrent
     "spec_archive.hook_deadline_seconds": _int_in_range(1),     # claude-spec-archive:253
@@ -1183,6 +1184,8 @@ KEY_VALIDATORS = {
     # at or above it would be stored but never honoured.
     "memory_lint.max_index_chars": _int_in_range(1, 24999),     # lint_lib.py
     "memory_lint.max_index_lines": _int_in_range(1, 199),       # lint_lib.py
+    "memory_lint.distill_at_chars": _int_in_range(1),           # lint_lib.py
+    "tool_rules.max_bytes": _int_in_range(1),                   # tool_rules_lib.py
     "context_lint.max_lines": _int_in_range(1),                 # context_lint_lib.py
     "context_lint.core_max_lines": _int_in_range(1),            # context_lint_lib.py
     "context_growth.memory_max_lines": _int_in_range(1),        # growth_lib.py
@@ -1192,6 +1195,7 @@ KEY_VALIDATORS = {
     "caffeinate.battery_floor_percent": _int_in_range(0, 100),  # caffeinate_lib.py
     "caffeinate.settle_seconds": _int_in_range(1),              # caffeinate_lib.py
     "caffeinate.hold_seconds": _int_in_range(1),                # caffeinate_lib.py
+    "caffeinate.job_hold_seconds": _int_in_range(1),            # caffeinate_lib.py
     "usage_watch.stale_after_seconds": _int_in_range(1),        # usage_lib.py
     "usage_watch.unknown_reannounce_seconds": _int_in_range(1), # usage_lib.py
     "usage_watch.default_ratio": _int_in_range(1),              # estimate_lib.py

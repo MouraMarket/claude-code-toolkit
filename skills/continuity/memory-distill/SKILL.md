@@ -7,7 +7,8 @@ description: >
   file as over the memory distillation cap, or when asked to "distill this memory",
   "this memory file is over cap", "collapse the incidents into rules", or anything
   phrased like it. Also covers a manual check of whether a memory file under
-  `~/.claude/projects/*/memory/` is due for distillation.
+  `~/.claude/projects/*/memory/` is due for distillation. Do NOT use for the whole
+  MEMORY.md index nearing its limit (use memory-index-distill).
 ---
 
 # Memory Distill

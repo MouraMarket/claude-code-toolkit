@@ -110,6 +110,22 @@ class RunnerChecks:
                         f"having covered only a prefix. See this module's "
                         f"docstring.")
 
+    def test_every_runner_scrubs_the_users_config_overrides(self):
+        """Suites re-point HOME at fixtures; CLAUDE_CONFIG_DIR and
+        GIT_CONFIG_GLOBAL would follow the user's real setup past it and turn
+        suites red (row 68). install.sh's sweep got the scrub first; every
+        other runner, and every documented loop, needs it too."""
+        for label, path in self.RUNNERS.items():
+            with self.subTest(runner=label):
+                lines = suite_runner_lines(path)
+                self.assertTrue(lines, f"no suite-runner line found in {label}")
+                for line in lines:
+                    for var in ("CLAUDE_CONFIG_DIR", "GIT_CONFIG_GLOBAL"):
+                        self.assertRegex(
+                            line, r"\benv\b[^|;]*-u " + var + r"\b[^|;]*python3 ",
+                            f"{label} runs a suite without `env -u {var}`: "
+                            f"a user who sets it gets red suites there.")
+
     def test_the_loops_really_are_fed_by_a_find_on_stdin(self):
         """Positive control. If a loop stopped being stdin-fed, the guard above
         would be pinning a redirect that no longer protects anything: green,

@@ -9,6 +9,7 @@
 # overwrites an existing value without saying so.
 #
 set -euo pipefail
+TILDE='~'  # for ${x/#$HOME/$TILDE}; why in install.sh and lib/tests/test_tilde_display_lint.py
 
 CHECK=0
 [[ "${1:-}" == "--check" ]] && CHECK=1
@@ -92,17 +93,17 @@ echo "Global gitignore"
 IGNORE="$(git config --global --get core.excludesfile 2>/dev/null || true)"
 if [[ -z "$IGNORE" ]]; then
   IGNORE="$HOME/.gitignore_global"
-  act "core.excludesfile = ${IGNORE/#$HOME/~}"
+  act "core.excludesfile = ${IGNORE/#$HOME/$TILDE}"
   (( CHECK )) || git config --global core.excludesfile "$IGNORE"
 else
-  ok "core.excludesfile = ${IGNORE/#$HOME/~}"
+  ok "core.excludesfile = ${IGNORE/#$HOME/$TILDE}"
 fi
 IGNORE="${IGNORE/#\~/$HOME}"
 for pattern in '.DS_Store' '__pycache__/' '*.pyc' '.venv/'; do
   if [[ -f "$IGNORE" ]] && grep -qxF "$pattern" "$IGNORE" 2>/dev/null; then
     ok "ignores $pattern"
   else
-    act "add $pattern to ${IGNORE/#$HOME/~}"
+    act "add $pattern to ${IGNORE/#$HOME/$TILDE}"
     (( CHECK )) || { mkdir -p "$(dirname "$IGNORE")"; printf '%s\n' "$pattern" >> "$IGNORE"; }
   fi
 done
@@ -128,13 +129,13 @@ else
   # reported "pre-commit installed" while scanning nothing. -x follows the link
   # and is false unless something executable is actually there.
   if [[ -x "$HOOKS_DIR/pre-commit" ]]; then
-    ok "core.hooksPath = ${HOOKS_DIR/#$HOME/~} (pre-commit installed)"
+    ok "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE} (pre-commit installed)"
   elif [[ -L "$HOOKS_DIR/pre-commit" ]]; then
-    warn "core.hooksPath = ${HOOKS_DIR/#$HOME/~} but its pre-commit symlink is BROKEN"
+    warn "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE} but its pre-commit symlink is BROKEN"
     warn "   -> $(readlink "$HOOKS_DIR/pre-commit" 2>/dev/null || echo '?')"
     warn "   Nothing is being scanned. Re-run this from the primary checkout."
   else
-    act "core.hooksPath = ${HOOKS_DIR/#$HOME/~}  (blocks commits containing credentials)"
+    act "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE}  (blocks commits containing credentials)"
   fi
 
   # core.hooksPath replaces .git/hooks for EVERY hook, not just pre-commit, so
@@ -185,7 +186,7 @@ else
     act "link $stale_forwarders of ${#FORWARDED_HOOKS[@]} forwarded hooks (a repo's own hooks keep running)"
   fi
   if (( ${#foreign_hooks[@]} > 0 )); then
-    warn "kept your own ${foreign_hooks[*]} in ${HOOKS_DIR/#$HOME/~}: a repo's own hook of that name will not run"
+    warn "kept your own ${foreign_hooks[*]} in ${HOOKS_DIR/#$HOME/$TILDE}: a repo's own hook of that name will not run"
   fi
 
   if (( ! CHECK )); then

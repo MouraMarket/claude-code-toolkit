@@ -44,6 +44,21 @@
       "name": "skill-claude-teacher",
       "source": "./plugins/claude-teacher",
       "description": "Learn Claude Code and git by doing: lessons matched to your level, using your own work."
+    },
+    {
+      "name": "skill-chrome-handoff",
+      "source": "./plugins/chrome-handoff",
+      "description": "Get work done in a live, logged-in web app no API can reach: drive your own Chrome, or write one paste-ready Claude in Chrome prompt, then check the report."
+    },
+    {
+      "name": "skill-port-github-repo",
+      "source": "./plugins/port-github-repo",
+      "description": "Bring a public GitHub repo into your Claude Code setup pinned to a vetted commit, and pull its upstream changes later as a reviewed change."
+    },
+    {
+      "name": "skill-model-routing",
+      "source": "./plugins/model-routing",
+      "description": "Pick the cheapest model and effort that still does the work well, for each subagent and for your own session, and say what that trades away."
     }
   ]
 }

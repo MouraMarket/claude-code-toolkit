@@ -293,7 +293,8 @@ class TestDispatchedAgentsShipInTheBuilderPlugin(unittest.TestCase):
     file, through the builder plugin's `agents` symlink, with its model pinned."""
 
     NAMED = re.compile(r"toolkit-build:([a-z][a-z-]*)")
-    PINS = {"executor": "sonnet", "task-reviewer": "sonnet", "code-reviewer": "opus"}
+    PINS = {"executor": "sonnet", "task-reviewer": "sonnet", "code-reviewer": "opus",
+            "architecture-reviewer": "fable"}
 
     def _named(self):
         helper = TestNoBareAgentDispatch()

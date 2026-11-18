@@ -15,34 +15,57 @@ stays at 1). So "every session has been idle for settle_seconds" is what the OS
 already computes. A cross-session supervisor would re-implement it and get it
 wrong.
 
-## The process is the release condition; the deadline is the backstop
+## Hooks and what each one does
 
-    UserPromptSubmit, PostToolBatch  ->  deadline pushed to now + hold_seconds
+    UserPromptSubmit, PostToolBatch  ->  session hold re-armed to now + hold_seconds;
+                                         new background jobs each get a job hold
     Stop, StopFailure                ->  left alone while the session is alive
-    SessionEnd                       ->  released outright
-    claude exits for any other reason -> `-w` drops the assertion, no hook needed
+    SessionEnd                       ->  every hold for the session released
+    claude exits for any other reason -> `-w` drops the session hold, no hook needed
+    a background job exits           -> `-w` drops its job hold, no hook needed
 
 `Stop` USED TO pull the deadline in to `settle_seconds`, which meant an idle-but-
-open session slept five minutes after Claude stopped talking. That is wrong for
-the case this tool exists to serve: a background task started before the turn
-ended needs the machine awake in order to re-invoke Claude twenty minutes later,
-and five minutes does not cover it. The maintainer asked for "awake as long as a running
-session is detected" on 2026-08-26, and `caffeinate -w <pid>` is that check —
-enforced by the OS, per session, with no polling and no arbitrary idle timer.
-Assertions are additive, so the machine sleeps when the LAST session exits.
+open session slept five minutes after Claude stopped talking, which is wrong for a
+background task that must re-invoke Claude twenty minutes later. The session hold was first
+bound to `claude` with `-w` and given no idle timer beyond a 2h ceiling; it was later narrowed to a
+30-minute idle timer, and the "keep running work alive" job moved to the per-job holds below.
+An open session with nothing running now sleeps 30 minutes after its last activity.
+Assertions are additive, so the machine sleeps when the LAST hold of any kind ends.
 
 `settle` still exists and still matters, for the case where the hold is NOT bound
 to a pid. `find_claude_pid` returning None is legitimate (see below), and an
 unbound hold has nothing but its deadline, so that one is downgraded exactly as
 before. Both shapes are tested; the asymmetry is the point.
 
-`hold_seconds` remains a real ceiling — a session idle for two unbroken hours
-does sleep, `-w` notwithstanding. That is deliberate rather than an oversight:
-work refreshes the deadline on every prompt AND every tool batch, so a session
-doing anything at all never reaches it, and a session that has done nothing for
-two hours is one you walked away from. Raise `hold_seconds` if you disagree; do
-not remove the deadline, because a hold with neither a pid nor a deadline is the
-mistake nobody notices.
+## What it is for, and the two holds that serve it (ruled 2026-10-20)
+
+The goal is letting Claude's BACKGROUND work finish — a Codex gate, a test run, a
+`run_in_background` job — while nobody is at the keyboard. Two kinds of hold:
+
+  SESSION HOLD  an idle timer, `hold_seconds` (30 min) from the session's last
+                activity: a prompt or a tool batch, subagents' included. Re-armed
+                at most once per `RENEW_INTERVAL_SECONDS`, so it can end up to
+                that much early — 28–30 minutes at the defaults.
+  JOB HOLD      one per detected background job, bound to that job's process
+                with `-w`, so it ends the moment the job exits, capped at
+                `job_hold_seconds` (1 hour) in case the job hangs.
+
+The idle timer is the FALLBACK for work that is running but undetected — a job
+the detector cannot see gets 30 minutes past the last activity, not forever.
+The maintainer set both numbers. Do not remove either deadline: a hold with neither a
+pid nor a deadline is the mistake nobody notices.
+
+A background job is a Bash-tool shell that is a direct child of the session's
+`claude` and still running (measured 2026-10-20: `claude -> /bin/zsh -c source
+.../shell-snapshots/snapshot-zsh-... && eval '<cmd>'`; there is no persistent
+shell, so a live one IS a running command). Hook shells are children of `claude`
+too, so the snapshot marker in the command line is what tells them apart. If
+Claude Code changes that shape, detection finds nothing and every job falls back
+to the idle timer — the releasing direction, never a stuck hold.
+
+Until 2026-10-20 the session hold was a 2h block re-armed only past HALF its life,
+so the machine slept 1–2 hours after the last activity, and a background job got
+no hold of its own at all.
 
 `-t` and `-w` compose — verified empirically, whichever fires first releases.
 
@@ -84,11 +107,28 @@ import signal
 import subprocess
 import time
 
-DEFAULT_HOLD_SECONDS = 7200      # 2h ceiling on an unrefreshed hold
+DEFAULT_HOLD_SECONDS = 1800      # 30 min idle timer on the session hold
+DEFAULT_JOB_HOLD_SECONDS = 3600  # 1h cap on the hold for one background job
 DEFAULT_SETTLE_SECONDS = 300     # how long an UNBOUND hold lasts after a turn
 DEFAULT_BATTERY_FLOOR = 20       # release below this on battery; 0 disables
 DEFAULT_OVERRIDE_HOURS = 24      # `/caffeinate on` lapses after this; 0 = never
 DEFAULT_STATE_DIR = "~/.claude/caffeinate"
+
+# How stale a hold may get before activity re-arms it. The deadline is meant to
+# sit `hold_seconds` after the LAST activity, and a `caffeinate -t` cannot be
+# extended, only replaced — so this is the precision of that timer: the machine
+# sleeps between `hold_seconds - RENEW_INTERVAL_SECONDS` and `hold_seconds`
+# after the last activity. It bounds the respawn rate under busy work to one per
+# interval, which is what keeps the fast path free on PostToolBatch. Capped at
+# half the ceiling in `renew_interval`, so a small `hold_seconds` still renews
+# before it expires.
+RENEW_INTERVAL_SECONDS = 120
+
+# What a Bash-tool shell looks like, as opposed to a hook's shell — both are
+# `/bin/zsh` children of `claude`, and only the command line separates them.
+SHELLS = ("zsh", "bash", "sh")
+BASH_TOOL_MARKER = "/shell-snapshots/snapshot-"
+JOB_RECORD_INFIX = ".job-"
 
 # The battery override's clock lives here, NOT in config.json. The refresh rule
 # The maintainer chose on 2026-08-26 — any hold actually taken on battery restarts the
@@ -105,14 +145,15 @@ OVERRIDE_STAMP = "battery-override.json"
 # would be pure noise on the filesystem to record something already recorded.
 STAMP_THROTTLE_SECONDS = 300
 
-# At most two blocking subprocesses run per invocation — one `pmset`, one `ps` —
-# and the hook's declared timeout in plugin-mac/hooks/hooks.json must exceed their
-# sum with margin. TestTimeoutBudget enforces that relationship against both this
+# At most three blocking subprocesses run per invocation — one `pmset`, the
+# process table, and the command lines of a few candidate job shells — and the
+# hook's declared timeout in plugin-mac/hooks/hooks.json must exceed their sum
+# with margin. TestTimeoutBudget enforces that relationship against both this
 # module and that file, because a comment describing a budget like this one can
 # silently go wrong. Reading the whole process table
 # in ONE `ps`, rather than a call per generation while walking it, is what keeps
 # the bound provable.
-PS_TIMEOUT = 3
+PS_TIMEOUT = 2                   # each of the two `ps` calls
 PMSET_TIMEOUT = 3
 HOOK_TIMEOUT = 10
 
@@ -130,11 +171,30 @@ class System:
             capture_output=True, text=True, encoding="utf-8", timeout=PS_TIMEOUT)
         return parse_process_table(result.stdout)
 
+    def command_lines(self, pids):
+        """{pid: full command line} for a few pids, from a single `ps`.
+
+        A second call rather than `args=` in `process_table`, because `comm`
+        paths contain spaces (`Code Helper (Plugin)`) and nothing would separate
+        one from its arguments. A pid that has exited is simply absent.
+        """
+        if not pids:
+            return {}
+        result = subprocess.run(
+            ["ps", "-o", "pid=,args=", "-p", ",".join(str(int(p)) for p in pids)],
+            capture_output=True, text=True, encoding="utf-8", timeout=PS_TIMEOUT)
+        lines = {}
+        for line in result.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and parts[0].isdigit():
+                lines[int(parts[0])] = parts[1]
+        return lines
+
     def power_state(self):
         """(on_ac, battery_percent) from ONE `pmset` call.
 
         Deliberately one call rather than two. The hook's timeout budget is
-        asserted against PS_TIMEOUT + PMSET_TIMEOUT, and a hook killed on its
+        asserted against 2 * PS_TIMEOUT + PMSET_TIMEOUT, and a hook killed on its
         timeout returns no verdict — which for this tool means the hold it was
         about to take never happens, silently. Reading the source and the charge
         from the same output keeps that sum where TestTimeoutBudget can prove it.
@@ -244,14 +304,13 @@ def find_claude_pid(table, start_pid, limit=12):
 
     DUPLICATES the shape of `tools/session-claim/identity_lib.walk_to_claude`,
     deliberately and with the cost known: change how Claude Code presents in the
-    process table and BOTH need fixing. Kept separate because the two are not
-    interchangeable at the point that matters — that one reads `ps command=` and
-    has to split argv to find argv0, this one reads `comm=` and gets the
-    executable path alone, which is why a plain basename is safe here and is not
-    there. Sharing only the walk would leave each tool with its own reader and
-    its own answer to "is this claude", i.e. the actual divergence risk, in
-    exchange for putting a hand inside a guard that stops two sessions
-    clobbering each other's work. Revisit if a third caller appears.
+    process table and BOTH need fixing. Both read `ps comm=` (the executable
+    path alone, spaces intact) and match an exact basename `claude`; never move
+    either to `command=` and an argv split, which cut the desktop app's
+    ".../Application Support/..." path and left session-claim allowing every edit
+    (2026-10-21). Kept as two copies rather than shared because sharing
+    means putting a hand inside a guard that stops two sessions clobbering each
+    other's work. Revisit if a third caller appears. docs/decisions.md has it.
 
     Verified shape in a VS Code session: hook process -> /bin/zsh -> claude ->
     Code Helper. The walk is capped and refuses to revisit a pid, because `ps`
@@ -289,6 +348,43 @@ def find_claude_pid(table, start_pid, limit=12):
             return pid
         pid = ppid
     return None
+
+
+def job_candidates(table, claude_pid, self_pid):
+    """Shells directly under `claude`, minus the one this hook runs in.
+
+    Every hook is `claude -> zsh -> hook`, so our own shell is always a child of
+    `claude` and must be excluded by walking up from `self_pid`. Other hooks'
+    shells running in parallel are NOT excluded here — only their command lines
+    can tell them from a job, which is `is_job_command`'s half.
+    """
+    own = set()
+    pid = self_pid
+    for _ in range(12):
+        if pid <= 1 or pid in own or pid == claude_pid:
+            break
+        own.add(pid)
+        entry = table.get(pid)
+        if entry is None:
+            break
+        pid = entry[0]
+    return sorted(
+        pid for pid, (ppid, command) in table.items()
+        if ppid == claude_pid and pid not in own
+        and os.path.basename(command) in SHELLS)
+
+
+def is_job_command(command_line):
+    """Whether a shell's command line is a Bash-tool command, not a hook."""
+    return BASH_TOOL_MARKER in (command_line or "")
+
+
+def job_pid_of(name, session_prefix):
+    """The job pid encoded in a record's filename, or None if it is not one."""
+    if not (name.startswith(session_prefix) and name.endswith(".json")):
+        return None
+    tail = name[len(session_prefix):-len(".json")]
+    return int(tail) if tail.isdigit() else None
 
 
 def is_caffeinate(table, pid):
@@ -333,6 +429,15 @@ def _seconds(config, key, default):
 
 def hold_seconds(config):
     return _seconds(config, "hold_seconds", DEFAULT_HOLD_SECONDS)
+
+
+def job_hold_seconds(config):
+    return _seconds(config, "job_hold_seconds", DEFAULT_JOB_HOLD_SECONDS)
+
+
+def renew_interval(ceiling):
+    """How stale a hold of `ceiling` seconds may get before activity re-arms it."""
+    return min(RENEW_INTERVAL_SECONDS, ceiling // 2)
 
 
 def settle_seconds(config):
@@ -504,6 +609,17 @@ def state_path(config, session_id):
     return os.path.join(state_dir(config), safe_name(session_id) + ".json")
 
 
+def job_prefix(session_id):
+    """Filename prefix of a session's job records. `safe_name` maps `.` to `-`,
+    so no session's own record can ever start with another's job prefix."""
+    return safe_name(session_id) + JOB_RECORD_INFIX
+
+
+def job_path(config, session_id, job_pid):
+    return os.path.join(
+        state_dir(config), "%s%d.json" % (job_prefix(session_id), int(job_pid)))
+
+
 def read_state(path):
     """The recorded hold as {caffeinate_pid, expires_at, claude_pid}, or None.
 
@@ -672,17 +788,33 @@ def acquire(config, system, session_id, self_pid):
             if release(config, system, session_id) == "nothing-held" \
             else "released-noclock"
 
+    # ONE process-table read per call, shared by the session hold and the job
+    # scan. It is no longer skippable: a background job is launched by a tool
+    # batch, and the batch's own PostToolBatch is the only hook guaranteed to
+    # see it — a scan only on the slow path would miss most of them. Measured
+    # ~29ms on a 700-process table (2026-10-20).
+    table = system.process_table()
+    verdict = _hold_session(config, system, session_id, self_pid, on_ac, now, table)
+    try:
+        taken = hold_jobs(config, system, session_id, self_pid, on_ac, now, table)
+    except Exception:
+        taken = 0
+    return "%s+%d-jobs" % (verdict, taken) if taken else verdict
+
+
+def _hold_session(config, system, session_id, self_pid, on_ac, now, table):
+    """The session hold: an idle timer re-armed by activity."""
     path = state_path(config, session_id)
     state = read_state(path)
     ceiling = hold_seconds(config)
+    fresh_above = ceiling - renew_interval(ceiling)
 
-    # Fast path: a hold with most of its life left needs nothing, and this is the
-    # common case on PostToolBatch. Deliberately skips the `ps` call — at worst a
-    # dead-and-reused pid leaves us believing we hold an assertion we do not, and
-    # the machine sleeps the way it always did. Paying a process-table read after
-    # every tool batch to close that is the wrong trade. It stays OUTSIDE the
-    # lock for the same reason: it must cost nothing.
-    if state and state["expires_at"] - now > ceiling // 2:
+    # Fast path: a hold re-armed within the last `renew_interval` needs nothing,
+    # and this is the common case on PostToolBatch. It trusts the record without
+    # checking its pid — at worst a dead-and-reused pid leaves us believing we
+    # hold an assertion we do not, for one interval, and the machine sleeps the
+    # way it always did. It stays OUTSIDE the lock: it must cost nothing more.
+    if state and state["expires_at"] - now > fresh_above:
         return "already-held"
 
     # Spawn and record are one transaction. Without the lock, a second `acquire`
@@ -695,26 +827,107 @@ def acquire(config, system, session_id, self_pid):
     with records_lock(state_dir(config)):
         # Re-read: a peer may have recorded or renewed while we waited.
         state = read_state(path)
-        if state and state["expires_at"] - now > ceiling // 2:
+        if state and state["expires_at"] - now > fresh_above:
             return "already-held"
 
-        table = system.process_table()
-        if state:
-            _drop(system, table, state)
         claude_pid = find_claude_pid(table, self_pid)
         argv = assertion_argv(on_ac, claude_pid, ceiling)
         _write_state_unlocked(path, system.spawn(argv), now + ceiling, claude_pid)
+        # The old assertion goes only AFTER its replacement exists. Renewal runs
+        # every few minutes under work, often with nobody at the keyboard, and a
+        # drop-then-spawn leaves a moment with no assertion at all — on a machine
+        # whose idle timer already ran out, that moment is enough to sleep it.
+        _drop(system, table, state)
 
     # AFTER the hold is recorded, so a sweep that fails for any reason cannot
-    # cost this session its hold. The slow path is the one place that already
-    # has the process table in hand, which is why the sweep lives here. Outside
-    # the `with` because the sweep takes the same lock, and flock is not
-    # re-entrant across descriptors.
+    # cost this session its hold. Only on the slow path, so it runs once per
+    # renewal rather than once per tool batch. Outside the `with` because the
+    # sweep takes the same lock, and flock is not re-entrant across descriptors.
     try:
         sweep_stale(config, table, now)
     except Exception:
         pass
     return "held"
+
+
+def hold_jobs(config, system, session_id, self_pid, on_ac, now, table):
+    """Give each newly seen background job its own hold. Returns how many.
+
+    Each hold is `caffeinate -w <job> -t job_hold_seconds`: the kernel ends it
+    when the job exits, and the cap ends it if the job hangs. Nothing here ever
+    has to notice a job finishing.
+
+    A job that already has a record is NEVER re-held — not even once its hold
+    has run out. That is what makes the cap a cap: re-holding on expiry would
+    turn one hour into "as long as the job runs". The record outlives its
+    assertion for exactly that reason, and `sweep_stale` clears it only once the
+    job itself is gone.
+    """
+    claude_pid = find_claude_pid(table, self_pid)
+    if not claude_pid:
+        return 0
+    candidates = job_candidates(table, claude_pid, self_pid)
+    if not candidates:
+        return 0
+    commands = system.command_lines(candidates)
+    jobs = [pid for pid in candidates if is_job_command(commands.get(pid))]
+    if not jobs:
+        return 0
+
+    directory = state_dir(config)
+    os.makedirs(directory, exist_ok=True)
+    cap = job_hold_seconds(config)
+    taken = 0
+    with records_lock(directory):
+        for job in jobs:
+            path = job_path(config, session_id, job)
+            state = read_state(path)
+            if state and not _job_pid_reused(state, table, now):
+                continue
+            argv = assertion_argv(on_ac, job, cap)
+            _write_state_unlocked(path, system.spawn(argv), now + cap, None)
+            taken += 1
+    return taken
+
+
+def _job_pid_reused(state, table, now):
+    """True when a job record's PID now belongs to a different, newer job.
+
+    `caffeinate -w <job> -t <cap>` ends early only when its job exits. So
+    before the cap, a dead assertion means the recorded job is gone, and a
+    live process on that PID is a new job that reused the number: it gets its
+    own hold. After the cap, a dead assertion is the cap doing its job, and
+    re-holding would turn the cap into "as long as the job runs".
+    """
+    return now < state.get("expires_at", 0) and not is_caffeinate(
+        table, state.get("caffeinate_pid"))
+
+
+def _has_job_records(directory, session_id):
+    prefix = job_prefix(session_id)
+    try:
+        return any(job_pid_of(name, prefix) is not None for name in os.listdir(directory))
+    except OSError:
+        return False
+
+
+def _drop_jobs_unlocked(config, system, table, session_id):
+    """End every job hold this session took. Caller holds `records_lock`."""
+    directory = state_dir(config)
+    prefix = job_prefix(session_id)
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    dropped = 0
+    for name in names:
+        if job_pid_of(name, prefix) is None:
+            continue
+        path = os.path.join(directory, name)
+        if _drop(system, table, read_state(path)):
+            dropped += 1
+        clear_state(path)
+    return dropped
 
 
 def settle(config, system, session_id, self_pid):
@@ -739,16 +952,28 @@ def settle(config, system, session_id, self_pid):
     # case stays as cheap as it was.
     with records_lock(directory):
         state = read_state(path)
-        if not state:
+        has_jobs = _has_job_records(directory, session_id)
+        if not state and not has_jobs:
             return "nothing-held"
         table = system.process_table()
-        if not is_caffeinate(table, state["caffeinate_pid"]):
+        if state and not is_caffeinate(table, state["caffeinate_pid"]):
             clear_state(path)
+            state = None
+        if not state and not has_jobs:
             return "stale"
 
+        # The three release conditions end the session's JOB holds too: each
+        # one is a reason the machine should be allowed to sleep at all, and a
+        # job hold left behind would keep it up for another hour regardless.
+        #
+        # They run when only JOB holds remain, too — the session hold expired
+        # after 30 quiet minutes while a job carried on. That is THE case this
+        # tool serves, and an early "stale" return here let a job hold ride
+        # through the battery floor (caught by Codex review, 2026-10-20).
         if not enabled(config):
             _drop(system, table, state)
             clear_state(path)
+            _drop_jobs_unlocked(config, system, table, session_id)
             return "released-disabled"
 
         on_ac, percent = system.power_state()
@@ -759,11 +984,16 @@ def settle(config, system, session_id, self_pid):
             # a live session would otherwise keep indefinitely.
             _drop(system, table, state)
             clear_state(path)
+            _drop_jobs_unlocked(config, system, table, session_id)
             return "released-battery"
         if below_floor(config, on_ac, percent):
             _drop(system, table, state)
             clear_state(path)
+            _drop_jobs_unlocked(config, system, table, session_id)
             return "released-battery-floor"
+
+        if not state:
+            return "stale"      # only job holds left, and nothing ends them here
 
         # The change of 2026-08-26. A hold bound to a living `claude` is released by
         # that process exiting — `-w` does it in the kernel, with no hook involved —
@@ -813,11 +1043,15 @@ def release(config, system, session_id, self_pid=None):
         return "nothing-held"      # see `settle`: no directory, no `acquire` in flight
     with records_lock(directory):
         state = read_state(path)
-        if not state:
+        has_jobs = _has_job_records(directory, session_id)
+        if not state and not has_jobs:
             return "nothing-held"
         table = system.process_table()
         dropped = _drop(system, table, state)
         clear_state(path)
+        # Job holds go with the session: this is SessionEnd, unplugging, the
+        # floor, or the override lapsing — every one of them means "let it sleep".
+        dropped = _drop_jobs_unlocked(config, system, table, session_id) or dropped
     return "released" if dropped else "stale"
 
 
@@ -924,8 +1158,11 @@ def held_sessions(config, system):
         state = read_state(os.path.join(directory, name))
         if not state:
             continue
+        stem = name[:-len(".json")]
+        session, _, job = stem.partition(JOB_RECORD_INFIX)
         rows.append({
-            "session": name[:-len(".json")],
+            "session": session,
+            "job_pid": int(job) if job.isdigit() else None,
             "live": is_caffeinate(table, state["caffeinate_pid"]),
             "bound": is_claude(table, state["claude_pid"]),
             "claude_pid": state["claude_pid"],
@@ -975,6 +1212,14 @@ def sweep_stale(config, table, now):
             if not state or state["expires_at"] >= now:
                 continue
             if is_caffeinate(table, state["caffeinate_pid"]):
+                continue
+            # A capped job's record outlives its hold on purpose — it is what
+            # stops `hold_jobs` re-holding the same job (see there). Keep it
+            # while the job's shell is still running.
+            job = job_pid_of(name, name.split(JOB_RECORD_INFIX)[0] + JOB_RECORD_INFIX) \
+                if JOB_RECORD_INFIX in name else None
+            if job is not None and table.get(job) \
+                    and os.path.basename(table[job][1]) in SHELLS:
                 continue
             clear_state(path)
             removed += 1

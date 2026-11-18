@@ -517,5 +517,56 @@ class TestFencedHeadingsAreQuoted(unittest.TestCase):
                 self.assertEqual(_subsection(alpha, "### Two"), "### Two\nbody\n")
 
 
+
+class TestOnboardingConduct(unittest.TestCase):
+    """Row 76 (28b findings F-D1c/F-D1d): what the onboarding session promised
+    and did, against what the skill says."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(SKILL_MD, encoding="utf-8") as fh:
+            cls.skill = fh.read()
+        with open(os.path.join(REPO_ROOT, "ONBOARDING.md"), encoding="utf-8") as fh:
+            cls.onboarding = fh.read()
+
+    def test_the_time_promise_is_not_ten_minutes(self):
+        """The measured install took ~1.5 h (three suite sweeps); "about ten
+        minutes" set a stranger up to think it had hung."""
+        for label, text in (("SKILL.md", self.skill), ("ONBOARDING.md", self.onboarding)):
+            with self.subTest(doc=label):
+                self.assertNotRegex(text, r"(?i)\b(ten|10) minutes\b")
+                self.assertRegex(text, r"an hour to an hour and a half")
+
+    def test_the_workflow_question_carries_no_recommendation(self):
+        """The 28b session tagged "Leave it off (Recommended)" on its own and
+        the operator submitted it inside a four-tab form."""
+        start = self.skill.index("**The Workflow setting, builder only.**")
+        # Through the next bold-led block (Tier 2): the offer spans prose,
+        # the turn-on command and the keep/turn-off case, and a label
+        # anywhere in it is the defect. Whitespace-normalised, since the
+        # prose re-wraps.
+        section = " ".join(
+            self.skill[start:self.skill.index("\n**Tier 2", start)].split())
+        self.assertIn("tag neither", section)
+        self.assertIn("never as one tab of a multi-question form", section)
+        self.assertNotIn("(Recommended)", section)
+        # The general consent rule must not still promise the Workflow
+        # setting a one-keypress recommended answer (Codex, row 81 PR C).
+        rule = self.skill[self.skill.index("**The deliberate exception is the consent prompts"):]
+        rule = rule[:rule.index("\n\n")]
+        self.assertIn("the Workflow setting has no recommended answer",
+                      " ".join(rule.split()))
+
+    def test_both_template_copies_forbid_writing_the_file_by_hand(self):
+        """The 28b session wrote ~/Work/CLAUDE.md and TOOLING.md directly
+        because the folder was empty."""
+        for heading in ("## Phase 4", "## Phase 5b"):
+            with self.subTest(phase=heading):
+                start = self.skill.index(heading)
+                body = self.skill[start:self.skill.index("\n## ", start + 1)]
+                self.assertIn("cp -n ", body)
+                self.assertIn("never hand-write the file", body)
+
+
 if __name__ == "__main__":
     unittest.main()

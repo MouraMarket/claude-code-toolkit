@@ -258,16 +258,21 @@ coverage claim is about tools, not about writes.
 Defends: `tools/session-claim/identity_lib.py`, `tools/caffeinate/caffeinate_lib.py`
 
 The walk up the process table to the `claude` process exists in `session-claim`
-and in `caffeinate`. The two are not interchangeable where it matters:
-`identity_lib` reads `ps command=` and must split argv to test argv0, while
-`caffeinate_lib` reads `comm=` and gets the executable path alone, so a plain
-`basename` is right there and wrong in the guard. Sharing only the walk would
-leave each with its own reader and its own answer to "is this claude", and would
-put a shared dependency inside the guard. The cost: a change in how Claude Code
-appears in the process table needs fixing in both places, and both docstrings
-name the other. A third caller is the trigger to revisit. `ps` reports the path
-as invoked (`~/.local/bin/claude`), not the versioned file it links to, and both
-shapes are fixtured, because a failed walk is silent.
+and in `caffeinate`, on purpose: sharing it would put a shared dependency inside the guard, for a few lines of
+walk. The cost: a change in how Claude Code appears in the process table needs
+fixing in both places, and both docstrings name the other. A third caller is the
+trigger to revisit. `ps` reports the path as invoked (`~/.local/bin/claude`), not
+the versioned file it links to, and both shapes are fixtured, because a failed
+walk is silent.
+
+**Both read `ps comm=` and match an exact basename `claude`. Never go back to
+`command=` and splitting argv.** `comm=` is the executable path alone, spaces
+intact. The desktop app's binary lives under
+`~/Library/Application Support/Claude/claude-code/...`, and splitting argv cut
+that at "Application". No desktop session resolved, so session-claim allowed
+every edit, silently, on the default surface. Pinned by `TestProcessTableReader`
+and `test_finds_the_desktop_apps_claude_under_a_path_with_spaces` in
+`tools/session-claim/tests/test_identity_lib.py`.
 
 ## Integrity checks
 

@@ -110,8 +110,8 @@ unchecked, or anything installed onto someone else's machine runs Merge Review. 
 
 ## Gate: Design Review — the approach, before a plan exists (architectural builds)
 
-Every architectural build runs it inside Phase 1, at step 7 of
-`${CLAUDE_PLUGIN_ROOT}/tools/build-lens/brainstorming.md`: dispatch the reviewer
+Runs at step 7 of
+`${CLAUDE_PLUGIN_ROOT}/tools/build-lens/brainstorming.md` (or `architecture-review`): dispatch the reviewer
 `${CLAUDE_PLUGIN_ROOT}/tools/build-lens/design-review.md` describes.
 
 **Read the gate's reference before dispatching. If it is not there, STOP — the
@@ -241,7 +241,7 @@ the expensive half.
 | Implement, or prove, one task | `toolkit-build:executor` | `sonnet` · medium |
 | Review one task's diff | `toolkit-build:task-reviewer` | `sonnet` · high |
 
-These ship in the `toolkit-build` plugin (with this skill); dispatch them by that name.
+Both ship in `toolkit-build`; dispatch by name.
 
 **`toolkit-build:task-reviewer` is off by default** — Code Review reads the whole branch.
 Dispatch it only when a later task builds on this one's contract, and say so.
@@ -394,6 +394,7 @@ One report, in the turn's final text message, shaped like this:
 | Changed how it works? | If yes, update the repo's `CLAUDE.md` — a trap or corrected belief, not a changelog |
 
 End it on the ship call — pushing, publishing, merging — asked in that message.
+`Architecture review: yes` and this PR empties Backlog → offer final `architecture-review`.
 Moving between tasks is execution. Shipping is a decision.
 
 ### Provenance — the PR body names the plan

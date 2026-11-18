@@ -50,6 +50,8 @@ PLUGIN_ONLY = [
     ("PreToolUse", "Bash|PowerShell|Monitor", "claude-hook-heartbeat", [], 5),
     ("SessionStart", None, "claude-hook-heartbeat", ["--session-start"], 5),
     ("PreToolUse", "Agent", "claude-prompt-optimizer", [], 5),
+    ("PostToolUse", "Bash|Read|Grep|Glob|mcp__.*", "claude-tool-rules", [], 5),
+    ("SessionStart", None, "claude-tool-rules", ["--reset"], 5),
 ]
 
 # Each non-core plugin dir also registers the heartbeat's SessionStart handler, as the
@@ -62,6 +64,15 @@ HEARTBEAT_DIRS = ("plugin-build", "plugin-continuity", "plugin-mac", "plugin-mai
 PLUGIN_RETIRED = [
     ("SessionStart", None, "claude-build-route", [], 5),
 ]
+
+# Handlers whose timeout the plugin has deliberately changed since the template
+# froze: (event, exe) -> (frozen timeout, plugin timeout). The template stays
+# frozen; the old value is asserted so a stale entry here fails loudly.
+# repo-freshness 25 -> 30: parallel pulls widened NET_BUDGET, and its
+# TestWholeHookTimeoutBudget needs a 30s declared timeout.
+PLUGIN_RETIMED = {
+    ("SessionStart", "claude-repo-freshness"): (25, 30),
+}
 
 
 def _load_json(path):
@@ -78,7 +89,12 @@ def _fixture_reduced():
                 command = hook["command"]
                 assert command.startswith(OLD_PREFIX), command
                 tokens = shlex.split(command[len(OLD_PREFIX):])
-                rows.append((event, block.get("matcher"), tokens[0], tokens[1:], hook.get("timeout")))
+                timeout = hook.get("timeout")
+                retimed = PLUGIN_RETIMED.get((event, tokens[0]))
+                if retimed is not None:
+                    assert timeout == retimed[0], (event, tokens[0], timeout)
+                    timeout = retimed[1]
+                rows.append((event, block.get("matcher"), tokens[0], tokens[1:], timeout))
     return rows
 
 
@@ -172,6 +188,7 @@ PLACEMENT = {
     "claude-worktree-guard": "core",
     "claude-distill-write-guard": "core",
     "claude-toolkit-integrity": "core",
+    "claude-tool-rules": "continuity",
     "claude-tooling-digest": "core",
     "claude-repo-freshness": "core",
     "claude-thread-watch": "continuity",
@@ -300,7 +317,9 @@ class TestManifests(unittest.TestCase):
         self.assertEqual([p["name"] for p in market["plugins"]],
                          ["toolkit-core", "toolkit-continuity", "toolkit-build",
                           "toolkit-maintainer", "toolkit-mac", "skill-prompt-optimizer",
-                          "skill-humanizer", "skill-claude-teacher"])
+                          "skill-humanizer", "skill-claude-teacher",
+                          "skill-chrome-handoff", "skill-port-github-repo",
+                          "skill-model-routing"])
         self.assertEqual(market["plugins"][0]["source"], "./plugin")
 
     def test_no_plugin_sets_a_version(self):
@@ -308,7 +327,7 @@ class TestManifests(unittest.TestCase):
         # bumps it; without one they follow the commit (scripts/check_layout.py
         # refuses one too).
         market = _load_json(MARKETPLACE_JSON)
-        self.assertEqual(len(market["plugins"]), 8)
+        self.assertEqual(len(market["plugins"]), 11)
         for entry in market["plugins"]:
             self.assertNotIn("version", entry, entry["name"])
             manifest = _load_json(os.path.join(REPO_ROOT, entry["source"], ".claude-plugin",

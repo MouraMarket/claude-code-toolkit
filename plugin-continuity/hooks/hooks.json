@@ -59,6 +59,11 @@
           },
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/tools/tool-rules/claude-tool-rules --reset",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/tools/hook-heartbeat/claude-hook-heartbeat --session-start",
             "timeout": 5
           }
@@ -115,6 +120,16 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/tools/context-growth/claude-context-growth",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Read|Grep|Glob|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/tools/tool-rules/claude-tool-rules",
             "timeout": 5
           }
         ]

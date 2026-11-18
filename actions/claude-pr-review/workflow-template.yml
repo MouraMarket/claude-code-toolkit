@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: mouramarket/claude-code-toolkit/actions/claude-pr-review@v0.1.1
+      - uses: mouramarket/claude-code-toolkit/actions/claude-pr-review@v0.1.2
         with:
           pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

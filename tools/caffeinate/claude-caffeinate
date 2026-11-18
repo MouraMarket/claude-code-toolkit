@@ -123,6 +123,16 @@ def describe_holds(lib, config, system):
 
     lines = []
     for row in rows:
+        if row["job_pid"] is not None:
+            if row["live"]:
+                lines.append("  %s — background job pid %d, held until it exits; "
+                             "cap in %dm" % (row["session"][:8], row["job_pid"],
+                                             max(0, row["expires_in"]) // 60))
+            else:
+                lines.append("  %s — background job pid %d, no longer held "
+                             "(finished, or ran past its cap)"
+                             % (row["session"][:8], row["job_pid"]))
+            continue
         if not row["live"]:
             lines.append("  %s — stale record, no assertion (harmless; "
                          "swept by the next hold taken after its deadline)"
@@ -134,7 +144,7 @@ def describe_holds(lib, config, system):
                 % row["claude_pid"]
         else:
             bound = "NOT bound to a process — deadline is its only bound"
-        lines.append("  %s — held, %s; ceiling in %dm" % (
+        lines.append("  %s — held, %s; idle timer ends in %dm" % (
             row["session"][:8], bound, minutes))
     return lines
 
@@ -157,7 +167,8 @@ def run_status(lib, config):
     print("  floor       %s" % ("disabled — a hold can run the battery flat"
                                 if floor <= 0 else
                                 "release below %d%% on battery" % floor))
-    print("  ceiling     %dm without any activity" % (lib.hold_seconds(config) // 60))
+    print("  idle timer  %dm without any activity" % (lib.hold_seconds(config) // 60))
+    print("  job cap     %dm per background job" % (lib.job_hold_seconds(config) // 60))
     print("  power now   %s" % describe_power(on_ac, percent))
 
     if enabled and on_battery_now and lib.below_floor(config, on_ac, percent):

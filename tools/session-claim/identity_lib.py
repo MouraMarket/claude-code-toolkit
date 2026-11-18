@@ -60,53 +60,65 @@ def _ps_timeout():
 
 
 def process_table():
-    """{pid: (ppid, command)} for every process. {} on any failure.
+    """{pid: (ppid, executable)} for every process. {} on any failure.
 
     One `ps` invocation rather than one per hop: the walk is 2-3 deep in
     practice, and several forks add latency to a hook that fires on every
     write. One fork also stops the cost scaling with process depth.
+
+    `comm=`, not `command=`: comm is the executable path ALONE, so a path with
+    a space in it survives whole. The desktop app's Claude Code lives under
+    `~/Library/Application Support/Claude/claude-code/...`; reading `command=`
+    and splitting argv to find argv[0] cut that at "Application", so no desktop
+    session ever resolved and the guard allowed every edit (2026-10-21).
     """
     try:
-        out = subprocess.run(["ps", "-Ao", "pid=,ppid=,command="],
+        out = subprocess.run(["ps", "-Ao", "pid=,ppid=,comm="],
                              capture_output=True, text=True, encoding="utf-8",
                              timeout=_ps_timeout())
     except Exception:
         return {}
+    return parse_process_table(out.stdout)
+
+
+def parse_process_table(text):
+    """Parse `ps -Ao pid=,ppid=,comm=` output into {pid: (ppid, executable)}.
+
+    maxsplit=2 because the executable path legitimately contains spaces, and
+    everything after the ppid is that one path.
+    """
     table = {}
-    for line in out.stdout.splitlines():
+    for line in text.splitlines():
         parts = line.split(None, 2)
         if len(parts) < 3:
             continue
         try:
-            table[int(parts[0])] = (int(parts[1]), parts[2])
+            table[int(parts[0])] = (int(parts[1]), parts[2].strip())
         except ValueError:
             continue
     return table
 
 
-def _is_claude_command(command):
-    """True when argv[0] IS the claude binary.
+def _is_claude_executable(executable):
+    """True when the executable's basename is exactly `claude`.
 
-    argv[0] only, deliberately: `vim claude-notes.md` mentions claude and is
-    not claude. Matching anywhere in the command line would resolve ordinary
-    editor and grep processes to a claude owner.
+    The whole path's basename, never a split of it: `.../Application
+    Support/.../MacOS/claude` is claude. An exact basename also keeps `vim`
+    (editing claude-notes.md) and a `claude-notes` binary from resolving to a
+    claude owner. Same test as `caffeinate_lib.is_claude`.
     """
-    if not command:
+    if not executable or not executable.strip():
         return False
-    tokens = command.split()
-    if not tokens:
-        return False
-    argv0 = tokens[0]
-    return argv0 == "claude" or argv0.endswith("/claude")
+    return os.path.basename(executable.strip()) == "claude"
 
 
 def walk_to_claude(start_pid, table):
     """The nearest ancestor of start_pid that is a claude process, or None.
 
-    `tools/caffeinate/caffeinate_lib.find_claude_pid` is the same walk against a
-    different reader (`ps comm=` there, `command=` here) and therefore a
-    different "is this claude" test. Deliberately not shared — see the note
-    there — but if you change what counts as a claude process, change both.
+    `tools/caffeinate/caffeinate_lib.find_claude_pid` is the same walk, with
+    the same reader (`ps comm=`) and the same basename test. Deliberately
+    not shared (see the note there), but if you change what counts as a claude
+    process, change both.
     """
     pid = start_pid
     seen = set()
@@ -117,8 +129,8 @@ def walk_to_claude(start_pid, table):
         entry = table.get(pid)
         if entry is None:
             return None
-        ppid, command = entry
-        if _is_claude_command(command):
+        ppid, executable = entry
+        if _is_claude_executable(executable):
             return pid
         pid = ppid
     return None

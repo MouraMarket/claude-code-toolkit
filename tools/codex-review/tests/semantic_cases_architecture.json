@@ -1,0 +1,4035 @@
+[
+  {
+    "name": "final_design",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "final_final_core_only",
+    "round": 1,
+    "moment": "final",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "final",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "needs_context_design",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": "Q1",
+          "question": "q",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "needs_context_final",
+    "round": 2,
+    "moment": "final",
+    "report": {
+      "status": "needs_context",
+      "round": 2,
+      "moment": "final",
+      "context_requests": [
+        {
+          "id": "Q1",
+          "question": "q",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "final_design_round3",
+    "round": 3,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 3,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "final_no_changes_blank_sketch",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "ran_false_with_why_not",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": false,
+        "commands": [],
+        "why_not": "read only"
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "ran_true_blank_why_not_ok",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": "   "
+      }
+    },
+    "expect": "accept",
+    "reason": ""
+  },
+  {
+    "name": "round_mismatch",
+    "round": 2,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 1: round differs"
+  },
+  {
+    "name": "moment_mismatch",
+    "round": 1,
+    "moment": "final",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 2: moment differs"
+  },
+  {
+    "name": "ran_true_no_commands",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 3: ran true, no commands"
+  },
+  {
+    "name": "ran_true_blank_command",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls",
+          "  "
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 3: blank command"
+  },
+  {
+    "name": "ran_false_blank_why_not",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": false,
+        "commands": [],
+        "why_not": " "
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 3: ran false, blank why_not"
+  },
+  {
+    "name": "blank_request_id",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": " ",
+          "question": "q",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank request id"
+  },
+  {
+    "name": "blank_request_question",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": "Q1",
+          "question": "",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank request question"
+  },
+  {
+    "name": "blank_request_why",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": "Q1",
+          "question": "q",
+          "why_needed": "\n"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank request why_needed"
+  },
+  {
+    "name": "blank_verdict",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": " ",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank verdict"
+  },
+  {
+    "name": "blank_lens_evidence_item",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1",
+            "  "
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank lens evidence item"
+  },
+  {
+    "name": "blank_principle_statement",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank principle statement"
+  },
+  {
+    "name": "blank_principle_why",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": " "
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank principle why"
+  },
+  {
+    "name": "blank_change_id",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "  ",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change id"
+  },
+  {
+    "name": "blank_change_title",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "  ",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change title"
+  },
+  {
+    "name": "blank_change_what",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "  ",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change what"
+  },
+  {
+    "name": "blank_change_why",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "  ",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change why"
+  },
+  {
+    "name": "blank_change_serves_objective",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "  ",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change serves_objective"
+  },
+  {
+    "name": "blank_change_preserve",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "  ",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change preserve"
+  },
+  {
+    "name": "blank_change_done_when",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "  ",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change done_when"
+  },
+  {
+    "name": "blank_change_evidence_item",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2",
+            ""
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank change evidence item"
+  },
+  {
+    "name": "blank_unverified",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [
+        "  "
+      ],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 4: blank unverified item"
+  },
+  {
+    "name": "final_with_context_requests",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": "Q1",
+          "question": "q",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: final with context_requests"
+  },
+  {
+    "name": "final_no_principles",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: final without principles"
+  },
+  {
+    "name": "final_one_principle",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: final with fewer than two principles"
+  },
+  {
+    "name": "final_five_principles",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s1",
+          "why": "w1"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        },
+        {
+          "statement": "s3",
+          "why": "w3"
+        },
+        {
+          "statement": "s4",
+          "why": "w4"
+        },
+        {
+          "statement": "s5",
+          "why": "w5"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: final with more than four principles"
+  },
+  {
+    "name": "final_missing_core_lens",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: core lens absent"
+  },
+  {
+    "name": "final_core_lens_no_evidence",
+    "round": 1,
+    "moment": "final",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "final",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": []
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: core lens with empty evidence"
+  },
+  {
+    "name": "final_change_no_evidence",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": []
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: change without evidence"
+  },
+  {
+    "name": "final_changes_blank_sketch",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "  ",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 5: changes but blank sketch"
+  },
+  {
+    "name": "design_missing_design_lens",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 6: design lens absent"
+  },
+  {
+    "name": "design_lens_no_evidence",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "final",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [
+        {
+          "lens": "coherence",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "elegance",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "rebuild",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "unaccounted",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "wrong-premise",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "simpler-alternative",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "silent-failure",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "already-exists",
+          "verdict": "ok",
+          "evidence": [
+            "file.py:1"
+          ]
+        },
+        {
+          "lens": "seams",
+          "verdict": "ok",
+          "evidence": []
+        }
+      ],
+      "principles": [
+        {
+          "statement": "s",
+          "why": "w"
+        },
+        {
+          "statement": "s2",
+          "why": "w2"
+        }
+      ],
+      "changes": [
+        {
+          "id": "C1",
+          "title": "t",
+          "kind": "refine",
+          "what": "w",
+          "why": "y",
+          "serves_objective": "o",
+          "preserve": "p",
+          "done_when": "d",
+          "size": "S",
+          "evidence": [
+            "file.py:2"
+          ]
+        }
+      ],
+      "implementation_sketch": "sketch",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 6: design lens with empty evidence"
+  },
+  {
+    "name": "needs_context_zero_requests",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 7: needs_context, no requests"
+  },
+  {
+    "name": "needs_context_eleven_requests",
+    "round": 1,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 1,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": "Q0",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q1",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q2",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q3",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q4",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q5",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q6",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q7",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q8",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q9",
+          "question": "q",
+          "why_needed": "w"
+        },
+        {
+          "id": "Q10",
+          "question": "q",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 7: more than 10 requests"
+  },
+  {
+    "name": "round3_needs_context",
+    "round": 3,
+    "moment": "design",
+    "report": {
+      "status": "needs_context",
+      "round": 3,
+      "moment": "design",
+      "context_requests": [
+        {
+          "id": "Q1",
+          "question": "q",
+          "why_needed": "w"
+        }
+      ],
+      "lens_verdicts": [],
+      "principles": [],
+      "changes": [],
+      "implementation_sketch": "",
+      "unverified": [],
+      "executed": {
+        "ran": true,
+        "commands": [
+          "ls"
+        ],
+        "why_not": ""
+      }
+    },
+    "expect": "reject",
+    "reason": "rule 8: round 3 not final"
+  }
+]

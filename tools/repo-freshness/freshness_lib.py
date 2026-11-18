@@ -49,13 +49,15 @@ DEFAULT_FETCH_INTERVAL_SECONDS = 4 * 3600
 # The arithmetic that sets this value, shared against one declared hook
 # timeout alongside the sync phase's own budget:
 #
-#   sync_end   <= sync_lib.NET_BUDGET + sync_tail + gh_repo_list   = 2 + 7 + 4 = 13
+#   sync_end   <= sync_lib.NET_BUDGET + sync_tail + gh_repo_list   = 6 + 7 + 4 = 17
 #   report_end <= max(sync_end, REPORT_DEADLINE_SECONDS 13) + 4 x GIT_TIMEOUT_SECONDS
-#              =  13 + 8 = 21   <=   declared 25 - MARGIN 2 = 23    (headroom 2)
+#              =  17 + 8 = 25   <=   declared 30 - MARGIN 2 = 28    (headroom 3)
 #
 # `TestWholeHookTimeoutBudget` in `tools/repo-freshness/tests/
-# test_sync_lib.py` is what actually ENFORCES this, not this comment -- it
-# asserts across both this module and `sync_lib`.
+# test_sync_lib.py` is what actually ENFORCES this arithmetic, not this
+# comment -- it asserts across both this module and `sync_lib`. It checks
+# constants and call counts only; that `run()` really stops ADMITTING work
+# at the deadline is pinned separately, by `TestRunStopsAdmittingAtTheDeadline`.
 # `freshness_lib` has no phase budget of its own -- the sync phase's budget
 # is `sync_lib.NET_BUDGET`, and this module's own bound is only the
 # per-repo `Deadline` the REPORT loop is wrapped in.

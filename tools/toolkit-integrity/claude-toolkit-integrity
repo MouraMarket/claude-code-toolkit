@@ -20,7 +20,10 @@ subprocess per probe (plus the fixture's few git calls), bounded by the run's
 deadline; the rest of the integrity half spends none.
 
 **Hook-fires audit (SessionStart only).** Earlier sessions whose transcripts
-show shell commands ran, yet left no heartbeat record, are named once.
+show shell commands ran, yet left no heartbeat record, are named once. The same
+audit names a session whose transcript shows a successful call matching a live
+tool-rules page and left no `tool-rules-state` record (`--tool-rules-audit`
+re-checks by hand).
 
 **Drift (quiet).** The toolkit's HEAD moved and the change touched something a
 running session actually executes. Path-filtered, because an unfiltered notice
@@ -43,6 +46,7 @@ INTEGRITY_KEY = "integrity"
 CANARY_KEY = "canaries"
 DRIFT_KEY = "head"
 AUDIT_KEY = "fires-audit"
+TOOL_RULES_AUDIT_KEY = "tool-rules-audit"
 
 # The host discards ALL of a hook's output when it kills it on timeout, so the
 # whole process is bounded by a watchdog rather than by the order things print
@@ -203,6 +207,26 @@ def main():
         if audit_state is not None:
             integrity.save_fires_audit_state(home, audit_state)
 
+        try:
+            notice, rules_state = integrity.tool_rules_audit(
+                home, session, armed + budget, repo)
+        except Exception as exc:
+            notice, rules_state = "", None
+            signature = "crash:%s" % type(exc).__name__
+            if not integrity.already_reported(state, session,
+                                              TOOL_RULES_AUDIT_KEY, signature):
+                sys.stdout.write("toolkit-integrity: the tool-rules audit crashed "
+                                 "(%s) and did not check.\n" % type(exc).__name__)
+                sys.stdout.flush()
+                state = integrity.record_reported(state, session,
+                                                  TOOL_RULES_AUDIT_KEY, signature)
+        if notice:
+            sys.stdout.write(notice)
+            sys.stdout.flush()
+        if rules_state is not None:
+            integrity.save_fires_audit_state(
+                home, rules_state, name=integrity.TOOL_RULES_AUDIT_STATE)
+
     # --- drift (quiet) -----------------------------------------------------
     if integrity.drift_enabled():
         pair = integrity.root_and_head(root_hint)
@@ -252,12 +276,61 @@ def main():
     integrity.save_state(state)
 
 
+def cli_tool_rules_audit():
+    """`--tool-rules-audit`: the manual recovery check. Reads and writes no audit
+    state; its 60 s is a fixed literal, not TOOLKIT_INTEGRITY_AUDIT_SECONDS."""
+    try:
+        here = os.path.dirname(os.path.realpath(__file__))
+        sys.path.insert(0, here)
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.dirname(here)), "lib"))
+        import toolkit_integrity_lib as integrity
+        import toolkit_config
+        tool_rules_lib = integrity._import_tool_rules_lib()
+        home = os.environ.get("TOOLKIT_INTEGRITY_HOME") or os.path.expanduser("~")
+        workspace_root = toolkit_config.workspace_root()
+        # Reads (never writes) the SessionStart audit's era; none yet means no floor.
+        era = integrity.tool_rules_era(integrity._load_audit_state(
+            home, integrity.TOOL_RULES_AUDIT_STATE), None)
+        result = tool_rules_lib.audit(
+            home, workspace_root=workspace_root,
+            exclude_session=os.environ.get("CLAUDE_CODE_SESSION_ID") or None,
+            deadline=time.monotonic() + 60, cache=None, skip=(), now=None,
+            since=era)
+        pages_dir = tool_rules_lib.tool_rules_dir(workspace_root)
+        if not result["active"]:
+            print("tool-rules audit: no live tool-rules pages under %s"
+                  % (pages_dir or "(no workspace_root)"))
+            return 0
+        for entry in result["flagged"]:
+            print("%s  %s  started %s  %d matching call(s), no tool-rules record "
+                  "(%s)" % (entry["session"][:8], entry["project"],
+                            (entry["started_at"] or "?")[:10], entry["calls"],
+                            ", ".join(entry["pages"])))
+        for entry in result["unchecked"]:
+            why = ("could not be read" if entry["reason"] == "unreadable"
+                   else "ran out of time (60s)")
+            print("%s  %s  %s" % ((entry["session"] or "(dir)")[:8],
+                                  entry["project"], why))
+        flagged, unchecked = len(result["flagged"]), len(result["unchecked"])
+        print("tool-rules audit: %d session(s) judged, %d flagged, %d not checked"
+              % (len(result["judged"]), flagged, unchecked))
+        return 1 if flagged or unchecked else 0
+    except Exception as exc:
+        print("tool-rules audit crashed (%s) and did not check"
+              % type(exc).__name__)
+        return 2
+
+
 if __name__ == "__main__":
     for _stream in (sys.stdout, sys.stderr):
         try:
             _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
         except (AttributeError, ValueError):
             pass
+    # Before main(): no stdin read, no watchdog, no ALLOW check.
+    if "--tool-rules-audit" in sys.argv[1:]:
+        sys.exit(cli_tool_rules_audit())
     try:
         main()
     except Exception:

@@ -459,32 +459,18 @@ def _last_model_and_uncached(path):
     return model, uncached
 
 
-def run_cost(sessions_root, cwd, since):
-    """The per-run COST reader that replaced `read_run_delta`: the uncached
-    input tokens a single Codex run burned, attributed to it by file
-    identity rather than by meter delta (which quantises to whole points and
-    is noise for one run).
+def _attributed_rollout(sessions_root, cwd, since):
+    """The ONE rollout file under `sessions_root` that `run_cost`'s three
+    filters attribute to a dispatch, else None. Shared by `run_cost` and
+    `rollout_session_id` so the two can never attribute different files.
 
-    None unless EXACTLY ONE rollout file under `sessions_root` passes all
-    three filters: its mtime is `>= since`; its `session_meta.payload.cwd`
-    resolves (`os.path.realpath`) to the same place as `cwd`; its
-    `session_meta.payload.timestamp`, parsed AS UTC
-    (`datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()`), is
-    `>= since - 5` (a few seconds of slack for the session starting an
-    instant before `since` was captured). Zero matches or two-or-more
-    matches both return None -- an ambiguous attribution is not a
-    measurement.
-
-    For the one match: `model` is the last `turn_context.payload.model`
-    (None if absent); `uncached` comes from `_last_model_and_uncached`, and
-    if the file has no `total_token_usage` line at all this function returns
-    None outright, since there is no token count to report. `block` is the
-    file's last `rate_limits` block (`_last_rate_limits_block`, may be
-    None). Returns `{"path", "model", "uncached_input": int, "points":
-    float|None, "plan_type": str|None}`, where `points` is `uncached / 1e6 *
-    cal["points_per_million_uncached"]` when `calibration(block, model)`
-    exists, else None. Never raises.
-    """
+    The filters: mtime `>= since`; `session_meta.payload.cwd` resolves
+    (`os.path.realpath`) to the same place as `cwd`; `session_meta.payload.
+    timestamp`, parsed AS UTC (`datetime.fromisoformat(ts.replace("Z",
+    "+00:00")).timestamp()`), is `>= since - 5` (a few seconds of slack for
+    the session starting an instant before `since` was captured). Zero
+    matches or two-or-more matches both return None -- an ambiguous
+    attribution is not a measurement. Never raises."""
     try:
         target_cwd = os.path.realpath(cwd)
         matches = []
@@ -517,8 +503,56 @@ def run_cost(sessions_root, cwd, since):
 
         if len(matches) != 1:
             return None
+        return matches[0]
+    except BaseException:
+        return None
 
-        path = matches[0]
+
+def rollout_session_id(sessions_root, cwd, since):
+    """The `session_meta.payload.id` string of the rollout file
+    `_attributed_rollout` picks for this dispatch, else None (no unique
+    attribution, or the id is missing or not a string). Never raises."""
+    try:
+        path = _attributed_rollout(sessions_root, cwd, since)
+        if path is None:
+            return None
+        meta = _session_meta(path)
+        session_id = meta.get("id") if meta is not None else None
+        return session_id if isinstance(session_id, str) else None
+    except BaseException:
+        return None
+
+
+def run_cost(sessions_root, cwd, since):
+    """The per-run COST reader that replaced `read_run_delta`: the uncached
+    input tokens a single Codex run burned, attributed to it by file
+    identity rather than by meter delta (which quantises to whole points and
+    is noise for one run).
+
+    None unless EXACTLY ONE rollout file under `sessions_root` passes all
+    three filters: its mtime is `>= since`; its `session_meta.payload.cwd`
+    resolves (`os.path.realpath`) to the same place as `cwd`; its
+    `session_meta.payload.timestamp`, parsed AS UTC
+    (`datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()`), is
+    `>= since - 5` (a few seconds of slack for the session starting an
+    instant before `since` was captured). Zero matches or two-or-more
+    matches both return None -- an ambiguous attribution is not a
+    measurement.
+
+    For the one match: `model` is the last `turn_context.payload.model`
+    (None if absent); `uncached` comes from `_last_model_and_uncached`, and
+    if the file has no `total_token_usage` line at all this function returns
+    None outright, since there is no token count to report. `block` is the
+    file's last `rate_limits` block (`_last_rate_limits_block`, may be
+    None). Returns `{"path", "model", "uncached_input": int, "points":
+    float|None, "plan_type": str|None}`, where `points` is `uncached / 1e6 *
+    cal["points_per_million_uncached"]` when `calibration(block, model)`
+    exists, else None. Never raises.
+    """
+    try:
+        path = _attributed_rollout(sessions_root, cwd, since)
+        if path is None:
+            return None
         model, uncached = _last_model_and_uncached(path)
         if uncached is None:
             return None
@@ -554,13 +588,14 @@ CODEX_MODEL = "gpt-6-astra"
 CODE_GATE_MODEL = "gpt-5.6-terra"
 CODEX_REASONING_EFFORT = "high"
 
-GATES = ("code", "merge", "plan", "design")
+GATES = ("code", "merge", "plan", "design", "architecture")
 
 GATE_MODELS = {
     "code": CODE_GATE_MODEL,
     "merge": CODEX_MODEL,
     "plan": CODEX_MODEL,
     "design": CODEX_MODEL,
+    "architecture": CODEX_MODEL,
 }
 
 
@@ -656,6 +691,160 @@ def model_rejected(stderr_text):
         return False
     return (re.search(r'"status"\s*:\s*400', stderr_text) is not None
             and "model is not supported" in stderr_text)
+
+
+# Architecture review: `max` effort, read-only, on the `architecture` gate's
+# model (GATE_MODELS, overridable like every gate). `ultra` is deliberately
+# not used, and the CLI does not validate the value, so a typo here would
+# pass silently.
+ARCHITECTURE_EFFORT = "max"
+ARCHITECTURE_SANDBOX = "read-only"
+
+
+def _architecture_config_args():
+    return ["-c", 'model_reasoning_effort="%s"' % ARCHITECTURE_EFFORT,
+            "-c", 'sandbox_mode="%s"' % ARCHITECTURE_SANDBOX]
+
+
+def build_architecture_argv(repo_path, schema_path, output_path, prompt, model):
+    """The `codex` argv for an architecture review, as a list. The prompt is
+    the only positional and is last."""
+    return (["codex", "exec", "-C", repo_path, "-m", model]
+            + _architecture_config_args()
+            + ["--output-schema", schema_path, "-o", output_path, prompt])
+
+
+def build_resume_argv(session_id, schema_path, output_path, prompt, model):
+    """The `codex exec resume` argv. Probed 2026-10-20: a resumed session
+    silently reverts reasoning effort and sandbox unless both `-c` pairs are
+    re-passed, and `resume` has no `-s`/`-C` to do it with."""
+    return (["codex", "exec", "resume", session_id, "-m", model]
+            + _architecture_config_args()
+            + ["--output-schema", schema_path, "-o", output_path, prompt])
+
+
+def _is_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def weekly_reading(block, now):
+    """The 7-day window of a rate-limits `block`, or None. Either of
+    `primary`/`secondary` may be the weekly one (window_minutes == 10080).
+    None when the block or window is unreadable or the reset has passed.
+    Never raises."""
+    if not isinstance(block, dict):
+        return None
+    for key in ("primary", "secondary"):
+        window = block.get(key)
+        if not isinstance(window, dict):
+            continue
+        if window.get("window_minutes") != 10080:
+            continue
+        used = window.get("used_percent")
+        resets_at = window.get("resets_at")
+        # An unreadable or expired weekly candidate is skipped, not fatal:
+        # it must not mask a readable weekly window in the other slot.
+        if not _is_number(used) or not _is_number(resets_at):
+            continue
+        if not math.isfinite(used) or not math.isfinite(resets_at):
+            continue
+        if resets_at <= now:
+            continue
+        return {"used_percent": float(used), "resets_at": float(resets_at),
+                "window_minutes": 10080}
+    return None
+
+
+def format_weekly(reading):
+    """One line for the weekly meter; `reading` is `weekly_reading`'s result."""
+    if reading is None:
+        return "codex weekly: unknown (no readable 7-day window)"
+    reset = time.strftime("%a %m-%d %H:%M",
+                          time.localtime(reading["resets_at"]))
+    return "codex weekly: %s%% used, resets %s" % (reading["used_percent"],
+                                                   reset)
+
+
+CORE_LENSES = ("coherence", "elegance", "rebuild", "unaccounted")
+DESIGN_LENSES = ("wrong-premise", "simpler-alternative", "silent-failure",
+                 "already-exists", "seams")
+
+
+def _blank(value):
+    return not isinstance(value, str) or value.strip() == ""
+
+
+def _lens_has_evidence(report, lens):
+    return any(v.get("lens") == lens and v.get("evidence")
+               for v in report["lens_verdicts"])
+
+
+def architecture_violation(report, expected_round, expected_moment):
+    """None for a schema-valid architecture report that is also semantically
+    sound, else the first reason it is not. The schema cannot see string
+    content, so blank evidence and a final report with no lens coverage pass
+    it; this is the check that rejects them."""
+    if report["round"] != expected_round:
+        return "round %r, expected %r" % (report["round"], expected_round)
+    if report["moment"] != expected_moment:
+        return "moment %r, expected %r" % (report["moment"], expected_moment)
+    executed = report["executed"]
+    if executed["ran"]:
+        if not executed["commands"] or any(_blank(c)
+                                           for c in executed["commands"]):
+            return "executed.ran is true but commands is empty or blank"
+    elif _blank(executed["why_not"]):
+        return "executed.ran is false but why_not is blank"
+
+    for request in report["context_requests"]:
+        for field in ("id", "question", "why_needed"):
+            if _blank(request[field]):
+                return "blank context_requests %s" % field
+    for verdict in report["lens_verdicts"]:
+        if _blank(verdict["verdict"]):
+            return "blank verdict for lens %s" % verdict["lens"]
+        if any(_blank(e) for e in verdict["evidence"]):
+            return "blank evidence item for lens %s" % verdict["lens"]
+    for principle in report["principles"]:
+        for field in ("statement", "why"):
+            if _blank(principle[field]):
+                return "blank principle %s" % field
+    for change in report["changes"]:
+        for field in ("id", "title", "what", "why", "serves_objective",
+                      "preserve", "done_when"):
+            if _blank(change[field]):
+                return "blank change %s (%r)" % (field, change["id"])
+        if any(_blank(e) for e in change["evidence"]):
+            return "blank evidence item in change %r" % change["id"]
+    if any(_blank(item) for item in report["unverified"]):
+        return "blank unverified item"
+
+    if report["status"] == "final":
+        if report["context_requests"]:
+            return "final report still has context_requests"
+        # The fixed brief asks for two to four binding principles.
+        if not 2 <= len(report["principles"]) <= 4:
+            return ("final report has %d principles (2-4 required)"
+                    % len(report["principles"]))
+        for lens in CORE_LENSES:
+            if not _lens_has_evidence(report, lens):
+                return "no evidenced verdict for core lens %s" % lens
+        for change in report["changes"]:
+            if not change["evidence"]:
+                return "change %r has no evidence" % change["id"]
+        if report["changes"] and _blank(report["implementation_sketch"]):
+            return "changes present but implementation_sketch is blank"
+        if expected_moment == "design":
+            for lens in DESIGN_LENSES:
+                if not _lens_has_evidence(report, lens):
+                    return "no evidenced verdict for design lens %s" % lens
+    if report["status"] == "needs_context":
+        count = len(report["context_requests"])
+        if not 1 <= count <= 10:
+            return "needs_context with %d context_requests (1-10 allowed)" % count
+    if expected_round == 3 and report["status"] != "final":
+        return "round 3 must be final, got %r" % report["status"]
+    return None
 
 
 def build_argv(repo_path, schema_path, output_path, prompt, model,

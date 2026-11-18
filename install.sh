@@ -25,6 +25,10 @@
 #   ./install.sh --uninstall --yes  remove it: snapshot settings.json first, then verify
 #
 set -euo pipefail
+# Display paths as ~/... via ${path/#$HOME/$TILDE}. A literal `~` in that
+# replacement is tilde-expanded back to $HOME by bash 4.3+ (Ubuntu, Git Bash)
+# but not by macOS's bash 3.2; an expanded variable is never tilde-expanded.
+TILDE='~'
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK=0
@@ -623,15 +627,15 @@ link() {
     return
   fi
   if [[ -L "$linkname" && "$(readlink "$linkname")" == "$target" ]]; then
-    ok "${linkname/#$HOME/~}"
+    ok "${linkname/#$HOME/$TILDE}"
     return
   fi
   if [[ -e "$linkname" && ! -L "$linkname" ]]; then
-    warn "${linkname/#$HOME/~} exists and is a real file — not touching it"
+    warn "${linkname/#$HOME/$TILDE} exists and is a real file — not touching it"
     MISSING_LINKS=$(( MISSING_LINKS + 1 ))
     return
   fi
-  act "${linkname/#$HOME/~} -> ${target#$REPO/}"
+  act "${linkname/#$HOME/$TILDE} -> ${target#$REPO/}"
   MISSING_LINKS=$(( MISSING_LINKS + 1 ))
   LINKS_ABSENT=$(( LINKS_ABSENT + 1 ))
   (( CHECK )) || ln -sfn "$target" "$linkname"
@@ -652,8 +656,8 @@ echo "Directories"
 # directory being absent (`[[ -d ]] || continue`); `link` does not, and that
 # asymmetry turns a missing mkdir into a silently partial install.
 for d in "$HOME/.local/bin" "$HOME/.config/claude-code-toolkit"; do
-  if [[ -d "$d" ]]; then ok "${d/#$HOME/~}"
-  else act "mkdir ${d/#$HOME/~}"; (( CHECK )) || mkdir -p "$d"; fi
+  if [[ -d "$d" ]]; then ok "${d/#$HOME/$TILDE}"
+  else act "mkdir ${d/#$HOME/$TILDE}"; (( CHECK )) || mkdir -p "$d"; fi
 done
 
 echo
@@ -662,14 +666,14 @@ if [[ -f "$CONFIG" ]]; then
   if python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$CONFIG" 2>/dev/null; then
     ws=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("workspace_root") or "")' "$CONFIG" 2>/dev/null)
     if [[ -n "$ws" ]]; then
-      ok "${CONFIG/#$HOME/~} (workspace_root: $ws)"
+      ok "${CONFIG/#$HOME/$TILDE} (workspace_root: $ws)"
     else
-      warn "${CONFIG/#$HOME/~} has no workspace_root — the danger guard will"
+      warn "${CONFIG/#$HOME/$TILDE} has no workspace_root — the danger guard will"
       warn "   trust only ~/.claude, ~/bin and the temp dirs. That is the safe"
       warn "   default, but set it if deletions in your project tree are routine."
     fi
   else
-    warn "${CONFIG/#$HOME/~} is not valid JSON — every tool will fall back to"
+    warn "${CONFIG/#$HOME/$TILDE} is not valid JSON — every tool will fall back to"
     warn "   its defaults until you fix it. Nothing will crash, but nothing will"
     warn "   read your settings either."
   fi
@@ -693,7 +697,7 @@ if (( ! CHECK )) && { (( SETUP )) || [[ ! -f "$CONFIG" ]]; }; then
     # loud: the example sets no workspace root, which is safe but not yours.
     if [[ ! -f "$CONFIG" ]]; then
       cp "$REPO/config.example.json" "$CONFIG"
-      warn "copied config.example.json to ${CONFIG/#$HOME/~} unedited —"
+      warn "copied config.example.json to ${CONFIG/#$HOME/$TILDE} unedited —"
       warn "   no workspace root set. Run ./install.sh --setup in a terminal,"
       warn "   or edit it by hand, before relying on the guard."
     fi
@@ -727,7 +731,7 @@ elif [[ -n "$CONFIG_REPORT_OUTPUT" ]]; then
     warn "$line"
   done <<< "$CONFIG_REPORT_OUTPUT"
 else
-  ok "nothing declined, retired or unread in ${CONFIG/#$HOME/~}"
+  ok "nothing declined, retired or unread in ${CONFIG/#$HOME/$TILDE}"
 fi
 
 # Separate from the report above: an enabled tooling digest with no map file is
@@ -748,7 +752,8 @@ elif [[ -n "$DIGEST_MISSING_OUTPUT" ]]; then
 fi
 
 EXECUTABLE_NAMES=(claude-danger-guard claude-worktree-guard claude-model-guard claude-distill-write-guard \
-  claude-tooling-digest claude-memory-routing claude-memory-lint \
+  claude-tooling-digest claude-memory-routing claude-memory-lint claude-tool-rules \
+  claude-index-distill \
   claude-context-growth claude-context-lint claude-context-budget \
   claude-session-claim claude-session-release claude-secret-scan \
   claude-usage-line claude-usage-watch claude-usage-subagent claude-usage-postmortem \
@@ -783,6 +788,8 @@ link "$REPO/tools/tooling-digest/claude-tooling-digest"  "$HOME/.local/bin/claud
 link "$REPO/tools/memory-routing/claude-memory-routing"  "$HOME/.local/bin/claude-memory-routing"
 link "$REPO/tools/context-growth/claude-context-growth" "$HOME/.local/bin/claude-context-growth"
 link "$REPO/tools/memory-lint/claude-memory-lint"        "$HOME/.local/bin/claude-memory-lint"
+link "$REPO/tools/tool-rules/claude-tool-rules"          "$HOME/.local/bin/claude-tool-rules"
+link "$REPO/tools/index-distill/claude-index-distill"  "$HOME/.local/bin/claude-index-distill"
 # Also the pre-commit chain's PATH fallback: tools/secret-scan/git-pre-commit
 # reaches it beside itself first.
 link "$REPO/tools/context-lint/claude-context-lint"      "$HOME/.local/bin/claude-context-lint"
@@ -957,7 +964,7 @@ case "$secret_precommit_state" in
   active)
     ok "active: commits on this machine are scanned (core.hooksPath -> this checkout's git-pre-commit)" ;;
   foreign)
-    warn "NOT active from this toolkit: core.hooksPath is yours (${secret_hooks/#$HOME/~})."
+    warn "NOT active from this toolkit: core.hooksPath is yours (${secret_hooks/#$HOME/$TILDE})."
     warn "   Commits are scanned only if your own pre-commit runs claude-secret-scan."
     warn "   \"$REPO/scripts/setup-git.sh\" leaves your hooks path alone and prints the line to add." ;;
   unset)
@@ -965,7 +972,7 @@ case "$secret_precommit_state" in
     warn "   The claude-secret-scan link above is for running it by hand. To scan"
     warn "   every commit, run: \"$REPO/scripts/setup-git.sh\"" ;;
   *)
-    warn "NOT active: ${SECRET_HOOKS_DIR/#$HOME/~}/pre-commit is missing, broken or"
+    warn "NOT active: ${SECRET_HOOKS_DIR/#$HOME/$TILDE}/pre-commit is missing, broken or"
     warn "   not this checkout's. Re-run \"$REPO/scripts/setup-git.sh\" from the primary checkout." ;;
 esac
 
@@ -1731,7 +1738,7 @@ if [[ -d "$HOME/bin" ]]; then
     [[ "$target" == "$REPO"/* ]] || continue    # not ours
     [[ "${old##*/}" == "${target##*/}" ]] || continue   # a hand-made alias, not ours
     found_stale=1
-    act "removing ${old/#$HOME/~} -> $target"
+    act "removing ${old/#$HOME/$TILDE} -> $target"
     (( CHECK )) || rm -f "$old"
   done
 fi
@@ -1807,7 +1814,7 @@ for dir in "$HOME/.local/bin"; do
     # name is what made the original defect hard to read.
     is_managed_link "$entry" && continue
     found_dangling=1
-    act "removing ${entry/#$HOME/~} -> $target (target no longer in the repo)"
+    act "removing ${entry/#$HOME/$TILDE} -> $target (target no longer in the repo)"
     (( CHECK )) || rm -f "$entry"
   done
 done
@@ -1830,7 +1837,7 @@ if (( legacy_rc != 0 )); then
 else
   while IFS=$'\t' read -r legacy_kind legacy_path; do
     [[ -n "$legacy_kind" ]] || continue
-    legacy_shown="${legacy_path/#$HOME/~}"
+    legacy_shown="${legacy_path/#$HOME/$TILDE}"
     if [[ "$legacy_kind" == "owned" ]]; then
       act "removing $legacy_shown (now ships in the toolkit-core plugin)"
       if (( CHECK )); then
@@ -2282,17 +2289,17 @@ if [[ -z "$WS" ]]; then
   warn "no workspace_root configured — skipping the CLAUDE.md check"
 elif [[ -f "$WS/CLAUDE.md" ]]; then
   if grep -q "^\*\*TODO" "$WS/CLAUDE.md" 2>/dev/null || grep -q "TODO — " "$WS/CLAUDE.md" 2>/dev/null; then
-    warn "${WS/#$HOME/~}/CLAUDE.md still has TODO sections — fill them in. The"
+    warn "${WS/#$HOME/$TILDE}/CLAUDE.md still has TODO sections — fill them in. The"
     warn "   'About me' and tone parts are what make Claude useful here."
   else
-    ok "${WS/#$HOME/~}/CLAUDE.md"
+    ok "${WS/#$HOME/$TILDE}/CLAUDE.md"
   fi
   if grep -qF -e "~/.claude/build-lens" -e "~/.claude/commands" "$WS/CLAUDE.md" 2>/dev/null; then
-    warn "${WS/#$HOME/~}/CLAUDE.md still points at ~/.claude/build-lens or ~/.claude/commands, which this toolkit no longer installs."
+    warn "${WS/#$HOME/$TILDE}/CLAUDE.md still points at ~/.claude/build-lens or ~/.claude/commands, which this toolkit no longer installs."
     warn "   Those files now live in the toolkit checkout: tools/build-lens/<file> and skills/<group>/<name>/SKILL.md. Update those lines (ask Claude to)."
   fi
 else
-  warn "no CLAUDE.md at ${WS/#$HOME/~} — this is the highest-leverage file you own."
+  warn "no CLAUDE.md at ${WS/#$HOME/$TILDE} — this is the highest-leverage file you own."
   warn "   Copy the template and fill in its TODO sections:"
   warn "   cp -n \"$REPO/CLAUDE.md.template\" \"$WS/CLAUDE.md\""
 fi

@@ -1778,8 +1778,27 @@ FAKE_MODEL_GUARD = (
 )
 DENY_JSON = '{"hookSpecificOutput": {"permissionDecision": "deny"}}'
 CANARY_HEADER = "A GUARD FAILED ITS CANARY"
+TIMED_OUT_HEADER = "GUARD CANARIES NOT CHECKED (OUT OF TIME)"
 DANGER = "tools/danger-guard/claude-danger-guard"
 MODEL = "tools/model-guard/claude-model-guard"
+
+
+# The real guards on a loaded machine (load ~170 measured 2026-10-21) can miss
+# the canary budget, which is ambient state, not a verdict: those runs SKIP,
+# never pass. Only an all-timed-out result skips; any other record still
+# fails, and a regression that times out every probe is caught by the fixture
+# tests, which assert an exact verdict.
+def assert_no_canary_problems(case, found):
+    if found and all(r["got"] == lib.TIMED_OUT for r in found):
+        case.skipTest("machine too busy to finish the canaries: %r" % found)
+    case.assertEqual(found, [])
+
+
+def assert_canaries_silent(case, out):
+    if TIMED_OUT_HEADER in out and CANARY_HEADER not in out:
+        case.skipTest("machine too busy to finish the canaries:\n" + out)
+    case.assertNotIn(CANARY_HEADER, out)
+    case.assertNotIn(TIMED_OUT_HEADER, out)
 
 
 class TestCanaries(Sandbox):
@@ -1834,13 +1853,13 @@ class TestCanaries(Sandbox):
         # Builder selected, so the real model-guard canary runs; the recording
         # proves it did (a skipped canary also returns []).
         found, ran = self.run_recording(REAL_REPO, ["builder"])
-        self.assertEqual(found, [])
+        assert_no_canary_problems(self, found)
         self.assertIn("claude-model-guard", ran)
         self.assertIn("claude-danger-guard", ran)
 
     def test_the_model_canary_is_not_run_without_builder(self):
         found, ran = self.run_recording(REAL_REPO, None)
-        self.assertEqual(found, [])
+        assert_no_canary_problems(self, found)
         self.assertNotIn("claude-model-guard", ran)
         # Control: the core danger-guard canary still runs.
         self.assertIn("claude-danger-guard", ran)
@@ -1866,7 +1885,38 @@ class TestCanaries(Sandbox):
             {"guard": "claude-danger-guard", "probe": "allow", "got": "unchecked"},
         ])
 
-    def test_a_hanging_guard_is_unchecked_within_budget(self):
+    def test_the_load_skip_covers_only_an_all_timed_out_result(self):
+        """The helpers above skip on load and on nothing else: one real
+        record beside the time-outs still fails."""
+        case = unittest.TestCase()
+        late = {"guard": "g", "probe": "deny", "got": lib.TIMED_OUT}
+
+        def fails_not_skips(helper, value):
+            # SkipTest is not an AssertionError: inside assertRaises it would
+            # escape and skip THIS test, so it is caught and failed here.
+            try:
+                helper(case, value)
+            except unittest.SkipTest:
+                self.fail("%s skipped on %r" % (helper.__name__, value))
+            except AssertionError:
+                return
+            self.fail("%s passed on %r" % (helper.__name__, value))
+        with self.assertRaises(unittest.SkipTest):
+            assert_no_canary_problems(case, [late])
+        fails_not_skips(assert_no_canary_problems,
+                        [late, dict(late, probe="allow", got="allowed")])
+        with self.assertRaises(unittest.SkipTest):
+            assert_canaries_silent(case, lib.render_canaries([late]))
+        fails_not_skips(assert_canaries_silent, lib.render_canaries(
+            [late, dict(late, got=lib.UNCHECKED)]))
+        # No render prints both headers today; the helper must not skip if
+        # one ever does.
+        fails_not_skips(assert_canaries_silent,
+                        TIMED_OUT_HEADER + "\n" + CANARY_HEADER)
+        assert_no_canary_problems(case, [])
+        assert_canaries_silent(case, "")
+
+    def test_a_hanging_guard_is_timed_out_within_budget(self):
         # `exec` so the kill lands on the sleeper itself, not a shell whose
         # child would keep the pipe open.
         repo = self.make_canary_repo(danger_body="#!/bin/sh\nexec sleep 30\n")
@@ -1877,7 +1927,7 @@ class TestCanaries(Sandbox):
         self.assertLess(elapsed, 5)
         danger = [r for r in found if r["guard"] == "claude-danger-guard"]
         self.assertEqual(len(danger), 2)
-        self.assertTrue(all(r["got"] == "unchecked" for r in danger), found)
+        self.assertTrue(all(r["got"] == lib.TIMED_OUT for r in danger), found)
 
     def test_an_exhausted_deadline_runs_nothing(self):
         marker = os.path.join(self.tmp, "ran")
@@ -1885,7 +1935,7 @@ class TestCanaries(Sandbox):
         repo = self.make_canary_repo(danger_body=body, model_body=body)
         found = lib.canary_problems(repo, time.monotonic() - 1)
         self.assertEqual(len(found), 4)
-        self.assertTrue(all(r["got"] == "unchecked" for r in found), found)
+        self.assertTrue(all(r["got"] == lib.TIMED_OUT for r in found), found)
         self.assertFalse(os.path.exists(marker), "a guard ran past the deadline")
 
     def test_canaries_write_no_files(self):
@@ -1893,7 +1943,7 @@ class TestCanaries(Sandbox):
         os.makedirs(quiet_home)
         with mock.patch.dict(os.environ, self.hermetic_env(
                 HOME=quiet_home, USERPROFILE=quiet_home)):
-            self.assertEqual(self.probes(REAL_REPO), [])
+            assert_no_canary_problems(self, self.probes(REAL_REPO))
         self.assertEqual(os.listdir(quiet_home), [])
 
     def test_model_canary_ignores_ambient_definitions(self):
@@ -1915,7 +1965,7 @@ class TestCanaries(Sandbox):
     def test_escape_hatches_do_not_disarm_the_canary(self):
         with mock.patch.dict(os.environ, self.hermetic_env(
                 MODEL_GUARD_ALLOW="1", DANGER_ALLOW="1")):
-            self.assertEqual(self.probes(REAL_REPO), [])
+            assert_no_canary_problems(self, self.probes(REAL_REPO))
 
     def test_verdict_parsing(self):
         table = (
@@ -1967,7 +2017,7 @@ class TestCanaries(Sandbox):
         out = self.run_hook(event="SessionStart", extra_env={
             "HOME": self.home, "USERPROFILE": self.home,
             "PYTHONDONTWRITEBYTECODE": "1"})
-        self.assertNotIn(CANARY_HEADER, out)
+        assert_canaries_silent(self, out)
         self.assertNotIn("Guards the plugin no longer runs", out)
 
     def test_session_start_on_the_real_repo_is_silent_with_builder_selected(self):
@@ -1986,7 +2036,7 @@ class TestCanaries(Sandbox):
                "HOME": self.home, "USERPROFILE": self.home,
                "PYTHONDONTWRITEBYTECODE": "1"}
         out = self.run_hook(event="SessionStart", extra_env=env)
-        self.assertNotIn(CANARY_HEADER, out)
+        assert_canaries_silent(self, out)
         self.assertNotIn("Guards the plugin no longer runs", out)
         # Positive control: through the hook, this config runs the model canary,
         # so a disarmed model guard is reported...
@@ -2101,7 +2151,7 @@ class TestStatefulCanaries(Sandbox):
         verdict on both probes, and the recording proves all six ran."""
         self.requires_ps()
         found, ran = self.scenario()
-        self.assertEqual(found, [])
+        assert_no_canary_problems(self, found)
         self.assertEqual(sorted(ran), sorted(self.NAMES * 2))
 
     def test_a_disarmed_stateful_guard_is_reported(self):
@@ -2173,7 +2223,7 @@ class TestStatefulCanaries(Sandbox):
         found, _ran = self.scenario(env={"WORKTREE_ALLOW": "1",
                                          "WT_ALLOW_MAIN": "1",
                                          "CLAIM_ALLOW": "1"})
-        self.assertEqual(found, [])
+        assert_no_canary_problems(self, found)
 
     def test_an_inherited_git_dir_does_not_leak_into_the_fixture(self):
         """GIT_DIR in the environment must not point the fixture's git calls
@@ -2181,17 +2231,56 @@ class TestStatefulCanaries(Sandbox):
         self.requires_ps()
         found, _ran = self.scenario(env={
             "GIT_DIR": os.path.join(self.tmp, "not-a-repo")})
-        self.assertEqual(found, [])
+        assert_no_canary_problems(self, found)
 
     def test_a_spent_deadline_runs_no_stateful_guard(self):
-        """No budget left: every probe is recorded unchecked, no guard runs."""
+        """No budget left: every probe is recorded timed-out, no guard runs."""
         marker = os.path.join(self.tmp, "ran")
         repo = TestCoverage.make_plugin(self, builder=True)
         self.set_guards(repo, self.marker_guards(marker))
         found, _ran = self.scenario(repo=repo, deadline=-1)
         self.assertEqual(len(found), 6, found)
-        self.assertTrue(all(r["got"] == "unchecked" for r in found), found)
+        self.assertTrue(all(r["got"] == lib.TIMED_OUT for r in found), found)
         self.assertFalse(os.path.exists(marker), "a guard ran past the deadline")
+
+    def test_a_built_fixture_with_no_probe_budget_runs_nothing(self):
+        """The fixture is built (on a generous deadline of its own) but the
+        run's budget leaves no probe any time: all six are timed-out and no
+        guard runs. Control: the same fixture with budget runs all six."""
+        real_probes = lib._stateful_probes
+
+        def built_anyway(wanted, root, _deadline):
+            return real_probes(wanted, root, time.monotonic() + 20)
+        patch = mock.patch.object(lib, "_stateful_probes", built_anyway)
+        found, ran = self.scenario(owner=False, patches=(patch,),
+                                   deadline=lib.CANARY_MARGIN_SECONDS / 2)
+        self.assertEqual(len(found), 6, found)
+        self.assertEqual({r["got"] for r in found}, {lib.TIMED_OUT})
+        self.assertEqual(ran, [])
+        _found, ran = self.scenario(owner=False, patches=(
+            mock.patch.object(lib, "_stateful_probes", built_anyway),))
+        self.assertEqual(len(ran), 6, ran)
+
+    def test_a_fixture_timeout_is_timed_out_and_a_failure_unchecked(self):
+        """The fixture's two ways to fail get opposite records: a step that
+        hits its cap (or has no budget) is TIMED_OUT, one that fails is
+        UNCHECKED. Through _fixture_step itself, then through the whole run."""
+        with self.assertRaises(lib._FixtureTimeout):
+            lib._fixture_step(["true"], time.monotonic() - 1)
+        with self.assertRaises(lib._FixtureTimeout):
+            lib._fixture_step(["sleep", "30"],
+                              time.monotonic() + lib.CANARY_MARGIN_SECONDS + 0.3)
+        with self.assertRaises(lib._FixtureError) as failed:
+            lib._fixture_step(["false"], time.monotonic() + 20)
+        self.assertNotIsInstance(failed.exception, lib._FixtureTimeout)
+        for raised, expected in ((lib._FixtureTimeout("t"), lib.TIMED_OUT),
+                                 (lib._FixtureError("f"), lib.UNCHECKED)):
+            with self.subTest(expected=expected):
+                found, ran = self.scenario(patches=(mock.patch.object(
+                    lib, "_stateful_probes", side_effect=raised),))
+                self.assertEqual(len(found), 6, found)
+                self.assertEqual({r["got"] for r in found}, {expected})
+                self.assertEqual(ran, [])
 
     def test_session_claim_disabled_in_config_is_skipped(self):
         """session_claim.enabled=false is a visible choice. Control: test 4 is
@@ -2240,7 +2329,7 @@ class TestStatefulCanaries(Sandbox):
         spaced = os.path.join(self.tmp, "has space")
         os.makedirs(spaced)
         found, _ran = self.scenario(parent=spaced)
-        self.assertEqual(found, [])
+        assert_no_canary_problems(self, found)
 
     # --- rendering and plumbing ---------------------------------------------
 
@@ -2258,6 +2347,85 @@ class TestStatefulCanaries(Sandbox):
         self.assertIn("could not tell which session", mixed)
         self.assertIn("claude-danger-guard let a harmless canary", mixed)
         self.assertIn(lib._REPAIR_ADVICE, mixed)
+
+    def test_render_timed_out(self):
+        """Only timed-out records: its own header and advice, never FAILED or
+        the repair advice. Any other record alongside brings FAILED back, with
+        the advice that record calls for."""
+        late = {"guard": self.CLAIM_NAME, "probe": "deny", "got": lib.TIMED_OUT}
+        out = lib.render_canaries([late, dict(late, probe="allow")])
+        self.assertIn(TIMED_OUT_HEADER, out)
+        self.assertIn("ran out of time", out)
+        self.assertIn(lib._TIMED_OUT_ADVICE, out)
+        self.assertNotIn(CANARY_HEADER, out)
+        self.assertNotIn(lib._REPAIR_ADVICE, out)
+        for other, advice in (
+                ({"guard": "claude-danger-guard", "probe": "deny",
+                  "got": lib.UNCHECKED}, lib._REPAIR_ADVICE),
+                ({"guard": "claude-danger-guard", "probe": "deny",
+                  "got": "allowed"}, lib._REPAIR_ADVICE),
+                ({"guard": self.CLAIM_NAME, "probe": "deny",
+                  "got": "unidentified", "detail": "owner unresolved"},
+                 "Restoring the checkout will not fix this")):
+            with self.subTest(got=other["got"]):
+                mixed = lib.render_canaries([late, other])
+                self.assertIn(CANARY_HEADER, mixed)
+                self.assertNotIn(TIMED_OUT_HEADER, mixed)
+                self.assertIn("ran out of time", mixed)
+                self.assertIn(advice, mixed)
+                self.assertNotIn(lib._TIMED_OUT_ADVICE, mixed)
+                if other["got"] == "unidentified":
+                    self.assertNotIn(lib._REPAIR_ADVICE, mixed)
+
+    def test_render_unchecked_says_no_verdict(self):
+        """A crashed guard is not a busy machine: FAILED and repair advice."""
+        out = lib.render_canaries([{"guard": "claude-danger-guard",
+                                    "probe": "deny", "got": lib.UNCHECKED}])
+        self.assertIn(CANARY_HEADER, out)
+        self.assertIn("returned no verdict", out)
+        self.assertIn(lib._REPAIR_ADVICE, out)
+        self.assertNotIn("ran out of time", out)
+
+    def test_an_unbuildable_fixture_never_claims_a_guard_crashed(self):
+        """No temp dir (tmp_parent is a regular file): no guard runs, and the
+        notice blames the fixture, not the guards. Control: the same records
+        without their cause would read as a crash."""
+        parent = os.path.join(self.tmp, "not-a-directory")
+        with open(parent, "w") as handle:
+            handle.write("x")
+        found, ran = self.scenario(parent=parent)
+        self.assertEqual(ran, [])
+        self.assertEqual(len(found), 6, found)
+        self.assertEqual({r["got"] for r in found}, {lib.UNCHECKED})
+        out = lib.render_canaries(found)
+        self.assertEqual(out.count("test fixture could not be built"), 6, out)
+        self.assertNotIn("crashed", out)
+        bare = [dict(r) for r in found]
+        for record in bare:
+            record.pop("cause")
+        self.assertIn("crashed", lib.render_canaries(bare))
+
+    def test_a_spent_hook_budget_reports_timed_out_not_failed(self):
+        """The 2026-10-21 load failure, reproduced without load: the budget
+        seam leaves no time for any probe, and the hook says the canaries
+        were NOT CHECKED rather than that a guard FAILED. Control: the same
+        run with the full budget is silent (or skips under load)."""
+        self.requires_ps()
+        env = self.hook_env()
+        # A budget equal to the per-probe margin: every probe's timeout is
+        # negative by construction, so none runs, deterministically. The rest
+        # of the hook must still fit it; when the watchdog fires first, that is
+        # load again, so skip.
+        spent = self.run_hook(event="SessionStart", extra_env=dict(
+            env, TOOLKIT_INTEGRITY_RUN_BUDGET=str(lib.CANARY_MARGIN_SECONDS)))
+        if TIMED_OUT_HEADER not in spent and "did NOT finish" in spent:
+            self.skipTest("the hook's watchdog fired first:\n" + spent)
+        self.assertIn(TIMED_OUT_HEADER, spent)
+        self.assertIn(self.CLAIM_NAME, spent)
+        self.assertNotIn(CANARY_HEADER, spent)
+        self.assertNotIn(lib._REPAIR_ADVICE, spent)
+        full = self.run_hook(session="s2", event="SessionStart", extra_env=env)
+        assert_canaries_silent(self, full)
 
     def test_run_canary_extra_env_reaches_the_guard(self):
         """extra_env is passed to the guard; without it the guard allows."""
@@ -2684,16 +2852,8 @@ class TestProfilesThroughTheExecutable(ProfileFixture):
 
 # ================================================================ hook-fires audit
 
-class TestFiresAudit(Sandbox):
-    """SessionStart audit: earlier sessions that ran shell commands with no
-    `.fired` heartbeat record, judged from their transcripts."""
-
-    def setUp(self):
-        super().setUp()
-        self.cfg = os.path.join(self.tmp, "cfg")
-        self.audit_state = os.path.join(
-            self.home, ".claude", "claude-code-toolkit", "heartbeat-audit.json")
-        self.write_era()
+class AuditFixtures:
+    """Transcript, heartbeat and hook-run helpers shared by the two audits."""
 
     def write_era(self):
         when = time.time() - 3 * 86400
@@ -2701,9 +2861,10 @@ class TestFiresAudit(Sandbox):
         install_record.finish(install_record.record_path(self.home),
                               "/checkout", "abc123", ["core"], stamp)
 
-    def transcript(self, sid, project="proj-a", tools=(("Bash", False, "ok"),)):
+    def transcript(self, sid, project="proj-a", tools=(("Bash", False, "ok"),),
+                   when=None, command="ls"):
         """A real-shape transcript, started a day ago. Returns its path."""
-        when = time.time() - 86400
+        when = time.time() - 86400 if when is None else when
         start = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(when))
         folder = os.path.join(self.cfg, "projects", project)
         os.makedirs(folder, exist_ok=True)
@@ -2715,7 +2876,7 @@ class TestFiresAudit(Sandbox):
             lines.append({"type": "assistant", "timestamp": start,
                           "message": {"role": "assistant", "content": [
                               {"type": "tool_use", "id": tool_id, "name": name,
-                               "input": {"command": "ls"}}]}})
+                               "input": {"command": command}}]}})
             lines.append({"type": "user", "timestamp": start,
                           "message": {"role": "user", "content": [
                               {"type": "tool_result", "tool_use_id": tool_id,
@@ -2735,6 +2896,18 @@ class TestFiresAudit(Sandbox):
         env = {"CLAUDE_CONFIG_DIR": self.cfg}
         env.update(extra_env or {})
         return self.run_hook(session=session, event=event, extra_env=env, **kwargs)
+
+
+class TestFiresAudit(AuditFixtures, Sandbox):
+    """SessionStart audit: earlier sessions that ran shell commands with no
+    `.fired` heartbeat record, judged from their transcripts."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = os.path.join(self.tmp, "cfg")
+        self.audit_state = os.path.join(
+            self.home, ".claude", "claude-code-toolkit", "heartbeat-audit.json")
+        self.write_era()
 
     def can_deny(self):
         return os.name != "nt" and os.geteuid() != 0
@@ -2842,6 +3015,226 @@ class TestFiresAudit(Sandbox):
         out = self.start("now-1")
         self.assertNotIn("did not fire", out)
         self.assertFalse(os.path.exists(self.audit_state))
+
+
+# ================================================================ tool-rules audit
+
+class TestToolRulesAudit(AuditFixtures, Sandbox):
+    """SessionStart audit: earlier sessions where a live tool-rules page should
+    have loaded and left no `tool-rules-state` record."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg = os.path.join(self.tmp, "cfg")
+        self.ws = os.path.join(self.tmp, "ws")
+        self.pages = os.path.join(self.ws, ".claude", "tool-rules")
+        self.rules_state = os.path.join(self.tmp, "rules-state")
+        os.makedirs(self.rules_state)
+        self.config = os.path.join(self.tmp, "toolkit.json")
+        with open(self.config, "w") as handle:
+            json.dump({"workspace_root": self.ws}, handle)
+        self.audit_state = os.path.join(
+            self.home, ".claude", "claude-code-toolkit", "tool-rules-audit.json")
+        self.fires_state = os.path.join(
+            self.home, ".claude", "claude-code-toolkit", "heartbeat-audit.json")
+        self.env = {"CLAUDE_TOOLKIT_CONFIG": self.config,
+                    "CLAUDE_TOOL_RULES_STATE_DIR": self.rules_state,
+                    "CLAUDE_CONFIG_DIR": self.cfg,
+                    "CLAUDE_CODE_SESSION_ID": ""}
+        self.write_era()
+
+    def page(self, name="a.md", patterns=("Bash(ls*)",)):
+        os.makedirs(self.pages, exist_ok=True)
+        path = os.path.join(self.pages, name)
+        with open(path, "w") as handle:
+            handle.write("---\ntools:\n%s\n---\n\nRULES\n"
+                         % "\n".join("  - %s" % p for p in patterns))
+        when = time.time() - 2 * 86400
+        os.utime(path, (when, when))
+        if not os.path.exists(self.audit_state):
+            self.seed_era(time.time() - 3 * 86400)
+        return path
+
+    def seed_era(self, era):
+        """An audit era older than the fixture transcripts, as if the audit had
+        been running for a while; tr12 covers the first run without one."""
+        os.makedirs(os.path.dirname(self.audit_state), exist_ok=True)
+        with open(self.audit_state, "w") as handle:
+            json.dump({"era": era}, handle)
+
+    def go(self, session, extra_env=None, **kwargs):
+        env = dict(self.env)
+        env.update(extra_env or {})
+        return self.start(session, extra_env=env, **kwargs)
+
+    def state_file(self, sid):
+        with open(os.path.join(self.rules_state, sid + ".json"), "w") as handle:
+            json.dump({"emitted": []}, handle)
+
+    def cli(self, extra_env=None):
+        env = dict(os.environ)
+        env.update(self.env)
+        env["TOOLKIT_INTEGRITY_HOME"] = self.home
+        env.update(extra_env or {})
+        return subprocess.run([sys.executable, HOOK, "--tool-rules-audit"],
+                              stdin=subprocess.DEVNULL, capture_output=True,
+                              text=True, env=env, timeout=60)
+
+    def exe(self, payload, args=()):
+        exe = os.path.join(os.path.dirname(TOOL_DIR), "tool-rules",
+                           "claude-tool-rules")
+        env = dict(os.environ)
+        env.update(self.env)
+        env["HOME"] = self.home
+        done = subprocess.run([sys.executable, exe] + list(args),
+                              input=json.dumps(payload), capture_output=True,
+                              text=True, env=env, timeout=30)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return done
+
+    def test_tr1_named_once(self):
+        sid = "aaaaaaaa-1111-2222-3333-444444444444"
+        self.page()
+        self.transcript(sid)
+        self.fired(sid)
+        first = self.go("now-1")
+        self.assertIn("Tool-rules pages did not load in 1", first)
+        self.assertIn("aaaaaaaa", first)
+        self.assertIn("a.md", first)
+        self.assertNotIn(sid[:8], self.go("now-2"))
+
+    def test_tr2_state_present_is_quiet(self):
+        sid = "bbbbbbbb-1111-2222-3333-444444444444"
+        self.page()
+        self.transcript(sid)
+        self.fired(sid)
+        self.state_file(sid)
+        self.assertNotIn("did not load", self.go("now-1"))
+
+    def test_tr3_no_pages_is_inert(self):
+        sid = "cccccccc-1111-2222-3333-444444444444"
+        self.transcript(sid)
+        self.fired(sid)
+        self.assertNotIn("did not load", self.go("now-1"))
+        self.assertFalse(os.path.exists(self.audit_state))
+
+    def test_tr4_crash_is_announced(self):
+        out = self.go("now-1", extra_env={
+            "TOOLKIT_INTEGRITY_TOOL_RULES_AUDIT_CRASH": "1"})
+        self.assertIn("tool-rules audit crashed (RuntimeError)", out)
+
+    def test_tr5_fires_audit_state_survives(self):
+        unfired = "dddddddd-1111-2222-3333-444444444444"
+        flagged = "eeeeeeee-1111-2222-3333-444444444444"
+        self.page()
+        self.transcript(unfired)
+        self.transcript(flagged)
+        self.fired(flagged)
+        out = self.go("now-1")
+        self.assertIn("did not fire", out)
+        self.assertIn("did not load", out)
+        with open(self.fires_state) as handle:
+            fires = json.load(handle)
+        for key in ("judged", "reported", "strikes"):
+            self.assertIn(key, fires)
+        self.assertIn(unfired, fires["reported"])
+        with open(self.audit_state) as handle:
+            rules = json.load(handle)
+        self.assertIn(flagged, rules["reported"])
+
+    def test_tr6_third_strike(self):
+        sid = "ffffffff-1111-2222-3333-444444444444"
+        self.page()
+        self.transcript(sid)
+        self.fired(sid)
+        slow = {"TOOLKIT_INTEGRITY_AUDIT_SECONDS": "0"}
+        outputs = [self.go("now-%d" % n, extra_env=slow) for n in (1, 2, 3, 4)]
+        for index in (0, 1, 3):
+            self.assertNotIn("ffffffff", outputs[index])
+        self.assertIn("ffffffff", outputs[2])
+        self.assertIn("could not be checked in 3 tries", outputs[2])
+        self.assertIn("claude-toolkit-integrity --tool-rules-audit", outputs[2])
+        self.assertTrue(all("did not load" not in out for out in outputs))
+
+    def test_tr7_user_prompt_submit_does_not_audit(self):
+        sid = "99999999-1111-2222-3333-444444444444"
+        self.page()
+        with open(self.audit_state) as handle:
+            seeded = handle.read()
+        self.transcript(sid)
+        self.fired(sid)
+        out = self.go("now-1", event="UserPromptSubmit")
+        self.assertNotIn("did not load", out)
+        with open(self.audit_state) as handle:
+            self.assertEqual(handle.read(), seeded)  # no audit ran, nothing saved
+
+    def test_tr8_compaction_end_to_end(self):
+        sid = "88888888-1111-2222-3333-444444444444"
+        self.page()
+        self.transcript(sid)
+        self.fired(sid)
+        done = self.exe({"session_id": sid, "tool_name": "Bash",
+                         "tool_input": {"command": "ls"}})
+        self.assertIn("RULES", done.stdout)
+        self.exe({"session_id": sid, "source": "compact"}, args=("--reset",))
+        out = self.go("now-1")
+        self.assertNotIn("did not load", out)
+        self.assertNotIn("88888888", out)
+
+    def test_tr9_manual_recovery_checks_a_struck_out_session(self):
+        sid = "77777777-1111-2222-3333-444444444444"
+        self.page()
+        self.transcript(sid)
+        self.fired(sid)
+        slow = {"TOOLKIT_INTEGRITY_AUDIT_SECONDS": "0"}
+        for n in (1, 2, 3):
+            self.go("now-%d" % n, extra_env=slow)
+        done = self.cli(extra_env=slow)
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn("77777777", done.stdout)
+        self.assertIn("matching call(s), no tool-rules record", done.stdout)
+        self.state_file(sid)
+        done = self.cli(extra_env=slow)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("0 flagged", done.stdout)
+
+    def test_tr10_manual_mode_inactive(self):
+        done = self.cli()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("no live tool-rules pages", done.stdout)
+
+    def test_tr11_calls_before_the_era_are_not_judged(self):
+        """A call before the audit's era may predate the durable hook (its
+        compact reset deleted the record), so neither mode names it."""
+        before = "88888888-1111-2222-3333-444444444444"
+        after = "99999999-1111-2222-3333-444444444444"
+        self.page()
+        self.seed_era(time.time() - 3600)
+        self.transcript(before)                       # a day ago
+        self.transcript(after, when=time.time() - 60)
+        self.fired(before)
+        self.fired(after)
+        done = self.cli()
+        self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+        self.assertIn(after[:8], done.stdout)
+        self.assertNotIn(before[:8], done.stdout)
+        notice = self.go("now-1")
+        self.assertIn("did not load in 1", notice)
+        self.assertIn(after[:8], notice)
+        self.assertNotIn(before[:8], notice)
+
+    def test_tr12_first_run_records_its_era(self):
+        sid = "aaaaaaab-1111-2222-3333-444444444444"
+        self.page()
+        os.remove(self.audit_state)
+        self.transcript(sid)                          # a day ago
+        self.fired(sid)
+        self.assertNotIn("did not load", self.go("now-1"))
+        with open(self.audit_state) as handle:
+            era = json.load(handle)["era"]
+        self.assertLess(abs(era - time.time()), 300)
+        self.assertNotIn("did not load", self.go("now-2"))
+
 
 
 if __name__ == "__main__":

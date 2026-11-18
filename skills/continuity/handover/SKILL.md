@@ -1,10 +1,12 @@
 ---
 name: handover
-description: Write a thread handover document and recommend starting a new session
+description: Hand this thread over to a new session — a handover document when one is needed, and always a paste-ready kickoff for the next thread
 ---
 
-Write a handover document for this thread so the next one can pick it up without
-re-deriving what happened.
+Hand this thread over so the next one can pick it up without re-deriving what
+happened. **Every run ends with something to paste into a new thread**: a
+one-line pointer to a handover document, or, when §3 finds no document is
+needed, a short kickoff prompt that stands on its own.
 
 **This template is the single source of truth for handover format.** The watch
 hook deliberately does not restate it.
@@ -95,9 +97,10 @@ work** unless you can say what you actually changed there. Name the checkout as
 unverified, or write the State section as prose about what you did and where,
 which for a thread spanning several repos, or none, is the truthful shape anyway.
 
-**This block skips a dead claim; it must never delete one.** The claims file is
-written under a lock by a safety hook, a stale-looking record can belong to a
-live session, and an unlocked write from here races every peer reading it.
+**This block skips a dead claim; it must never delete one.** A stale-looking
+record can belong to a live session, and an unlocked write from here races every
+peer reading the claims file. `references/rationale.md` has the reasoning behind
+this and the other §0 rules.
 
 ### Then say what happens to the worktree
 
@@ -118,10 +121,8 @@ leaves the report on its own evidence, which is the safe default.
 | per-directory notes injected at session start (a memory plugin's digest, for example) | they are per-directory, not per-session, so they carry other windows' work | your own transcript |
 | sibling files in `<handover_dir>` | every session writes there; their open items are not yours | only what this thread did |
 
-The failure mode is quiet. Every one of these returns a plausible, confidently
-formatted answer, and the next thread has no way to tell a borrowed branch name
-from a real one. Naming the checkout in the State section is what makes it
-checkable.
+The failure mode is quiet: every one of these returns a plausible answer.
+Naming the checkout in the State section is what makes it checkable.
 
 ## 1. Identify the mission, then choose the path
 
@@ -178,11 +179,9 @@ nothing else; `mission_status` in a handover is inert to it. A spec flipped to
 once it clears the age floor and skipped by every later run, and the rows go
 with it. `status: live` holds it at any age.
 
-**A missing section fails this check; it does not pass it.** A spec that files
-its human work under some other heading gives the check nothing to read, and
-an absent section is vacuously empty. If the section is not there, you cannot
-satisfy this rule: find where that mission's human work is written down, move
-it under the right heading, and check it then.
+**A missing section fails this check; it does not pass it.** An absent section
+is vacuously empty. If it is not there, find where that mission's human work is
+written down, move it under the right heading, and check it then.
 
 ### The path
 
@@ -274,54 +273,58 @@ open for the mission (the spec's Backlog), this thread's own loose end (Open
 work), or deliberately dropped (Open work, with the reason). There is no fifth
 outcome.
 
+### Then: decide whether this thread needs a document at all
+
+After §2 and the reconciliation above, most of what a handover used to carry
+already lives in a durable file. Sometimes nothing is left that only this
+document could hold, and a document restating the spec is a second copy that
+will drift from it. **Skip the document only when every one of these holds:**
+
+- **Nothing half-done lives only in this thread.** §0 printed `dirty: 0`, and
+  every commit in its range is pushed to a branch or a PR, or the thread
+  touched no repo at all. Uncommitted or unpushed work always gets a document.
+- **Open work is empty.** Everything outstanding went to the mission spec's
+  Backlog or `## Waiting on a human`, or to memory. If reconciliation put even
+  one item in *Open work*, write the document.
+- **No gotcha or corrected wrong belief is left over.** §2 routed each one to
+  memory or a repo's `CLAUDE.md`; nothing build-specific is waiting for the
+  *Credentials, paths, and gotchas* or *Corrected wrong beliefs* sections.
+- **The next step is one sentence that points at a durable file**: a spec row,
+  an open PR, a plan task. If explaining it takes a paragraph, that paragraph
+  is the document.
+
+**This is not a way to skip §2.** The test runs *after* the draining and
+reconciliation, and it passes only because they ran. When unsure, write the
+document: a short document costs a file, a missing one costs the next thread
+everything it cannot re-derive.
+
+**If it passes, write no file and skip §4**: there is nothing to register, so
+SessionStart will not point anyone at this thread. The kickoff prompt in §5 is
+the only carrier, which is acceptable precisely because the test above
+guarantees everything it points at is durable. Go to §5.
+
+Otherwise, write the document with the sections below.
+
 ### Then: the sections
 
 Use these sections in this order. Omit a section only if it would be empty.
+Read `references/sections.md` before writing items 1–8: it says what each must
+contain, and why. Item 9 is here in full.
 
-1. **Epistemic header** (mandatory, first thing in the file). State that this
-   was written from possibly-compacted context, that file:line references are
-   leads to confirm rather than facts to assert, and that **any claim about
-   what the user has or has not said must be checked against memory before it
-   is acted on.** This is the most valuable part of the document; do not drop
-   it or soften it.
-2. **Mission: what this chain is for, and whether it moved.** Three lines, and
-   they are not a summary of the thread:
-   - the mission, and the path to the spec holding its backlog;
-   - whether **this thread** moved it: shipped it, advanced it, or did not
-     touch it;
-   - if `mission_status: abandoned`, why, and **who decided**. Never record
-     that on your own judgement; a mission is abandoned by the user, not by a
-     thread that ran out of road.
-
-   **A thread that spent every token on discovered side work still writes "the
-   mission did not move" here.** Describing a productive detour reads as
-   progress, and the next thread has no way to tell the difference.
-3. **State**: what is done, merged, and live. **Name the checkout §0 resolved,
-   then the branch and commit**; the checkout is what lets the next thread tell
-   your branch from others open in the same tree, and stating it makes the rest
-   of this section falsifiable. Test counts, measured not estimated. If you did
-   not run the tests in this thread, say so rather than quoting a remembered
-   number.
-4. **Immediate next step**: the single thing the next thread should do first,
-   and what it is blocked on. **Say whether it serves the mission or the
-   detour.** Both are legitimate answers; leaving it unsaid is not. A chain
-   that never returns to the mission gets there one defensible next step at a
-   time. If the answer is the detour, say what it buys and what has to be true
-   before the mission resumes.
-5. **Standing instructions, as pointers, not content.** These were written to
-   memory in §2. List them in one line each so the next thread knows they
-   exist, and name the memory that holds each. Do not restate the reasoning.
-6. **Credentials, paths, and gotchas**: the non-obvious operational details.
-   Never a secret's value; say where it lives.
-7. **Open work: this thread's leftovers only, in priority order.** The
-   mission's backlog is in the mission spec; link it, do not copy it, and do
-   not re-rank it here. What belongs here is what *this* thread left
-   unfinished and what it inherited and deliberately dropped, the latter with
-   its reason.
-8. **Corrected wrong beliefs**: anything asserted in this thread that turned
-   out to be false, and how it was caught. If it is a fact about a repo or the
-   harness rather than about this thread, put it in that repo's `CLAUDE.md`
-   and link it from here.
+1. **Epistemic header** (mandatory, first thing in the file): written from
+   possibly-compacted context, file:line references are leads, and **any claim
+   about what the user has or has not said must be checked against memory before
+   it is acted on.**
+2. **Mission: what this chain is for, and whether it moved.** **A thread that
+   spent every token on discovered side work still writes "the mission did not
+   move" here.**
+3. **State**: **Name the checkout §0 resolved, then the branch and commit**;
+   test counts measured, not estimated.
+4. **Immediate next step**: **Say whether it serves the mission or the detour.**
+5. **Standing instructions, as pointers, not content.**
+6. **Credentials, paths, and gotchas**: never a secret's value.
+7. **Open work: this thread's leftovers only, in priority order.**
+8. **Corrected wrong beliefs**
 9. **Escape hatch note**: state that this file is **moved into
    `<handover_dir>/archive/handovers/`** automatically once its grace period
    passes after the session that *attaches* it, and that it should be moved
@@ -349,10 +352,9 @@ Use these sections in this order. Omit a section only if it would be empty.
    PY
    ```
 
-   Write the values it prints. Say plainly that the day count is the one that
-   decides in practice (with several windows open the session count is spent
-   almost at once), so the note reads as a deadline in days, not as two
-   conditions a reader has to reason about.
+   Write the values it prints, and say the day count is the one that
+   decides in practice (several open windows spend the session count almost at
+   once), so the note reads as a deadline in days.
 
 ### Never assert what the user has not said
 
@@ -366,9 +368,7 @@ verifiable thing in the document: you cannot read their other threads.
 - **Write instead:** "Open question, not answered *in this thread*. Check
   memory first; ask only if genuinely absent."
 
-Re-asking an answered question costs the user's patience and their trust that
-you retain anything; leaving a real question unasked costs one round-trip. Bias
-toward checking, not chasing.
+Bias toward checking, not chasing; `references/rationale.md` says why.
 
 Model the tone and structure on `tools/thread-handover/reference-example.md`
 in the toolkit checkout.
@@ -415,10 +415,9 @@ print("registered:", path)
 PY
 ```
 
-Substitute the real path. Everything else resolves itself: the handover
-directory comes from config (the snippet prints it), the toolkit location from
-the plugin root, and the session id from the environment. The created id
-decides whether a session may consume its own handover, so it matters.
+Substitute the real path. Everything else resolves itself: the directory from
+config, the toolkit location from the plugin root, and the session id (which
+decides whether a session may consume its own handover) from the environment.
 
 Registration is what makes the next session get *pointed at* the document and
 cleaned up afterwards. **A handover you write but do not register is
@@ -432,19 +431,19 @@ passes. `references/pickup.md` has the full lifecycle; read it if the user asks
 how pickup or retirement works.
 
 **Run every one of this skill's shell blocks in the main loop; never delegate
-them to a subagent.** A subagent's Bash cwd resets to the primary checkout on
-each call, so anything reading cwd describes the wrong worktree. And
-`CLAUDE_CODE_SESSION_ID` is set per session *including subagents*, so a
-delegated block reads the subagent's id instead of the thread's: the snooze
-writes to a state file the hook never reads, and registration stamps a
-`created_session_id` that does not match the thread, which would let this
-session consume its own handover on the next compact.
+them to a subagent.** A subagent's cwd and `CLAUDE_CODE_SESSION_ID` both differ
+from the thread's; `references/rationale.md` has what each breaks.
 
 ## 5. Report back
 
+**Both shapes end the same way: a fenced block the user pastes into a new
+thread.** It comes last and is never buried under the summary.
+
+### When you wrote a document
+
 Summarize what the document covers in two or three lines. Then end with **a
 single copy-pasteable line, on its own, in a fenced block**; that line is the
-handover. Do not bury it under the summary:
+handover:
 
 ```
 Continue from /Users/you/Work/handovers/2026-08-14-billing-api--rate-limits-handover.md
@@ -459,6 +458,16 @@ every client and marks the handover consumed (`references/pickup.md` says why).
 Recommend they start a **new** thread and paste that line. New matters:
 SessionStart also fires on resume and compact, which keep the same session id,
 and a session is never offered a handover it created itself.
+
+### When §3 found no document was needed
+
+Say so in one line, with the reason, then end with **a kickoff prompt in a
+fenced block**, written so a fresh thread can start from it with no other
+context. Read `references/kickoff-prompt.md` first: it has the five-line shape
+with an example, and what each line is for. In short, the prompt carries the
+mission slug and spec path, §0's scoped state, the first step (mission or
+detour), standing-instruction pointers, and the shortened epistemic header. One
+item per line, under ten lines; anything longer needed the document.
 
 **Do not end the session yourself**; that is their call.
 

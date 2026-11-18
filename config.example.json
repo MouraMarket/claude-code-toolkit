@@ -60,6 +60,18 @@
     "a root and silently widening what may be deleted."
   ],
 
+  "tool_rules": {
+    "max_bytes": 9500,
+    "//max_bytes": [
+      "Tool-rules pages live in <workspace_root>/.claude/tool-rules/. There is no",
+      "directory key: the hook is inert without workspace_root.",
+      "Default 9500; absent (or not a positive integer) means 9500. The harness",
+      "drops hook output somewhere above ~10KB (a 9,871-char injection arrived",
+      "whole and a 10.9KB one did not). An over-cap page emits an overage line,",
+      "never truncated text."
+    ]
+  },
+
   "auto_memory": {
     "unify": true,
     "//unify": [
@@ -367,7 +379,7 @@
     ],
 
     "max_lines": 60,
-    "//max_lines": "Cap on injected digest lines. Defaults to 60. Over the cap the block is WITHHELD ENTIRELY and the overage is printed in its place — the session gets no map at all until the block is trimmed. That is deliberate: until 2026-09-14 the block was trimmed to the cap with a note appended, and the live map bled its tail because a trimmed block reads exactly like a complete one. Losing one session's map is loud; losing its tail is not. Trim the block rather than raising this number — it is paid for in every session.",
+    "//max_lines": "Cap on injected digest lines. Defaults to 60. Over the cap the block is WITHHELD ENTIRELY and the overage is printed in its place — the session gets no map at all until the block is trimmed. That is deliberate: until 2026-09-14 the block was trimmed to the cap with a note appended, and the live map bled its tail because a trimmed block reads exactly like a complete one. Losing one session's map is loud; losing its tail is not. Trim the block rather than raising this number — it is paid for in every session. A second, fixed limit sits beside it: if everything the hook prints passes 9,500 characters (digest_lib.HARNESS_MAX_CHARS), the output is withheld the same way, because past ~10,000 the harness shows the model only a 2KB preview. No key moves that one.",
 
     "stale_after_days": 90,
     "//stale_after_days": "Days without an edit before the digest carries a 'treat these statuses as unverified' warning. Defaults to 90; 0 disables the check. An unreadable timestamp counts as fresh, so the hook never nags about a file it cannot actually assess. This exists because a stale registry is worse than no registry — it still gets trusted."
@@ -453,6 +465,22 @@
       "A value at or above 25000 is CLAMPED to 24999, for both tools: a cap",
       "the index cannot cross before rows are already being dropped would",
       "silence the only warning that the tail is being lost."
+    ],
+    "distill_at_chars": 22000,
+    "//distill_at_chars": [
+      "The index size, in CHARACTERS, at which a session that starts fresh",
+      "(source startup or clear, never resume or compact) is told MEMORY.md is",
+      "near its cap and offered the memory-index-distill skill. Defaults to",
+      "22000; absent means 22000, and anything that is not a positive whole",
+      "number reads as unset.",
+      "",
+      "Clamped: a value at or past max_index_chars is replaced by",
+      "max_index_chars minus 1000, so the notice can never arrive after the",
+      "cap it is meant to precede.",
+      "",
+      "An absolute character count, deliberately not a fraction of",
+      "max_index_chars: the notice should land at a fixed distance from the",
+      "point where the harness starts dropping rows."
     ],
     "max_index_lines": 190,
     "//max_index_lines": [
@@ -844,10 +872,12 @@
       "linked: the display sleeps on its idle timer and the system follows a",
       "minute later. `pmset -g custom` shows both numbers for your machine.",
       "",
-      "Work pushes a deadline out. A hold ends when its session's `claude`",
-      "process exits — `caffeinate -w` does that in the kernel, so no hook has",
-      "to fire and a crashed session cannot leak one. Power assertions are",
-      "additive, so the machine sleeps once the LAST session has gone.",
+      "Each session holds the Mac awake for 30 minutes after its last",
+      "activity (hold_seconds), and each background job Claude started holds",
+      "it until that job finishes, capped at 1 hour (job_hold_seconds). Holds",
+      "are bound with `caffeinate -w`, so the kernel ends one the moment its",
+      "session or job exits and a crashed session cannot leak one. Power",
+      "assertions are additive: the machine sleeps once the LAST hold ends.",
       "",
       "It never prevents DISPLAY sleep — the screen still goes dark, only the",
       "machine stays up. And closing the lid sleeps it regardless."
@@ -931,34 +961,46 @@
       "",
       "Read that first word carefully, because this key is narrower than it",
       "looks. A hold bound to a live `claude` process is NOT shortened when a",
-      "turn ends — it lasts as long as the session, which is why a",
-      "background job that outlives its turn does not freeze. This window applies only when the",
-      "walk up to the `claude` process failed and the hold has no `-w` to",
-      "release it, so its deadline is the only bound it has.",
+      "turn ends — it runs out its idle timer (hold_seconds), and background",
+      "jobs carry their own holds (job_hold_seconds). This window applies only",
+      "when the walk up to the `claude` process failed and the hold has no",
+      "`-w` to release it, so its deadline is the only bound it has.",
       "",
       "That makes this a fallback rather than the main path. If you want an",
       "idle session sleeping sooner, lower hold_seconds instead — that is the",
-      "ceiling a normal, bound hold actually ends on."
+      "idle timer a normal, bound hold actually ends on."
     ],
 
-    "hold_seconds": 7200,
+    "hold_seconds": 1800,
     "//hold_seconds": [
-      "Ceiling on a hold that nothing refreshes. Defaults to 7200 (2 hours).",
-      "Zero, negative and non-numeric all fall back to 7200: a zero deadline",
-      "would expire before it is recorded, so the ceiling can be raised but",
-      "never removed.",
+      "The idle timer: how long a session's hold lasts after its LAST",
+      "activity. Defaults to 1800 (30 minutes). Zero, negative and non-numeric",
+      "all fall back to 1800: a zero deadline would expire before it is",
+      "recorded, so the timer can be raised but never removed.",
       "",
-      "Work pushes this deadline out — every prompt and every tool batch, and",
-      "batches inside dispatched subagents count — so a session doing anything",
-      "at all never reaches it. What it bounds is a session doing NOTHING: two",
-      "unbroken hours with no activity and the machine sleeps, even though the",
-      "session is still open and `-w` has not fired.",
+      "Activity is a prompt or a tool batch, and batches inside dispatched",
+      "subagents count. It is re-armed at most every 2 minutes (or half this",
+      "value, if smaller), so the machine sleeps up to that much EARLY: 28-30",
+      "minutes after the last activity at the default. With several sessions",
+      "open, it runs from the last activity in any of them.",
       "",
-      "That ceiling is deliberate, not an oversight. A session idle that long",
-      "is one you walked away from. Raise it if you disagree — it is the right",
-      "knob for 'let an idle window hold longer'. Do not set it absurdly high",
-      "in place of removing it: a hold with neither a live process nor a",
-      "deadline is the mistake nobody notices."
+      "Background jobs Claude launched get their own hold (job_hold_seconds),",
+      "so this timer is only the fallback for work that is running but was",
+      "not detected. Raise it if you run long work it cannot see. Do not set",
+      "it absurdly high in place of removing it: a hold with neither a live",
+      "process nor a deadline is the mistake nobody notices."
+    ],
+
+    "job_hold_seconds": 3600,
+    "//job_hold_seconds": [
+      "Cap on the hold for ONE background job. Defaults to 3600 (1 hour).",
+      "",
+      "A background job is a command Claude started with run_in_background (a",
+      "Codex gate, a test run, a build). Each gets its own hold, bound to the",
+      "job's process, so it ends the moment the job does. This cap ends it",
+      "anyway if the job hangs or never exits (a dev server, a stuck call). A",
+      "job is never re-held after its cap: one that runs longer is covered",
+      "only by the idle timer above."
     ],
 
     "state_dir": "~/.claude/caffeinate",
@@ -1141,16 +1183,17 @@
   },
 
   "codex_review": {
-    "models": {"code": null, "merge": null, "plan": null, "design": null},
+    "models": {"code": null, "merge": null, "plan": null, "design": null, "architecture": null},
     "//models": [
       "Which Codex model each full-power review gate runs on. null keeps the",
-      "toolkit's default (code: gpt-5.6-terra; merge, plan, design:",
+      "toolkit's default (code: gpt-5.6-terra; merge, plan, design, architecture:",
       "gpt-6-astra). Set one when your Codex account does not serve a",
       "default: claude-codex-review exits 4 and names the gate. A value is a",
       "model name: a non-empty string with no whitespace, not starting with",
-      "'-'. Anything else, or a key that is not one of the four gates, makes",
-      "claude-codex-review refuse (exit 2) before it dispatches. Only read",
-      "under build.review = \"full-power\"."
+      "'-'. Anything else, or a key that is not one of those five gates, makes",
+      "claude-codex-review refuse (exit 2) before it dispatches. The four",
+      "/build gates read it only under build.review = \"full-power\";",
+      "architecture reads it whenever an architecture review runs on Codex."
     ]
   },
 
@@ -1205,5 +1248,21 @@
 
     "exclude": [],
     "//exclude": "Glob patterns to skip on top of the built-in excludes (.venv*, node_modules, .git, .env, *.pem, *.key and similar), matched against each file or folder name and against its path inside the backed-up item. Defaults to []; absent means built-in excludes only."
+  },
+
+  "index_distill": {
+    "fixture_root": null,
+    "//fixture_root": [
+      "Where `claude-index-distill prove` builds its throwaway fixture: a copy of",
+      "your memory directory and rule pages, with the manifest applied. Defaults to",
+      "<system temp>/claude-index-distill/; absent (or null) means that default.",
+      "Every proof removes its own fixture on exit unless `--keep` is passed, so",
+      "the copies of real memory do not linger. The grader's empty cwd is made here",
+      "too. Each `prove` starts by deleting any dir here named exactly like one it",
+      "makes (index-distill-<8 chars>, index-distill-grader-<8 chars>): what a",
+      "killed run left behind, and any fixture an earlier `--keep` kept. It prints",
+      "each path it removes. It sweeps only while holding a lock on `.prove.lock`",
+      "here (the file stays), so a second `prove` refuses while one is running."
+    ]
   }
 }

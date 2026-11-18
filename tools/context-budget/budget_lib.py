@@ -29,6 +29,7 @@ is the specific mistake this file exists to stop:
 
   - CLAUDE.md family  LINES   -- what context_lint caps and pre-commit blocks on
   - TOOLING.md digest LINES   -- what digest_lib.cap_block() counts
+                      AND CHARS -- the hook's whole output, digest_lib.cap_chars()
   - MEMORY.md index   CHARS   -- what the harness truncates on (see lint_lib)
   - skill frontmatter CHARS   -- injected verbatim, capped by nothing
   - .claude/rules files LINES -- what growth_lib caps, per file
@@ -1040,6 +1041,17 @@ def scan(workspace_root, memory_dir, skill_roots=None, config=None,
                     # still said "tail" would understate the one surface whose
                     # overage is now total.
                     "withheld ENTIRELY over cap",
+                )
+                # The second refusal, in CHARS: everything the hook prints,
+                # against the harness's limit. A map can sit well under its
+                # line cap and still be withheld here.
+                add(
+                    "TOOLING digest output",
+                    tooling,
+                    "chars",
+                    len(digest_lib.assemble(text, tooling, config)),
+                    digest_lib.HARNESS_MAX_CHARS,
+                    "withheld ENTIRELY over cap (harness limit)",
                 )
             except Exception:
                 add("TOOLING digest", tooling, "lines", 0, None, "unreadable")

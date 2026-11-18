@@ -672,6 +672,11 @@ def observe(path, config=None):
                   "core_lines": (context_lint_lib.count_lines(core)
                                  if core else 0),
                   "refs": list(core_block.dangling_refs(core)) if core else []}
+        if os.path.basename(str(path)) == _tooling_name(config):
+            # The hook's second refusal is in CHARS of its whole output, and
+            # the line-based Core check above cannot see it. Measured
+            # by digest_lib itself so the two can never disagree.
+            result["digest_chars"] = len(digest_lib.assemble(text, path, config))
         if is_rules_file(path):
             result["has_paths"] = has_paths_frontmatter(text)
         if is_memory_index(path) or is_topic_file(path):
@@ -1254,6 +1259,13 @@ def build(tool_input, config=None, state=None):
                                       core_cap):
                         parts.append(("Core", current["core_lines"], core_cap,
                                       current["core_lines"] - prior["core_lines"]))
+                    if _rose_over_cap(prior.get("digest_chars"),
+                                      current.get("digest_chars"),
+                                      digest_lib.HARNESS_MAX_CHARS):
+                        parts.append(("digest output", current["digest_chars"],
+                                      digest_lib.HARNESS_MAX_CHARS,
+                                      current["digest_chars"]
+                                      - prior["digest_chars"]))
 
                     # The index's own axis: CHARACTERS, not lines -- caps_for_path
                     # returns (None, None) for it, so the two checks above can never
@@ -1447,8 +1459,9 @@ def build(tool_input, config=None, state=None):
                         lines.append("  %d lines, cap %d — %d over (+%d since last "
                                      "check)" % (count, cap, count - cap, delta))
                     else:
-                        lines.append("  %s: %d lines, cap %d — %d over (+%d since "
-                                     "last check)" % (label, count, cap,
+                        unit = "chars" if label == "digest output" else "lines"
+                        lines.append("  %s: %d %s, cap %d — %d over (+%d since "
+                                     "last check)" % (label, count, unit, cap,
                                                       count - cap, delta))
                 # N3b: each band is keyed on its OWN part having fired, not on
                 # `parts` being non-empty -- today's `parts`-only gate would

@@ -24,7 +24,7 @@ Safety guards, integrity checks and onboarding. Always installed.
 | `claude-hook-heartbeat` | PreToolUse (Bash\|PowerShell\|Monitor), SessionStart | its own marker files under ~/.claude/claude-code-toolkit/heartbeat/, pruned after 30 days | — |
 | `claude-worktree-guard` | PreToolUse (Bash\|Monitor\|Edit\|Write\|MultiEdit\|NotebookEdit) | nothing | Makes sure Claude only changes files in the project copy it is actually working in, even when more than one copy of the same project is open at once. |
 | `claude-distill-write-guard` | PreToolUse (Write) | nothing | — |
-| `claude-toolkit-integrity` | UserPromptSubmit, SessionStart | its own state in ~/.claude/toolkit-integrity-state.json, and the hook-fires audit's verdict cache in ~/.claude/claude-code-toolkit/heartbeat-audit.json | — |
+| `claude-toolkit-integrity` | UserPromptSubmit, SessionStart | its own state in ~/.claude/toolkit-integrity-state.json, and the hook-fires audit's verdict cache in ~/.claude/claude-code-toolkit/heartbeat-audit.json, and the tool-rules audit's verdict cache in ~/.claude/claude-code-toolkit/tool-rules-audit.json | — |
 | `claude-repo-freshness` | SessionStart | runs a background git fetch in each watched repo, updating its remote-tracking refs; with repo_freshness.sync on (off by default) it also fast-forwards clean repos with git pull and clones missing ones; its own throttle stamp in ~/.cache/claude-repo-sync.stamp | Tells you at the start of a conversation if a project you follow has newer work online than what's on your machine, checked quietly in the background. |
 | `claude-tooling-digest` | SessionStart | nothing | Shows a short summary of what's already set up and connected at the start of a conversation, so you don't have to ask or remember. |
 
@@ -37,8 +37,9 @@ Session continuity: handover, wrap-up and the memory and CLAUDE.md distillers. I
 | Command | What it does |
 | --- | --- |
 | `/claude-md-distill` | Distill an over-cap CLAUDE.md-family file down to its rules, moving the accumulated reasoning behind them into a verbatim rationale archive that is never loaded. |
-| `/handover` | Write a thread handover document and recommend starting a new session |
+| `/handover` | Hand this thread over to a new session — a handover document when one is needed, and always a paste-ready kickoff for the next thread |
 | `/memory-distill` | Distill an over-cap memory/ entry down to its ruled essentials, collapsing repeated incidents into general rules while preserving the original text as a verbatim incident history. |
+| `/memory-index-distill` | Use when the auto-memory index MEMORY.md is near or over its character limit and its `## Always` rules need moving out of the always-on index: a "MEMORY INDEX NEAR CHARACTER LIMIT" session-start notice, "make this the distillation session", "distill the memory index", "MEMORY.md is near the limit", "run the index distillation", "move Always rules into rules pages". |
 | `/wrap-up` | Use when the user is stopping for the day (every session) or closing just this window (/wrap-up session). |
 
 ### Hooks
@@ -52,6 +53,7 @@ Session continuity: handover, wrap-up and the memory and CLAUDE.md distillers. I
 | `claude-thread-deliver` | SessionStart | moves consumed handover files into <handover_dir>/archive/handovers/ once both grace gates clear; its own index under ~/.claude/thread-handover/ | Watches long conversations and writes a short handover note before one runs out of room or ends unexpectedly, so nothing gets lost. |
 | `claude-memory-lint` | SessionStart | nothing | — |
 | `claude-context-budget` | SessionStart | its own readings log in ~/.claude/context-budget/readings.jsonl, one line a day | — |
+| `claude-tool-rules` | SessionStart, PostToolUse (Bash\|Read\|Grep\|Glob\|mcp__.*) | its own state in ~/.claude/tool-rules-state/ | — |
 | `claude-hook-heartbeat` | SessionStart | its own marker files under ~/.claude/claude-code-toolkit/heartbeat/, pruned after 30 days | — |
 | `claude-usage-subagent` | SubagentStart | its own state in ~/.claude/usage-budget-state.json | Shows how much of your usage limit is left, warns you before it runs low, and writes a note if a task gets cut off partway through. |
 | `claude-usage-postmortem` | StopFailure | writes a handover document into <handover_dir> when a turn dies on a usage limit, and registers it under ~/.claude/thread-handover/ | Shows how much of your usage limit is left, warns you before it runs low, and writes a note if a task gets cut off partway through. |
@@ -66,6 +68,7 @@ The /build workflow and its executor and reviewer agents. Optional.
 
 | Command | What it does |
 | --- | --- |
+| `/architecture-review` | Have a frontier model (Fable or Astra, at max effort) review a very large build as its architect — whether the whole system works together, whether it is the most elegant design, what should be rebuilt, and what the user has not accounted for — and turn the result into a plan Opus can act on. |
 | `/build` | Run a multi-file build through the Opus-architect / Sonnet-executor split, with adversarial review gates. |
 
 ### Agents
@@ -73,6 +76,7 @@ The /build workflow and its executor and reviewer agents. Optional.
 | Agent | What it does |
 | --- | --- |
 | `toolkit-build:architect-reviewer` | Optional whole-branch reviewer. |
+| `toolkit-build:architecture-reviewer` | The Fable route of the architecture-review skill — a frontier, read-only architect that reviews a very large build at its design point or after everything has shipped, and returns one JSON report (principles, change plan, implementation sketch). |
 | `toolkit-build:code-reviewer` | Reviews a whole PR or branch diff against the repository's own CLAUDE.md rules. |
 | `toolkit-build:executor` | Implements ONE task from a written implementation plan. |
 | `toolkit-build:task-reviewer` | Reviews the diff from ONE completed plan task against its acceptance criteria. |
@@ -131,8 +135,11 @@ Install any of these on its own; none adds hooks or commands.
 
 | Plugin | Install | What it does |
 | --- | --- | --- |
+| `skill-chrome-handoff` | `claude plugin install skill-chrome-handoff@claude-code-toolkit` | Use when work has to happen by hand in a live, logged-in web app that no connector or API can do — editing a dashboard or report layout, changing a setting, or checking what a platform's screen actually shows in GA4, Google Ads, Meta Ads Manager, Google Tag Manager, Looker Studio, Zapier, a CMS or any site behind a login. |
 | `skill-claude-teacher` | `claude plugin install skill-claude-teacher@claude-code-toolkit` | Use when someone wants to learn Claude Code or AI as a skill, not just get a task done: what LLMs are, prompting basics, hallucinations and verification, CLAUDE.md and memory, skills, hooks, plugins, MCP servers, subagents, the API, or git and GitHub for beginners. |
 | `skill-humanizer` | `claude plugin install skill-humanizer@claude-code-toolkit` | Strip AI-writing patterns from a draft and give it a human pulse: emails, reports, posts, newsletters, blog drafts, proposals, docs and notes. |
+| `skill-model-routing` | `claude plugin install skill-model-routing@claude-code-toolkit` | Use when a request means doing the same piece of work across many items, or several independent pieces at once, so Claude may split it across subagents: "for each of these 15 companies," "research every competitor on this list," "summarize all 30 of these reviews," "check every page on the site," "do these in parallel," "use subagents for this." Also when someone asks which model or effort level fits a task, or wants to use less of their limit: "is Opus overkill for this," "should I switch to Sonnet," "what effort should I use," "I keep hitting my usage limit," "make this cheaper to run." Do NOT use to explain what Claude's models are or how Opus, Sonnet and Haiku differ, with no task to fit them to: "explain Opus vs Sonnet," "what's the difference between the models" (use claude-teacher). |
+| `skill-port-github-repo` | `claude plugin install skill-port-github-repo@claude-code-toolkit` | Use when someone has found a public GitHub repo they like (a Claude Code skill or skills collection, a plugin, an MCP server, or a CLI tool) and wants it brought into their Claude Code setup, or wants something already brought in updated from its original. |
 | `skill-prompt-optimizer` | `claude plugin install skill-prompt-optimizer@claude-code-toolkit` | Improve a rough prompt or request before doing the task, and challenge the reasoning behind it. |
 
 ## Commands on your PATH — every profile
@@ -151,6 +158,8 @@ Install any of these on its own; none adds hooks or commands.
 | `claude-memory-routing` | `tools/memory-routing/claude-memory-routing` |
 | `claude-context-growth` | `tools/context-growth/claude-context-growth` |
 | `claude-memory-lint` | `tools/memory-lint/claude-memory-lint` |
+| `claude-tool-rules` | `tools/tool-rules/claude-tool-rules` |
+| `claude-index-distill` | `tools/index-distill/claude-index-distill` |
 | `claude-context-lint` | `tools/context-lint/claude-context-lint` |
 | `claude-context-budget` | `tools/context-budget/claude-context-budget` |
 | `claude-session-claim` | `tools/session-claim/claude-session-claim` |

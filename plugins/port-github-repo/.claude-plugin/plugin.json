@@ -1,0 +1,7 @@
+{
+  "name": "skill-port-github-repo",
+  "description": "Bring a public GitHub repo (skills, a plugin, an MCP server or a CLI) into your Claude Code setup pinned to a vetted commit, and pull its upstream changes later as a reviewed change.",
+  "author": {
+    "name": "mouramarket"
+  }
+}

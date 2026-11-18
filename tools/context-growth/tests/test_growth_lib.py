@@ -554,6 +554,25 @@ class TestTransition(Fixture):
         self.assertIn("Core", out)
         self.assertIn(str(TOOLING_CORE_CAP), out)
 
+    def test_a_tooling_md_crossing_the_CHAR_limit_under_its_LINE_cap_speaks(self):
+        """The hook withholds a map whose output passes the harness's
+        character limit, however few lines it has. This notice is the only
+        warning that arrives before the map goes dark, so it must see chars.
+        20 -> 40 wide rows stays under the 60-line Core cap and crosses 9,500
+        chars, so only the character axis can fire.
+        """
+        def wide(rows):
+            return ("<!-- DIGEST:START -->\n%s\n<!-- DIGEST:END -->\n"
+                    % "\n".join("row %d %s" % (i, "x" * 300) for i in range(rows)))
+        path = self.write("TOOLING.md", wide(20))
+        self.assertIsNone(self.edit(path))
+        self.rewrite(path, wide(40))
+        out = self.edit(path)
+        self.assertIsNotNone(out)
+        self.assertIn("digest output", out)
+        self.assertIn("chars, cap %d" % digest_lib.HARNESS_MAX_CHARS, out)
+        self.assertNotIn("Core:", out)
+
     def test_a_tooling_md_growing_past_the_whole_file_cap_is_silent(self):
         """`whole_file_cap is None` for the tooling map, behaviourally.
 

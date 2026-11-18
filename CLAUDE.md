@@ -137,7 +137,7 @@ Every tool has a `tests/` directory; so do `lib/`, `skills/`, `evals/`,
 failed=0; ran=0
 while read -r t; do
   ran=$((ran + 1))
-  (cd "$(dirname "$(dirname "$t")")" && python3 "tests/$(basename "$t")" </dev/null) || { echo "FAIL $t"; failed=1; }
+  (cd "$(dirname "$(dirname "$t")")" && env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$t")" </dev/null) || { echo "FAIL $t"; failed=1; }
 done < <(find tools lib skills evals scripts ci -path '*/tests/test_*.py' -type f | sort)
 echo "$ran suites run"; [ "$ran" -gt 0 ] && [ "$failed" -eq 0 ]
 ```
@@ -147,6 +147,9 @@ own stdin, so a suite that reads stdin swallows the rest and the loop still
 reports a pass for everything it reached. `install.sh`, `ci/local-checks.sh`,
 this file and `AGENTS.md` carry the same redirect, and
 `lib/tests/test_install_checks_every_suite.py` pins them.
+`env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL` is pinned the same way: suites
+re-point `HOME` at fixtures, and either variable would follow your real setup
+past it and turn suites red.
 
 **A suite outside those directories runs nowhere.** `lib/tests/
 test_suite_discovery.py` reads the roots from `install.sh` and
@@ -261,6 +264,11 @@ Tests pass in-process; hooks run from the plugin in a real session. Both matter.
   session, proves that session's hooks fired for every selected profile plugin
   and reports each one's readiness against the tested Claude Code version. A
   terminal run of `--verify-live` cannot prove anything, and says so.
+- **The integrity hook's SessionStart tool-rules audit** names a session whose main
+  transcript shows a successful call matching a live tool-rules page (after the
+  page's mtime and the audit's first run, last 6 days) and no
+  `~/.claude/tool-rules-state/` record, among sessions where core's heartbeat fired.
+  `claude-toolkit-integrity --tool-rules-audit` runs it by hand.
 
 ## Decisions not to re-litigate
 

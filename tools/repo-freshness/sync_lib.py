@@ -61,6 +61,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
 
@@ -436,21 +437,40 @@ NET_TIMEOUT = 4
 # session start into a multi-minute stall. `run()` checks this before
 # starting each repo and stops rather than working through the rest.
 #
-# 2 seconds, not the original 15 (then 4): the declared hook timeout came down
-# to 15 to keep SessionStart -- the one event a human actually waits through --
-# short, and this is the term that absorbed most of that cut, over
-# GIT_TIMEOUT_SECONDS (already minimal) and NET_TIMEOUT above (preserved,
-# since a tighter one converts a slow-but-fine pull into a reported failure).
-# Cutting this narrows how many repos get checked per session, which is a
-# real functional loss -- but this whole feature is best-effort and opt-in, so
-# a repo skipped this session is picked up the next one. The deadline this
-# bounds is checked only BETWEEN items -- never during one -- so it caps how
-# much NEW work can START, not the total wall-clock time of one `run()` call:
-# one item already in flight when the deadline lands can still add its own
-# full GIT_TIMEOUT_SECONDS x 3 + NET_TIMEOUT on top. `TestTimeoutBudget` is
-# the arithmetic that keeps this whole picture inside the declared hook
-# timeout; change this constant only alongside that test.
-NET_BUDGET = 2
+# 6 seconds (history: 15, then 4, then 2, then 6). SessionStart is the one
+# event a human actually waits through, which is why this was cut to 2; that
+# cut starved the phase in practice. Measured 2026-11-10 on a 10-repo
+# workspace over SSH: `gh repo list` 0.75s and ~0.7-2.1s per pull
+# round-trip, so the then-serial loop reached one or two repos per run --
+# always the same alphabetical head, and with a 20-hour throttle the tail
+# was never pulled at all (12 days stale when found). Pulls are now
+# concurrent (`MAX_PARALLEL_PULLS`), so admission costs only the local
+# eligibility checks plus waiting for a free slot: 6 seconds admits a
+# typical workspace in one pass and the phase ends in about one round-trip.
+#
+# A repo the budget does not reach is NOT reliably picked up next session:
+# candidate order is sorted and the throttle is long, so a workspace too big
+# for one pass starves the same tail every run. Raising capacity hides that
+# rather than removing it -- rotating the start point would remove it.
+#
+# The deadline is checked only BETWEEN items -- never during one -- so it caps
+# how much NEW work can START, not the total wall-clock time of one `run()`
+# call: the last item admitted before the deadline can still add its own full
+# GIT_TIMEOUT_SECONDS x 3 + NET_TIMEOUT on top, and earlier pulls (started
+# sooner, each bounded by NET_TIMEOUT) end before it does. Do not read a
+# declared hook timeout out of this comment: the tests read it live from the
+# plugin's hook manifest. `TestTimeoutBudget` is the arithmetic that keeps
+# the picture inside that timeout, and `TestRunStopsAdmittingAtTheDeadline`
+# is what pins that admission really stops; change this constant only
+# alongside both.
+NET_BUDGET = 6
+
+# How many `git pull`s may be in flight at once. Measured 2026-11-10: 8
+# concurrent SSH round-trips to GitHub through an SSH agent took 2.24s
+# against ~14s serially -- the agent did not serialise them. Not a config
+# key: it is a politeness bound on concurrent connections to one host, not a
+# personal preference.
+MAX_PARALLEL_PULLS = 8
 
 
 def _net_timeout() -> float:
@@ -709,27 +729,53 @@ def run(root: str, owner: Optional[str] = None) -> SyncResult:
     except Exception:
         return result
 
-    for index, repo in enumerate(repos):
-        if _now() >= deadline:
-            result.unchecked += len(repos) - index
-            break
+    # Pulls run concurrently, up to MAX_PARALLEL_PULLS at once. Admission is
+    # still serial and still deadline-gated exactly as before: wait for a
+    # free slot, THEN check the deadline, then run the local eligibility
+    # checks, then hand the pull to a worker. Waiting for a slot BEFORE the
+    # check is what keeps the bound honest -- checking first and then
+    # blocking on a full pool would admit a repo long after the deadline.
+    # Outcomes are recorded per repo and emitted in candidate order at the
+    # end, so `synced`/`failed` stay deterministic whatever order the
+    # workers happen to finish in.
+    outcomes = {}
+
+    def _record(future, repo):
         try:
-            reason = eligibility(repo)
-        except Exception:
-            result.blocked.append((repo, "could not read"))
-            continue
-        if reason is not None:
-            result.blocked.append((repo, reason))
-            continue
-        try:
-            ok, message = _pull(repo)
+            ok, message = future.result()
         except Exception as exc:
-            result.failed.append((repo, str(exc)))
-            continue
-        if ok:
-            result.synced.append(repo)
-        else:
-            result.failed.append((repo, message))
+            ok, message = False, str(exc)
+        outcomes[repo] = (ok, message)
+
+    in_flight = {}
+    with ThreadPoolExecutor(max_workers=MAX_PARALLEL_PULLS) as pool:
+        for index, repo in enumerate(repos):
+            if len(in_flight) >= MAX_PARALLEL_PULLS:
+                done, _ = wait(in_flight, return_when=FIRST_COMPLETED)
+                for future in done:
+                    _record(future, in_flight.pop(future))
+            if _now() >= deadline:
+                result.unchecked += len(repos) - index
+                break
+            try:
+                reason = eligibility(repo)
+            except Exception:
+                result.blocked.append((repo, "could not read"))
+                continue
+            if reason is not None:
+                result.blocked.append((repo, reason))
+                continue
+            in_flight[pool.submit(_pull, repo)] = repo
+        for future in list(in_flight):
+            _record(future, in_flight.pop(future))
+
+    for repo in repos:
+        if repo in outcomes:
+            ok, message = outcomes[repo]
+            if ok:
+                result.synced.append(repo)
+            else:
+                result.failed.append((repo, message))
     return result
 
 

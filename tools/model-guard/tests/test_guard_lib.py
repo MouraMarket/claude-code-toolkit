@@ -100,6 +100,13 @@ class TestDecide(unittest.TestCase):
         self.assertIs(v.allowed, False)
         self.assertIn("this agent", v.reason)
 
+    def test_the_reason_names_the_guard(self):
+        """Like claude-danger-guard's refusals, so the user can look it up
+        (row 76d)."""
+        v = guard.decide("Agent", {"subagent_type": "Plan"}, None)
+        self.assertTrue(v.reason.startswith("BLOCKED by claude-model-guard: "),
+                        v.reason)
+
     def test_the_reason_names_the_override_and_the_inherit_trap(self):
         """The denial has to be actionable without reading this repo."""
         v = guard.decide("Agent", {"subagent_type": "Plan"}, None)

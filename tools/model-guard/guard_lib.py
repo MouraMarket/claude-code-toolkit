@@ -86,6 +86,9 @@ def _reason(subagent_type):
     name = subagent_type if isinstance(subagent_type, str) and subagent_type \
         else "this agent"
     return (
+        # Named like claude-danger-guard's "BLOCKED by ..." so a user who
+        # sees the refusal knows which hook to look up (row 76d, 28b F-D1d).
+        "BLOCKED by claude-model-guard: "
         "Dispatching %s with no `model` inherits the session model — on an Opus "
         "session that pays Opus rates for work that is usually Sonnet's. "
         "Re-dispatch with an explicit `model` (e.g. \"sonnet\"), or pin one in "

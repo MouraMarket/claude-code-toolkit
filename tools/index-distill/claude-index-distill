@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Move always-on memory rules into scoped rules pages, safely.
+
+    claude-index-distill check <manifest>   validate a manifest (exit 0 / 1 / 2)
+    claude-index-distill claim              take the machine-wide distill claim
+    claude-index-distill release            drop this session's claim
+    claude-index-distill apply <manifest>   write a proven manifest (exit 0/1/2/4/5/6)
+    claude-index-distill prove <manifest> [--keep]   prove a manifest on a throwaway copy (exit 0/1/2/3)
+
+Exit 2 means a root (memory dir or workspace) could not be resolved.
+"""
+
+import os
+import signal
+import sys
+
+
+def _load():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(here)), "lib"))
+    import distill_lib
+    import distill_claim
+    import prove_lib
+
+    return distill_lib, distill_claim, prove_lib
+
+
+def _err(message):
+    print(message, file=sys.stderr)
+
+
+def cmd_check(lib, argv):
+    if len(argv) != 1:
+        _err("usage: claude-index-distill check <manifest>")
+        return 2
+    try:
+        memory_dir, workspace = lib.resolve_roots()
+    except lib.RootsError as exc:
+        _err(str(exc))
+        return 2
+    try:
+        manifest = lib.load_manifest(argv[0])
+    except (lib.ManifestError, OSError) as exc:
+        print("- %s" % exc)
+        return 1
+    problems = lib.validate(manifest, memory_dir, workspace)
+    if problems:
+        for problem in problems:
+            print("- %s" % problem)
+        return 1
+    print("manifest OK")
+    return 0
+
+
+def cmd_apply(lib, argv):
+    if len(argv) != 1:
+        _err("usage: claude-index-distill apply <manifest>")
+        return 2
+    try:
+        memory_dir, workspace = lib.resolve_roots()
+    except lib.RootsError as exc:
+        _err(str(exc))
+        return 2
+    return lib.apply(argv[0], memory_dir, workspace,
+                     session_id=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+
+
+def cmd_prove(lib, prove_mod, argv):
+    manifest = [a for a in argv if a != "--keep"]
+    flags = [a for a in argv if a.startswith("-") and a != "--keep"]
+    if len(manifest) != 1 or flags or argv.count("--keep") > 1:
+        _err("usage: claude-index-distill prove <manifest> [--keep]")
+        return 2
+    try:
+        memory_dir, workspace = lib.resolve_roots()
+    except lib.RootsError as exc:
+        _err(str(exc))
+        return 2
+    # Claude Code ends a command with SIGTERM (then SIGKILL); Python runs no
+    # `finally` on SIGTERM, so turn it into an exception that does.
+    def _terminate(_signum, _frame):
+        raise prove_mod.Terminated()
+
+    previous = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None:
+            previous[number] = signal.signal(number, _terminate)
+    try:
+        return prove_mod.prove(manifest[0], memory_dir, workspace,
+                               session_id=os.environ.get("CLAUDE_CODE_SESSION_ID"),
+                               keep="--keep" in argv)
+    except prove_mod.Terminated:
+        _err("prove terminated by signal; fixture removed")
+        return 3
+    except Exception as exc:
+        # An uncaught traceback exits 1, which reads as a proof FAIL.
+        _err("harness fault: %s: %s" % (type(exc).__name__, exc))
+        return 3
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def cmd_claim(claim_mod):
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not session_id:
+        _err("CLAUDE_CODE_SESSION_ID is not set: cannot tell sessions apart, "
+             "refusing to claim")
+        return 1
+    try:
+        ok, holder = claim_mod.claim(session_id)
+    except OSError as exc:
+        _err("claim failed: %s" % exc)
+        return 1
+    if ok:
+        print("claimed")
+        return 0
+    who = (holder or {}).get("session_id") or "unknown"
+    since = claim_mod.local_hhmm(holder) if holder else "?"
+    _err("held by %s since %s" % (who, since))
+    return 1
+
+
+def cmd_release(claim_mod):
+    try:
+        released = claim_mod.release(os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    except OSError as exc:
+        _err("release failed: %s" % exc)
+        return 1
+    if released:
+        print("released")
+        return 0
+    print("not held by this session")
+    return 1
+
+
+def main(argv):
+    lib, claim_mod, prove_mod = _load()
+    if not argv:
+        _err(__doc__)
+        return 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "check":
+        return cmd_check(lib, rest)
+    if cmd == "claim":
+        return cmd_claim(claim_mod)
+    if cmd == "release":
+        return cmd_release(claim_mod)
+    if cmd == "apply":
+        return cmd_apply(lib, rest)
+    if cmd == "prove":
+        return cmd_prove(lib, prove_mod, rest)
+    _err("unknown subcommand: %s" % cmd)
+    return 2
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main(sys.argv[1:]))

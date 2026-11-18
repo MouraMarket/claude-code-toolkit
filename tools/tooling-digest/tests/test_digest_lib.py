@@ -521,6 +521,28 @@ class TestCapBlockLabel(unittest.TestCase):
         self.assertEqual(digest_lib.cap_block(body, 5), body)
 
 
+class TestCapChars(unittest.TestCase):
+    """The harness limit is on everything the hook prints, at a boundary."""
+
+    def test_output_AT_the_limit_passes_whole(self):
+        out = "x" * digest_lib.HARNESS_MAX_CHARS
+        self.assertEqual(digest_lib.cap_chars(out), out)
+
+    def test_one_char_over_leaks_no_content_and_reports_both_numbers(self):
+        out = "y" * (digest_lib.HARNESS_MAX_CHARS + 1)
+        notice = digest_lib.cap_chars(out, label="CORE",
+                                      path="/elsewhere/MY-STACK.md")
+        self.assertNotIn("yyy", notice)
+        self.assertIn("CORE OVER CHARACTER LIMIT — %d/%d characters"
+                      % (digest_lib.HARNESS_MAX_CHARS + 1,
+                         digest_lib.HARNESS_MAX_CHARS), notice)
+        self.assertIn("open /elsewhere/MY-STACK.md and read it", notice)
+
+    def test_the_limit_stays_under_the_measured_harness_cut(self):
+        # 9,871 chars arrived whole, 11,161 did not; documented as 10,000.
+        self.assertLessEqual(digest_lib.HARNESS_MAX_CHARS, 9871)
+
+
 class TestBuildLabelsFromTheMarkersPresent(TestHookExecutable):
     """The wiring, not the predicate.
 
@@ -606,6 +628,29 @@ class TestBuildLabelsFromTheMarkersPresent(TestHookExecutable):
         self.assertNotIn("TOOLING.md", out)
         self.assertEqual(out.count("MY-STACK.md"), 3,
                          "both notices and the Source line must name it")
+
+    def test_THROUGH_THE_HOOK_a_map_under_the_LINE_cap_but_over_the_CHAR_cap_injects_no_content(self):
+        """The live shape: 147 lines against a 200-line cap, 11,161 chars.
+
+        The harness showed the model a 2KB preview of it, which reads like a
+        complete map. Only the character cap can see this; the line cap
+        passes it.
+        """
+        rows = "\n".join("row %d %s" % (i, "x" * 300) for i in range(40))
+        with open(self.path, "w") as handle:
+            handle.write("<!-- DIGEST:START -->\n%s\n<!-- DIGEST:END -->\n" % rows)
+        result = self.run_hook({"tooling_digest": {"path": self.path,
+                                                   "max_lines": 80,
+                                                   "stale_after_days": 0}})
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("DIGEST OVER CHARACTER LIMIT", result.stdout)
+        self.assertIn("characters", result.stdout)
+        for i in range(40):
+            self.assertNotIn("row %d " % i, result.stdout)
+        self.assertLessEqual(len(result.stdout), digest_lib.HARNESS_MAX_CHARS)
+        # The withheld output carried the `(Source: <path>)` line; the notice
+        # replacing it must name the map by a path that resolves from any cwd.
+        self.assertIn("open %s and read it" % self.path, result.stdout)
 
     def test_THROUGH_THE_HOOK_a_map_under_cap_still_injects_normally(self):
         """The positive control.

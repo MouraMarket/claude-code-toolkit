@@ -657,6 +657,50 @@
       "requires": []
     },
     {
+      "id": "tool:index-distill",
+      "kind": "tool",
+      "summary": "Validates and applies a plan that moves rules out of an over-long memory index into rules pages, proves the result on a throwaway copy first, with a claim so only one session distills at a time and a backup it can roll back to.",
+      "delivery": "checkout",
+      "entry_points": [
+        "tools/index-distill/claude-index-distill"
+      ],
+      "tests": [
+        "tools/index-distill/tests",
+        "lib/tests/test_distill_claim.py",
+        "lib/tests/test_install_index_distill.py"
+      ],
+      "commands": [
+        "claude-index-distill"
+      ],
+      "hooks": [],
+      "config": [
+        "index_distill"
+      ],
+      "requires": []
+    },
+    {
+      "id": "tool:tool-rules",
+      "kind": "tool",
+      "summary": "Loads a rules page into context the first time a matching tool is called in a session, so a rule is in front of the model when it matters.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "tools/tool-rules/claude-tool-rules"
+      ],
+      "tests": [
+        "tools/tool-rules/tests"
+      ],
+      "commands": [
+        "claude-tool-rules"
+      ],
+      "hooks": [
+        "tools/tool-rules/claude-tool-rules"
+      ],
+      "config": [
+        "tool_rules"
+      ],
+      "requires": []
+    },
+    {
       "id": "tool:tooling-digest",
       "kind": "tool",
       "summary": "Injects the digest block of your tooling map at session start so common setup questions need no asking.",
@@ -780,6 +824,27 @@
       "requires": []
     },
     {
+      "id": "skill:architecture-review",
+      "kind": "skill",
+      "summary": "Has a frontier model review a very large build as its architect, at its design or after it ships, and turns the fact-checked result into a plan.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "skills/builder/architecture-review/SKILL.md"
+      ],
+      "tests": [
+        "skills/builder/architecture-review/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "agent:architecture-reviewer",
+        "tool:build-lens",
+        "tool:codex-review",
+        "tool:usage-watch"
+      ]
+    },
+    {
       "id": "skill:build",
       "kind": "skill",
       "summary": "Runs a multi-file build as an architect and executor split, with adversarial review gates.",
@@ -824,7 +889,7 @@
     {
       "id": "skill:handover",
       "kind": "skill",
-      "summary": "Writes a handover document for the current thread and recommends starting a fresh session.",
+      "summary": "Hands the current thread over to a fresh session: a handover document when one is needed, and always a paste-ready kickoff prompt.",
       "delivery": "profile:continuity",
       "entry_points": [
         "skills/continuity/handover/SKILL.md"
@@ -854,6 +919,25 @@
       "requires": [
         "tool:backup",
         "tool:distill-guard"
+      ]
+    },
+    {
+      "id": "skill:memory-index-distill",
+      "kind": "skill",
+      "summary": "Moves Always rules out of the always-on memory index into pages that load only when they matter, after a proof on a throwaway copy.",
+      "delivery": "profile:continuity",
+      "entry_points": [
+        "skills/continuity/memory-index-distill/SKILL.md"
+      ],
+      "tests": [
+        "skills/continuity/memory-index-distill/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": [
+        "tool:index-distill",
+        "tool:memory-lint"
       ]
     },
     {
@@ -1026,6 +1110,55 @@
       "requires": []
     },
     {
+      "id": "skill:chrome-handoff",
+      "kind": "skill",
+      "summary": "Gets work done in a live, logged-in web app no API can reach: drives your own Chrome, or writes one paste-ready Claude in Chrome prompt, then checks the report.",
+      "delivery": "plugin:skill-chrome-handoff",
+      "entry_points": [
+        "plugins/chrome-handoff/skills/chrome-handoff/SKILL.md"
+      ],
+      "tests": [
+        "lib/tests/test_skill_plugins.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "skill:port-github-repo",
+      "kind": "skill",
+      "summary": "Brings a public GitHub repo into your Claude Code setup pinned to a vetted commit, and pulls its upstream changes later as a reviewed change.",
+      "delivery": "plugin:skill-port-github-repo",
+      "entry_points": [
+        "plugins/port-github-repo/skills/port-github-repo/SKILL.md"
+      ],
+      "tests": [
+        "lib/tests/test_skill_plugins.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "skill:model-routing",
+      "kind": "skill",
+      "summary": "Picks the cheapest model and effort that still does the work well, for each subagent and for the session itself, and says what that trades away.",
+      "delivery": "plugin:skill-model-routing",
+      "entry_points": [
+        "plugins/model-routing/skills/model-routing/SKILL.md"
+      ],
+      "tests": [
+        "evals/model-routing/tests",
+        "lib/tests/test_skill_plugins.py"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
       "id": "agent:architect-reviewer",
       "kind": "agent",
       "summary": "Reads a finished branch against its plan as one artifact, for coherence and cross-task problems; dispatched by hand.",
@@ -1035,6 +1168,22 @@
       ],
       "tests": [
         "tools/build-lens/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "agent:architecture-reviewer",
+      "kind": "agent",
+      "summary": "The Fable route of architecture-review: a read-only frontier architect that returns one JSON report.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "agents/architecture-reviewer.md"
+      ],
+      "tests": [
+        "skills/builder/architecture-review/tests"
       ],
       "commands": [],
       "hooks": [],
@@ -1431,7 +1580,8 @@
         "lib/tests/test_doc_pointers.py",
         "lib/tests/test_shebangs.py",
         "lib/tests/test_suite_discovery.py",
-        "lib/tests/test_text_encoding_lint.py"
+        "lib/tests/test_text_encoding_lint.py",
+        "lib/tests/test_tilde_display_lint.py"
       ],
       "commands": [],
       "hooks": [],

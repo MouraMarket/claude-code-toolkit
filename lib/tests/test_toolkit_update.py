@@ -162,6 +162,19 @@ class UpdateTestCase(unittest.TestCase):
 
 
 class TestVersion(UpdateTestCase):
+    def test_the_release_comes_from_version_at_the_reported_commit(self):
+        self.assertIn("Release: unknown (no VERSION file at this commit)\n",
+                      self.version())
+        with open(os.path.join(self.repo, "VERSION"), "w") as handle:
+            handle.write("0.4.2\n")
+        git(self.repo, "add", "VERSION")
+        git(self.repo, "commit", "-q", "-m", "release 0.4.2")
+        self.assertIn("Release: 0.4.2\n", self.version())
+        # An uncommitted edit is not a release the checkout is at.
+        with open(os.path.join(self.repo, "VERSION"), "w") as handle:
+            handle.write("9.9.9\n")
+        self.assertIn("Release: 0.4.2\n", self.version())
+
     def test_on_main_with_matching_record(self):
         self.installed()
         out = self.version()

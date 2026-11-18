@@ -138,9 +138,10 @@ python3 lib/setup_config.py ~/.config/claude-code-toolkit/config.json "$(pwd)" -
 
 A list replaces the default, so keep `continuity` in it (core is always added).
 
-**Skills on their own.** Three general-purpose skills ship as separate plugins
-with no hooks: `skill-prompt-optimizer`, `skill-humanizer` and
-`skill-claude-teacher`. You can use them without installing the rest:
+**Skills on their own.** Six general-purpose skills ship as separate plugins
+with no hooks: `skill-prompt-optimizer`, `skill-humanizer`,
+`skill-claude-teacher`, `skill-chrome-handoff`, `skill-port-github-repo` and
+`skill-model-routing`. You can use them without installing the rest:
 
 ```bash
 claude plugin marketplace add mouramarket/claude-code-toolkit
@@ -154,6 +155,11 @@ on (`/plugin` → Marketplaces → Enable auto-update). To pick up changes by ha
 claude plugin marketplace update claude-code-toolkit
 claude plugin update skill-humanizer@claude-code-toolkit
 ```
+
+`skill-model-routing` has known limits. In claude.ai chat it fired on direct
+model and effort questions but not on routine batch requests (0 of 2), and chat
+starts no subagents unless asked. It has not been measured in Claude Code; its
+trigger cases are in `evals/model-routing/trigger-cases.json`.
 
 ## Permissions
 
@@ -208,7 +214,7 @@ its defaults. To opt out, delete the two lines and set `team_policy.import` to
 | `tools/setup-audit/` | `claude-setup-audit`, run by hand and by `/onboard`, never a hook. `audit`/`--json` is read-only; `snapshot` only appends; `apply-safe` removes only files byte-identical to the toolkit's own copy, after another snapshot. Reports facts, never whether a difference matters. |
 | `tools/build-route/`, `tools/build-lens/`, `tools/codex-review/`, `tools/merge-brief/`, `tools/model-guard/`, `tools/build-cost/`, `tools/spec-archive/`, `tools/prompt-optimizer/` | (builder) The `/build` workflow: review mode, gate references, the optional Codex reviewer, blinded briefs, the model guard on dispatches, a per-session cost ledger, archiving shipped specs (inert until `spec_archive.specs_dir` is set) and the optional prompt reminder. |
 | `tools/local-ci/` | `claude-local-ci` runs `ci/local-checks.sh` against a head merged with its base and records a receipt. |
-| `tools/caffeinate/` | (mac) Holds a macOS sleep assertion while Claude is working. Off unless `caffeinate.enabled`; plugged in only, until `/caffeinate on`, which releases below `battery_floor_percent` (20). |
+| `tools/caffeinate/` | (mac) Holds a macOS sleep assertion while Claude is working: a 30-minute idle hold per session, plus a hold per background job (1 h cap). Off unless `caffeinate.enabled`; plugged in only, until `/caffeinate on`, which releases below `battery_floor_percent` (20). |
 | `tools/harness-check/`, `tools/skill-trigger/`, `tools/catalogue/`, `tools/leak-gate/`, `tools/hook-heartbeat/`, `tools/distill-guard/`, `tools/git-tidy/`, `tools/context-lint/` | Maintenance and support: Claude Code version checks, skill trigger tests, the catalogue generator, a term and credential gate, guard heartbeats, the distill write guard, `git tidy`, and context linting. |
 | `skills/`, `agents/`, `plugins/` | The slash commands (`skills/<profile>/<command>/`), the builder agents, and the three standalone skill plugins. |
 | `lib/` | Shared code: the config reader every tool uses, setup, install records, update and uninstall. |
@@ -299,13 +305,14 @@ the suites:
 failed=0; ran=0
 while read -r t; do
   ran=$((ran + 1))
-  (cd "$(dirname "$(dirname "$t")")" && python3 "tests/$(basename "$t")" </dev/null) || { echo "FAIL $t"; failed=1; }
+  (cd "$(dirname "$(dirname "$t")")" && env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$t")" </dev/null) || { echo "FAIL $t"; failed=1; }
 done < <(find tools lib skills evals scripts ci -path '*/tests/test_*.py' -type f | sort)
 echo "$ran suites run"; [ "$ran" -gt 0 ] && [ "$failed" -eq 0 ]
 ```
 
 `</dev/null` keeps a suite that reads stdin from swallowing the rest of the
-queue. The suites pass with your config and with none at all
+queue, and `env -u` keeps your `CLAUDE_CONFIG_DIR` and `GIT_CONFIG_GLOBAL`
+out of suites that point `HOME` at a fixture. The suites pass with your config and with none at all
 (`CLAUDE_TOOLKIT_CONFIG=/nonexistent.json`), which is what a fresh clone looks
 like. No count is quoted here on purpose; the loop prints the real one.
 

@@ -248,6 +248,11 @@ def version(repo, record_file, expected_origin=None):
     head, default, record = state["head"], state["default"], state["record"]
     info = (_out(repo, "log", "-1", "--format=%cs%x00%s", "HEAD") or "\0").split("\0", 1)
     print("Toolkit version: %s (%s) %s" % (_short(head or ""), info[0], info[1]))
+    # The release number, read from VERSION AT THE COMMIT reported above, so a
+    # locally edited VERSION file cannot claim a release the checkout is not
+    # (row 76e, 28b F-D1e: --version printed only the commit).
+    release = _out(repo, "show", "HEAD:VERSION")
+    print("Release: %s" % (release or "unknown (no VERSION file at this commit)"))
     if state["branch"] is None:
         if state["pin"] is not None:
             print("State: pinned at %s by ./install.sh --rollback since %s; "

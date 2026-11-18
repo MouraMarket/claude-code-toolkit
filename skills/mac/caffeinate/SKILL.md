@@ -84,13 +84,25 @@ The display still goes dark and the screensaver still starts. That is deliberate
 processes run perfectly well behind both, and keeping the screen lit to finish a
 build is a different and worse request.
 
-A hold ends when its session's `claude` process exits, when the battery falls to
-the floor (20% by default), when the battery override lapses, or after two hours
-with no activity at all — whichever comes first.
+## How long it holds
 
-That two-hour ceiling is a **hang detector, not an idle timer**: every prompt and
-every tool batch resets it, *including batches inside dispatched subagents*. So a
-session waiting on healthy subagents never approaches it, and one waiting on a
-subagent that hung goes quiet and sleeps. Do not propose removing it — that was
-raised on 2026-08-26 and rejected, because removing it deletes exactly that
-protection.
+The point is to let Claude's **background work finish** with nobody at the
+keyboard. Two kinds of hold do that:
+
+- **Session hold — a 30-minute idle timer.** A prompt or a tool batch re-arms it
+  (subagents' batches included), at most every 2 minutes, so the Mac sleeps
+  **28–30 minutes** after the last activity. With several sessions open, it runs
+  from the last activity in any of them.
+- **Job hold — one per background job, capped at 1 hour.** A command Claude
+  started with `run_in_background` (a Codex gate, a test run) gets its own hold
+  that ends the moment the job finishes. The 1-hour cap ends it anyway if the job
+  hangs; a job is never re-held after its cap.
+
+The idle timer is the fallback for work that is running but was not detected.
+Both numbers are the maintainer's choice; `hold_seconds` and `job_hold_seconds`
+change them. Do not propose removing either deadline — a hold with no deadline is
+how a hung job keeps a Mac awake overnight.
+
+**Every hold also ends** when its session's `claude` process exits, when the
+battery falls to the floor (20% by default, on battery only), when you unplug
+without the battery override, or when the override lapses.

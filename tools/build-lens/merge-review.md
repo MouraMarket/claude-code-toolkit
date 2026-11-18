@@ -26,9 +26,9 @@ If the wrapper exits 4, Codex is unavailable: follow "Exit 4" in
 **A repo with no `origin` remote** (`git remote` prints nothing): in `/build`'s
 G5 step, skip the fetch and merge `<base>` instead of `origin/<base>`. Code
 Review (both modes) and economical Merge Review review against the local base
-branch there. Full-power Merge Review's `--merge-with` fetches `origin`, so it
-refuses: say so and run the economical path. A configured `origin` that fails
-to fetch is a real failure, not this case.
+branch there, and so does full-power Merge Review: `--merge-with <base>` merges
+the local branch and fetches nothing. A configured `origin` that fails to fetch
+is a real failure, not this case.
 
 ### Economical mode
 

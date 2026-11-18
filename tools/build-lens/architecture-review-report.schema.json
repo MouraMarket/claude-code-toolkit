@@ -1,0 +1,46 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["status", "round", "moment", "context_requests", "lens_verdicts",
+               "principles", "changes", "implementation_sketch", "unverified", "executed"],
+  "properties": {
+    "status": {"type": "string", "enum": ["final", "needs_context"]},
+    "round": {"type": "integer"},
+    "moment": {"type": "string", "enum": ["design", "final"]},
+    "context_requests": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "question", "why_needed"],
+      "properties": {"id": {"type": "string"}, "question": {"type": "string"},
+                     "why_needed": {"type": "string"}}}},
+    "lens_verdicts": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["lens", "verdict", "evidence"],
+      "properties": {
+        "lens": {"type": "string", "enum": ["coherence", "elegance", "rebuild", "unaccounted",
+          "wrong-premise", "simpler-alternative", "silent-failure", "already-exists", "seams"]},
+        "verdict": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}}}}},
+    "principles": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["statement", "why"],
+      "properties": {"statement": {"type": "string"}, "why": {"type": "string"}}}},
+    "changes": {"type": "array", "items": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "kind", "what", "why", "serves_objective",
+                   "preserve", "done_when", "size", "evidence"],
+      "properties": {
+        "id": {"type": "string"}, "title": {"type": "string"},
+        "kind": {"type": "string", "enum": ["rebuild", "refine", "add", "cut"]},
+        "what": {"type": "string"}, "why": {"type": "string"},
+        "serves_objective": {"type": "string"}, "preserve": {"type": "string"},
+        "done_when": {"type": "string"},
+        "size": {"type": "string", "enum": ["S", "M", "L"]},
+        "evidence": {"type": "array", "items": {"type": "string"}}}}},
+    "implementation_sketch": {"type": "string"},
+    "unverified": {"type": "array", "items": {"type": "string"}},
+    "executed": {"type": "object", "additionalProperties": false,
+      "required": ["ran", "commands", "why_not"],
+      "properties": {"ran": {"type": "boolean"},
+                     "commands": {"type": "array", "items": {"type": "string"}},
+                     "why_not": {"type": "string"}}}
+  }
+}
