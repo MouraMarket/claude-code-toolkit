@@ -365,7 +365,16 @@ class TestBuildFixture(FixtureBase):
         self.assertIn(str(chars), detail)
         ok, detail = self.prove.structural(fx.mem, Cfg(max_hook_chars=5))
         self.assertFalse(ok)
+        # Bytes count too: a threshold between the char and byte sizes fails.
         index = os.path.join(fx.mem, "MEMORY.md")
+        write(index, read(index) + "- [Okina](m1.md) \u2014 " + "\u02bb" * 40 + "\n")
+        scanned = lint_lib.scan(fx.mem)
+        self.assertGreater(scanned["index_bytes"], scanned["index_chars"])
+        ok, detail = self.prove.structural(
+            fx.mem, Cfg(distill_at_chars=scanned["index_chars"] + 1))
+        self.assertFalse(ok, detail)
+        self.assertIn("not under the threshold", detail)
+        write(index, read(index).rsplit("- [Okina]", 1)[0])
         write(index, read(index) + "- [Ghost](ghost.md) — no such file\n")
         ok, detail = self.prove.structural(fx.mem, None)
         self.assertFalse(ok)

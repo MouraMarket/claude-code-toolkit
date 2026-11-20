@@ -385,10 +385,12 @@ def structural(memory_dir, config):
         return False, "memory dir is not readable"
     found = lint_lib.findings(result, config)
     chars = result["index_chars"]
+    size = lint_lib.distill_size(result)
     threshold = lint_lib.distill_at_chars(config)
-    ok = not found and chars < threshold
-    detail = "index %d chars, threshold %d" % (chars, threshold)
-    if chars >= threshold:
+    ok = not found and size < threshold
+    detail = "index %d chars, %d bytes, threshold %d" % (
+        chars, result.get("index_bytes") or 0, threshold)
+    if size >= threshold:
         detail += " (not under the threshold)"
     if found:
         detail += "; findings: %s" % "; ".join(str(f) for f in found)

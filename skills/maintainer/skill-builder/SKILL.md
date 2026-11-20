@@ -160,8 +160,9 @@ downstream notices.
    `./install.sh --check` for the whole suite.
 2. On a new skill: create it under `skills/<profile>/<name>/SKILL.md` with `name: <name>`,
    in the group of the profile that should carry it; its group's plugin ships it (each profile is one plugin in the `claude-code-toolkit` marketplace), with
-   no link. No installer change. `./install.sh --check` fails if its bare name clashes with another
-   plugin or a personal copy. Live sessions pick it up after `/reload-plugins`.
+   no link. No installer change. `./install.sh --check` warns if its bare name clashes with a third-party
+   plugin (the user's call), and fails if it clashes with a personal copy or another
+   toolkit profile, or if the plugin inventory cannot be read in full. Live sessions pick it up after `/reload-plugins`.
 3. Run `python3 tools/catalogue/build_catalogue.py` and commit `docs/catalogue.md`;
    the catalogue suite fails on a stale file. Add the skill's entry to
    `docs/capabilities.json`; `lib/tests/test_capabilities.py` fails on a skill

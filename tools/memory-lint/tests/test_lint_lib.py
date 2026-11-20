@@ -2276,6 +2276,21 @@ def _index_of_exact_chars(target):
     return [(name, "h" * length) for name, length in rows]
 
 
+def _bytes_of_exact_chars(target):
+    """UTF-8 size of the index `_index_of_exact_chars(target)` builds. Rows
+    carry an em dash (3 bytes), so bytes run ahead of chars."""
+    rows = _index_of_exact_chars(target)
+    return len(("\n".join(row(n, h) for n, h in rows) + "\n").encode("utf-8"))
+
+
+def _largest_chars_under_bytes(limit):
+    """The largest exact-chars index whose UTF-8 size is still under `limit`."""
+    chars = limit
+    while _bytes_of_exact_chars(chars) >= limit:
+        chars -= 1
+    return chars
+
+
 class _DistillConfig(object):
     """A config double: explicit values, never this machine's config."""
 
@@ -2336,42 +2351,87 @@ class DistillEnv(unittest.TestCase):
 
 
 class TestDistillTrigger(DistillEnv):
-    START = "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 22000 /"
+    START = "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 19500 /"
 
     def test_b1_startup_and_clear_fire_first(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         for source in ("startup", "clear"):
             out = lint_lib.build(d.path, source=source, session_id="me")
             self.assertTrue(out.startswith(self.START), (source, out[:80]))
 
     def test_b1_exact_text(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         out = lint_lib.build(d.path, source="startup", session_id="me")
         first = out.split("\n")[0]
         self.assertEqual(
             first,
-            "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 22000 / 24000 chars "
-            "(distill at 22000). Past ~25,000 the harness drops rows silently. "
+            "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 19500 / 24000 chars, "
+            "%d bytes (distill at 19500). Past ~25,000 the harness drops rows silently. "
             "In your FIRST reply, tell the user and offer three choices: (1) "
             "make this the distillation session (run "
             "/toolkit-continuity:memory-index-distill); (2) hand off: give a "
             "one-line kickoff for a dedicated session and carry on here; (3) "
             "later. Distillation pauses the other running sessions via "
-            "/handover, so it runs in a session of its own.")
+            "/handover, so it runs in a session of its own." % _bytes_of_exact_chars(19500))
 
     def test_b2_other_sources_stay_silent(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         for source in ("compact", "resume", None):
             out = lint_lib.build(d.path, source=source, session_id="me")
             self.assertNotIn("NEAR CHARACTER LIMIT", out or "", source)
 
     def test_b3_one_under_is_silent(self):
-        d = self.memory(21999)
+        # "Under" is measured in bytes now; the paired index one char larger
+        # reaches the trigger, so this boundary is the real one.
+        chars = _largest_chars_under_bytes(19500)
+        d = self.memory(chars)
+        self.assertLess(lint_lib.scan(d.path)["index_bytes"], 19500)
         out = lint_lib.build(d.path, source="startup", session_id="me")
         self.assertNotIn("NEAR CHARACTER LIMIT", out or "")
+        over = self.memory(chars + 1)
+        self.assertGreaterEqual(lint_lib.scan(over.path)["index_bytes"], 19500)
+        out = lint_lib.build(over.path, source="startup", session_id="me")
+        self.assertIn("NEAR CHARACTER LIMIT", out or "")
+
+    def multibyte_memory(self, chars, min_bytes):
+        """An index of exactly `chars` characters, but at least `min_bytes`
+        UTF-8 bytes: whole hooks rewritten as the okina (2 bytes each)."""
+        rows = _index_of_exact_chars(chars)
+        added = 0
+        for i, (name, hook) in enumerate(rows):
+            if chars + added >= min_bytes:
+                break
+            rows[i] = (name, "\u02bb" * len(hook))
+            added += len(hook)
+        d = MemoryDir(rows)
+        self.addCleanup(d.cleanup)
+        scanned = lint_lib.scan(d.path)
+        # Preconditions, asserted: under the trigger in chars, over it in bytes.
+        self.assertEqual(scanned["index_chars"], chars)
+        self.assertGreaterEqual(scanned["index_bytes"], min_bytes)
+        return d
+
+    def test_b12_bytes_over_trigger_fires_though_chars_are_under(self):
+        # Claude Code's own nag counts bytes; a chars-only trigger lost to it.
+        d = self.multibyte_memory(18000, 19500)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertTrue((out or "").startswith(
+            "MEMORY INDEX NEAR CHARACTER LIMIT \u2014 MEMORY.md is 18000 / 24000 chars, "),
+            (out or "")[:120])
+        self.assertRegex(lint_lib.report(d.path), r"distill at\s+19500 \(due\)")
+
+    def test_b12_same_chars_all_ascii_stays_silent(self):
+        # Control for b12: the identical char count, hooks one byte per char.
+        d = self.memory(18000)
+        out = lint_lib.build(d.path, source="startup", session_id="me")
+        self.assertNotIn("NEAR CHARACTER LIMIT", out or "")
+        self.assertLess(_bytes_of_exact_chars(18000), 19500)
+        self.assertRegex(lint_lib.report(d.path),
+                         r"distill at\s+19500 \(%d to go\)"
+                         % (19500 - _bytes_of_exact_chars(18000)))
 
     def test_b4_other_sessions_live_claim(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         self.write_claim("other", 1)
         out = lint_lib.build(d.path, source="startup", session_id="me")
         first = out.split("\n")[0]
@@ -2382,13 +2442,13 @@ class TestDistillTrigger(DistillEnv):
             r"memory until it finishes\.$")
 
     def test_b4_own_claim_gets_the_normal_text(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         self.write_claim("me", 1)
         out = lint_lib.build(d.path, source="startup", session_id="me")
         self.assertTrue(out.startswith(self.START))
 
     def test_b4_stale_claim_gets_the_normal_text(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         self.write_claim("other", 25)
         out = lint_lib.build(d.path, source="startup", session_id="me")
         self.assertTrue(out.startswith(self.START))
@@ -2399,41 +2459,42 @@ class TestDistillTrigger(DistillEnv):
         self.assertEqual(lint_lib.distill_at_chars(cfg), 23000)
 
     def test_b5_default_and_bad_values(self):
-        self.assertEqual(lint_lib.distill_at_chars(_DistillConfig()), 22000)
+        self.assertEqual(lint_lib.distill_at_chars(_DistillConfig()), 19500)
         for bad in (0, -5, "x", True, 1.5):
             self.assertEqual(
-                lint_lib.distill_at_chars(_DistillConfig(distill=bad)), 22000, bad)
+                lint_lib.distill_at_chars(_DistillConfig(distill=bad)), 19500, bad)
         self.assertEqual(
             lint_lib.distill_at_chars(_DistillConfig(distill=21000)), 21000)
 
     def test_b6_report_row(self):
-        due = self.memory(22000)
+        due = self.memory(19500)
         self.assertRegex(lint_lib.report(due.path),
-                         r"distill at\s+22000 \(due\)")
-        under = self.memory(21000)
+                         r"distill at\s+19500 \(due\)")
+        under = self.memory(18500)
         self.assertRegex(lint_lib.report(under.path),
-                         r"distill at\s+22000 \(1000 to go\)")
+                         r"distill at\s+19500 \(%d to go\)"
+                         % (19500 - _bytes_of_exact_chars(18500)))
 
     def test_b6_report_row_sits_right_after_index_budget_row(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         lines = lint_lib.report(d.path).split("\n")
         i = [n for n, l in enumerate(lines) if l.startswith("index budget")][0]
         self.assertTrue(lines[i + 1].startswith("distill at"), lines[i + 1])
 
     def test_b11_skill_not_shipped_means_no_block(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         with mock.patch.object(lint_lib, "distill_skill_shipped",
                                return_value=False):
             out = lint_lib.build(d.path, source="startup", session_id="me")
         self.assertNotIn("NEAR CHARACTER LIMIT", out or "")
 
     def test_block_precedes_drift_notice(self):
-        d = MemoryDir([("a.md", "x" * 400)] + _index_of_exact_chars(22000)[:-1])
+        d = MemoryDir([("a.md", "x" * 400)] + _index_of_exact_chars(19500)[:-1])
         self.addCleanup(d.cleanup)
         out = lint_lib.build(d.path, source="startup", session_id="me")
-        # A precondition, asserted: a fixture that slipped under 22000 would
+        # A precondition, asserted: a fixture that slipped under 19500 would
         # otherwise skip every assertion below and pass vacuously.
-        self.assertGreaterEqual(lint_lib.scan(d.path)["index_chars"], 22000)
+        self.assertGreaterEqual(lint_lib.scan(d.path)["index_chars"], 19500)
         self.assertTrue(out.startswith("MEMORY INDEX NEAR CHARACTER LIMIT"))
         self.assertIn("\n\nMEMORY INDEX DRIFT", out)
 
@@ -2441,7 +2502,7 @@ class TestDistillTrigger(DistillEnv):
         # Same fixture as above, so drift findings exist: with another
         # session's live claim, the notice says "don't write memory" and must
         # not go on to say "compress".
-        d = MemoryDir([("a.md", "x" * 400)] + _index_of_exact_chars(22000)[:-1])
+        d = MemoryDir([("a.md", "x" * 400)] + _index_of_exact_chars(19500)[:-1])
         self.addCleanup(d.cleanup)
         self.assertTrue(lint_lib.findings(lint_lib.scan(d.path)))
         self.write_claim("other", 1)
@@ -2493,7 +2554,7 @@ class TestDistillExecutable(DistillEnv):
                      CLAUDE_INDEX_DISTILL_CLAIM=self.claim))
 
     def test_b7_source_gates_the_notice(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         claude = os.path.join(self.sandbox, ".claude")
         os.makedirs(claude)
         with open(os.path.join(claude, "settings.json"), "w") as fh:
@@ -2508,7 +2569,7 @@ class TestDistillExecutable(DistillEnv):
         self.assertTrue(ctx.startswith("MEMORY INDEX NEAR CHARACTER LIMIT"), ctx[:80])
 
     def test_b7_no_skill_no_block_through_the_executable(self):
-        d = self.memory(22000)
+        d = self.memory(19500)
         claude = os.path.join(self.sandbox, ".claude")
         os.makedirs(claude)
         with open(os.path.join(claude, "settings.json"), "w") as fh:
@@ -2522,7 +2583,7 @@ class TestExampleConfigDistill(unittest.TestCase):
     def test_distill_key_documented_with_default(self):
         section = json.load(open(os.path.join(REPO, "config.example.json"),
                                  encoding="utf-8"))["memory_lint"]
-        self.assertEqual(section["distill_at_chars"], 22000)
+        self.assertEqual(section["distill_at_chars"], 19500)
         self.assertIn("//distill_at_chars", section)
 
 

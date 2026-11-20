@@ -48,7 +48,7 @@ automatically"). **Never show a wall of terminal output**: report the outcome in
 **Never apply the autonomous permission grant.** `./install.sh --autonomous` and
 `skills/core/autonomy-permissions/` are advanced opt-ins for later, and wrong for someone new. If
 they ask, say it exists, say it's for later, move on. Tell them at the start what will happen and
-that it takes an hour to an hour and a half, mostly unattended test runs. Never promise less.
+that it takes one to three hours, mostly unattended test runs, longest over an older install. Never promise less.
 
 ## Their level — ask this first
 
@@ -194,7 +194,7 @@ Core (the safety checks and this onboarding) is always installed. Then one `AskU
 
 - **continuity**, recommended because its `default` is true. They can decline it; say what it brings first.
 - **builder**
-- **maintainer**: also brings builder, and is for people who maintain this toolkit.
+- **maintainer**: also brings builder and installs the `skill-prompt-optimizer` plugin (its `docs/catalogue.md` "Also installs" line); say both, and that it is for people who maintain this toolkit.
 - **Mac**: only when `uname -s` printed `Darwin` in Phase 0. Add the `caffeinate` explanation from `--list-tools`; choosing Mac turns it on.
 
 Write `core` plus their choices. This is the recommended answer:
@@ -381,13 +381,13 @@ Claude Code now**, because hooks load only when a session starts, and to open th
 their work folder**, the `workspace_root` Phase 1 set or confirmed: that is how Claude finds the
 right memory for their work. If the install printed that `autoMemoryDirectory` is not set because no
 session has run in `workspace_root` yet, that is expected now; verify finishes it.
+`/restart` and resume do not count: they reopen this conversation, and verify needs a fresh session. Say too that every other open Claude Code window runs without the new guards until it, too, restarts.
 
 ```bash
 cd "<workspace_root>" && claude
 ```
 
-(In VS Code: open that folder, then Claude Code.) There they type `/toolkit-core:onboard verify`.
-Stop there.
+(In VS Code: open that folder, then Claude Code.) There they type `/toolkit-core:onboard verify`. Stop there.
 
 ## Phase 6b — Prove it in the new session
 

@@ -146,6 +146,13 @@ class TestStates(ReadinessTestCase):
         reason = result["profiles"][0]["reason"]
         self.assertIn(OTHER, reason)
         self.assertIn(TESTED, reason)
+        # H4 F8: a profile row keeps its weaker proof's wording, never "hooks proven".
+        core_reason, build_reason = (row["reason"] for row in result["profiles"])
+        self.assertIn("hooks fired", core_reason)
+        self.assertIn("SessionStart hooks ran", build_reason)
+        self.assertIn("not covered by this check", build_reason)
+        self.assertNotIn("hooks proven", build_reason)
+        self.assertIn(OTHER, build_reason)
 
     def test_proven_hooks_with_unknown_session_version_are_unverified(self):
         self.enable("toolkit-core", "toolkit-build")

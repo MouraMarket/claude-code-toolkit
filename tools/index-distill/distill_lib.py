@@ -906,4 +906,4 @@ def apply(manifest_path, memory_dir, workspace, session_id, config=None,
     print("Restart any Claude session started before %s: it still holds the old layout."
           % datetime.datetime.now().strftime("%H:%M"))
     distill_claim.release(session_id)
-    return 4 if found or after >= lint_lib.distill_at_chars(config) else 0
+    return 4 if found or lint_lib.distill_size(result) >= lint_lib.distill_at_chars(config) else 0

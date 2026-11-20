@@ -195,7 +195,13 @@ def max_index_chars(config=None):
                INDEX_TRUNCATION_CHARS - 1)
 
 
-DEFAULT_DISTILL_AT_CHARS = 22000
+# 19500, not 22000 (2026-11-18): Claude Code's own PostToolUse notice nags
+# "compact it now" from 80% of its 25,000-BYTE read limit (20,000 bytes;
+# read from the 2.1.306 binary). Below that, a session met the nag before
+# this trigger offered the distill skill, and trimmed ad hoc. This counts
+# characters; 19500 chars stays under 20,000 bytes while multibyte text
+# (the okina, em dashes) is under ~2.5% of the index.
+DEFAULT_DISTILL_AT_CHARS = 19500
 
 
 def distill_at_chars(config=None):
@@ -222,6 +228,17 @@ def distill_at_chars(config=None):
     # A plain `cap - 1000` reaches 0 or less on a small configured cap, and a
     # threshold of 0 reads every index as due.
     return max(cap - 1000, cap // 2, 1)
+
+
+def distill_size(result):
+    """The size the distill trigger compares: the larger of chars and bytes.
+
+    Claude Code's own notice counts UTF-8 bytes, so a chars-only trigger is
+    beaten by it on a multibyte-heavy index (5,023 chars at 20,025 bytes
+    stayed silent). Bytes are never fewer than chars, so this is the byte
+    count in practice; max() keeps it safe on a partial result.
+    """
+    return max(result.get("index_chars") or 0, result.get("index_bytes") or 0)
 
 
 def distill_skill_shipped():
@@ -763,7 +780,9 @@ def scan(memory_dir, config=None):
     # Both, and they are not interchangeable: `index_chars` is what the
     # harness truncates on and what the cap is compared against;
     # `index_bytes` is reported for humans reading `ls`/`wc -c` and must
-    # never be substituted for it. See DEFAULT_MAX_INDEX_CHARS.
+    # never be substituted for it. See DEFAULT_MAX_INDEX_CHARS. The ONE
+    # exception is the distill trigger (distill_size below): Claude Code's
+    # "compact it now" notice counts BYTES, and the trigger must beat it.
     result["index_chars"] = len(text)
     result["index_bytes"] = len(text.encode("utf-8"))
     result["index_lines"] = harness_line_count(text)
@@ -1135,8 +1154,9 @@ def _distill_block(result, config, session_id):
     if not result.get("readable"):
         return None
     chars = result.get("index_chars") or 0
+    size = distill_size(result)
     threshold = distill_at_chars(config)
-    if chars < threshold:
+    if size < threshold:
         return None
     holder = None
     claims = _distill_claim()
@@ -1152,14 +1172,16 @@ def _distill_block(result, config, session_id):
             "it finishes." % claims.local_hhmm(holder)
         )
     return (
-        "MEMORY INDEX NEAR CHARACTER LIMIT — MEMORY.md is %d / %d chars (distill at %d). "
+        "MEMORY INDEX NEAR CHARACTER LIMIT — MEMORY.md is %d / %d chars, %d bytes "
+        "(distill at %d). "
         "Past ~25,000 the harness drops rows silently. In your FIRST reply, "
         "tell the user and offer three choices: (1) make this the "
         "distillation session (run /toolkit-continuity:memory-index-distill); "
         "(2) hand off: give a one-line kickoff for a dedicated session and "
         "carry on here; (3) later. Distillation pauses the other running "
         "sessions via /handover, so it runs in a session of its own."
-        % (chars, max_index_chars(config), threshold)
+        % (chars, max_index_chars(config), result.get("index_bytes") or 0,
+           threshold)
     )
 
 
@@ -1224,10 +1246,10 @@ def _spare_or_over(value, cap):
 
 def _distill_state(result, config):
     threshold = distill_at_chars(config)
-    chars = result.get("index_chars") or 0
-    if chars >= threshold:
+    size = distill_size(result)
+    if size >= threshold:
         return "%d (due)" % threshold
-    return "%d (%d to go)" % (threshold, threshold - chars)
+    return "%d (%d to go)" % (threshold, threshold - size)
 
 
 def report(memory_dir, config=None):

@@ -531,11 +531,13 @@ class TestOnboardingConduct(unittest.TestCase):
 
     def test_the_time_promise_is_not_ten_minutes(self):
         """The measured install took ~1.5 h (three suite sweeps); "about ten
-        minutes" set a stranger up to think it had hung."""
+        minutes" set a stranger up to think it had hung. H4 measured 2 h 50 m
+        on an upgrade, so both docs promise up to three hours (row 96, F9)."""
         for label, text in (("SKILL.md", self.skill), ("ONBOARDING.md", self.onboarding)):
             with self.subTest(doc=label):
                 self.assertNotRegex(text, r"(?i)\b(ten|10) minutes\b")
-                self.assertRegex(text, r"an hour to an hour and a half")
+                self.assertNotRegex(text, r"an hour to an hour and a half")
+                self.assertRegex(text, r"one to three hours")
 
     def test_the_workflow_question_carries_no_recommendation(self):
         """The 28b session tagged "Leave it off (Recommended)" on its own and

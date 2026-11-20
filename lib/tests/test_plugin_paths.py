@@ -518,7 +518,65 @@ class TestCli(Sandbox):
         res = self.run_cli("clashes", self.home, repo)
         self.assertEqual(res.returncode, 0, res.stderr)
         self.assertEqual(len(res.stdout.splitlines()), 1)
-        self.assertIn("~/.claude/skills/build shadows toolkit-core:build", res.stdout)
+        self.assertTrue(res.stdout.startswith(
+            "required\t~/.claude/skills/build shadows toolkit-core:build"), res.stdout)
+
+    def clashes_lines(self, repo):
+        res = self.run_cli("clashes", self.home, repo)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return res.stdout.splitlines()
+
+    def test_third_party_clash_prints_warn(self):
+        repo = os.path.join(self.tmp, "repo")
+        write(os.path.join(repo, "skills", "build", "SKILL.md"), "x")
+        core_only_layout(repo)
+        root = self.hosted_plugin()
+        self.install_record("p@mp", root)
+        write(os.path.join(root, "skills", "build", "SKILL.md"), "x")
+        write(os.path.join(root, "commands", "build.md"), "x")
+        self.settings({"p@mp": True})
+        self.assertEqual(self.clashes_lines(repo), [
+            "warn\tp:build (a command) and toolkit-core:build share a bare name: "
+            "/build runs whichever plugin loaded first. Retire one copy.",
+            "warn\tp:build and toolkit-core:build share a bare name: /build runs "
+            "whichever plugin loaded first. Retire one copy."])
+
+    def test_personal_shadow_prints_required(self):
+        repo = os.path.join(self.tmp, "repo")
+        write(os.path.join(repo, "skills", "build", "SKILL.md"), "x")
+        core_only_layout(repo)
+        os.makedirs(os.path.join(self.claude, "skills", "build"))
+        write(os.path.join(self.claude, "commands", "build.md"), "x")
+        lines = self.clashes_lines(repo)
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            self.assertTrue(line.startswith("required\t"), line)
+
+    def test_sibling_clash_prints_required(self):
+        repo = os.path.join(self.tmp, "repo")
+        write(os.path.join(repo, "skills", "build", "SKILL.md"), "x")
+        write(os.path.join(repo, "skills-extra", "build", "SKILL.md"), "x")
+        write_registry(repo, {
+            "core": profile("toolkit-core", "plugin", default=True),
+            "extra": profile("extra", "plugin-extra")})
+        link_plugin_skills(repo)
+        link_plugin_skills(repo, "plugin-extra", "../skills-extra")
+        lines = self.clashes_lines(repo)
+        self.assertEqual(len(lines), 1, lines)
+        self.assertTrue(lines[0].startswith("required\t"), lines)
+        self.assertIn("share a bare name", lines[0])
+
+    def test_incomplete_inventory_prints_required(self):
+        repo = os.path.join(self.tmp, "repo")
+        write(os.path.join(repo, "skills", "build", "SKILL.md"), "x")
+        core_only_layout(repo)
+        self.settings({"ghost@a": True})
+        write(os.path.join(repo, "claude", "profiles.json"), "{not json")
+        lines = self.clashes_lines(repo)
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            self.assertTrue(line.startswith("required\t"), line)
+            self.assertIn("incomplete", line)
 
     def test_bad_argv_exits_2(self):
         for argv in ([], ["legacy"], ["legacy", "a"], ["nope", "a", "b"],

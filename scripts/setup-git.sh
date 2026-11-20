@@ -128,12 +128,38 @@ else
   # prevents, and one that may already exist on a machine set up before it —
   # reported "pre-commit installed" while scanning nothing. -x follows the link
   # and is false unless something executable is actually there.
-  if [[ -x "$HOOKS_DIR/pre-commit" ]]; then
+  #
+  # Executable is not enough: the hook must resolve to THIS checkout's scanner,
+  # the same test lib/secret_scan_status.py applies (read by install.sh --check
+  # and /onboard verify). `-x` alone reported "pre-commit installed" for an old
+  # fork's hook, which the apply below re-links anyway, so --check said "fine"
+  # where the status probe said "not active" (H4 F5).
+  pre_commit="$HOOKS_DIR/pre-commit"
+  scanner="$REPO_ROOT/tools/secret-scan/git-pre-commit"
+  real_path() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1" 2>/dev/null; }
+  # Both resolutions must succeed: two failed lookups are two empty strings,
+  # which compare equal, and set -e does not fire inside a condition.
+  hook_real="$(real_path "$pre_commit" || true)"
+  scanner_real="$(real_path "$scanner" || true)"
+  if [[ -x "$pre_commit" && -n "$hook_real" && "$hook_real" == "$scanner_real" ]]; then
     ok "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE} (pre-commit installed)"
-  elif [[ -L "$HOOKS_DIR/pre-commit" ]]; then
+  elif [[ -e "$pre_commit" && ( -z "$hook_real" || -z "$scanner_real" ) ]]; then
+    warn "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE} but whether its pre-commit is this"
+    warn "   checkout's scanner could not be checked (python3 could not resolve the path)"
+    act "re-link pre-commit to ${scanner/#$HOME/$TILDE}"
+  elif [[ -L "$pre_commit" && ! -e "$pre_commit" ]]; then
     warn "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE} but its pre-commit symlink is BROKEN"
-    warn "   -> $(readlink "$HOOKS_DIR/pre-commit" 2>/dev/null || echo '?')"
+    warn "   -> $(readlink "$pre_commit" 2>/dev/null || echo '?')"
     warn "   Nothing is being scanned. Re-run this from the primary checkout."
+  elif [[ -e "$pre_commit" || -L "$pre_commit" ]]; then
+    if [[ -L "$pre_commit" ]]; then
+      foreign_target="-> $(readlink "$pre_commit" 2>/dev/null || echo '?')"
+    else
+      foreign_target="(a regular file, not a link)"
+    fi
+    warn "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE} but its pre-commit is NOT this checkout's scanner"
+    warn "   $foreign_target"
+    act "re-link pre-commit to ${scanner/#$HOME/$TILDE}  (replaces the file above)"
   else
     act "core.hooksPath = ${HOOKS_DIR/#$HOME/$TILDE}  (blocks commits containing credentials)"
   fi

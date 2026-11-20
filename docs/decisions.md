@@ -508,8 +508,11 @@ Defends: `install.sh`, `claude/legacy-hook-commands.json`, `claude/profiles.json
   yours that merely looks similar survives.
 - **Nothing is linked into `~/.claude/{commands,agents,skills,build-lens}`.** An
   old link is removed by its resolved target, with component containment, never
-  by name, so a link of yours that shares a name survives. A bare-name clash fails
-  `./install.sh --check`, because the runtime picks one copy silently.
+  by name, so a link of yours that shares a name survives. A bare-name clash
+  with a third-party plugin is a warning, because it is the user's call. A
+  personal copy, two toolkit profiles shipping one name, or an incomplete
+  inventory still fails `./install.sh --check`, because the runtime picks one
+  copy silently.
 - **Agents dispatch as `toolkit-build:<name>`**, and skills are namespaced by
   their plugin.
 - **`./install.sh --check` fails on** a plugin not installed and enabled, a

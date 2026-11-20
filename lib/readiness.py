@@ -154,9 +154,12 @@ def report(repo, home, session_id):
                 row["state"] = PROVEN
             else:
                 row["state"] = UNVERIFIED
-                row["reason"] = ("hooks proven, but this session runs Claude Code %s and "
+                # Keep the verdict's own wording: core's says its hooks FIRED (a
+                # canary), a profile's says only its SessionStart hooks ran. A
+                # blanket "hooks proven" claimed more for profiles (H4 F8).
+                row["reason"] = ("%s; but this session runs Claude Code %s and "
                                  "the tested version is %s"
-                                 % (session or "unknown", tested or "unknown"))
+                                 % (message, session or "unknown", tested or "unknown"))
         rows.append(row)
     return {"tested": tested, "session": session, "profiles": rows}
 

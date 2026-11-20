@@ -4,13 +4,14 @@
 `~/.config/claude-code-toolkit/install-record.json` lists the permission rules,
 default mode and CLAUDE.md exclude the installer wrote, so an uninstall removes
 only what the installer owns. install.sh calls the writers through this module
-and ends a run with `python3 lib/install_record.py finish <repo>`.
+and ends a run with `python3 lib/install_record.py finish <repo>` (or `stamp`
+when the run is red, so the audit's window still starts).
 
 Writes are atomic (temp file + os.replace). An unreadable record is moved to
 `<path>.corrupt-<UTC stamp>` and a new one started. OSError from a write
 propagates; the caller decides what it means.
 
-`first_installed_at` is stamped by the first `finish` and never changed after.
+`first_installed_at` is stamped by the first `finish` or `stamp` and never changed after.
 
 The `rollback` entry is written by `--update` and `--rollback`
 (`lib/toolkit_update.py`) and read only through `rollback()`.
@@ -206,8 +207,7 @@ def set_workflows_owned(path, owned):
     _write(path, record)
 
 
-def finish(path, checkout, commit, profiles, installed_at):
-    record = _open_for_update(path)
+def _stamp_first(record, installed_at):
     # Set once, never overwritten: the first install's stamp outlives re-runs.
     first = record.get("first_installed_at")
     if not isinstance(first, str) or not first:
@@ -216,6 +216,20 @@ def finish(path, checkout, commit, profiles, installed_at):
         previous = record.get("installed_at")
         record["first_installed_at"] = (previous if isinstance(previous, str) and previous
                                         else installed_at)
+
+
+def stamp_first_install(path, installed_at):
+    """Set `first_installed_at` if absent and write no other key: the hooks are
+    installed, so the guard audit's window starts now, even on a run that is
+    not clean enough for `finish`."""
+    record = _open_for_update(path)
+    _stamp_first(record, installed_at)
+    _write(path, record)
+
+
+def finish(path, checkout, commit, profiles, installed_at):
+    record = _open_for_update(path)
+    _stamp_first(record, installed_at)
     record.update({"checkout": checkout, "commit": commit,
                    "profiles": profiles, "installed_at": installed_at})
     _write(path, record)
@@ -343,8 +357,16 @@ def _profiles_of(repo):
 
 
 def _cli(argv):
+    if argv == ["stamp"]:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        try:
+            stamp_first_install(record_path(os.path.expanduser("~")), now)
+        except (OSError, ValueError) as exc:
+            print("install record not written: %s" % exc, file=sys.stderr)
+            return 1
+        return 0
     if len(argv) != 2 or argv[0] != "finish":
-        print("usage: install_record.py finish <repo>", file=sys.stderr)
+        print("usage: install_record.py finish <repo> | stamp", file=sys.stderr)
         return 2
     repo = argv[1]
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -28,6 +28,7 @@ from test_install_permissions_opt_out import DENY, MERGE, PUSH
 LIB = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, LIB)
 import hook_manifest  # noqa: E402
+import plugin_paths  # noqa: E402
 
 PATTERN = "**/.claude/worktrees/*/CLAUDE.md"
 
@@ -138,6 +139,26 @@ class RecordWritesTestCase(unittest.TestCase):
         self.assertEqual(1, result.returncode, result.stdout + result.stderr)
         self.assertIn("install record could not be written",
                       result.stdout + result.stderr)
+
+    def test_protected_but_red_apply_stamps_the_era_without_a_commit(self):
+        # The fixture ships no skills, so seed one the plugin step really reads
+        # (plugin/skills -> ../skills), then shadow it with a personal copy:
+        # a required failure that stays required.
+        shipped = os.path.join(self.repo, "skills", "row93-shadow")
+        os.makedirs(shipped)
+        with open(os.path.join(shipped, "SKILL.md"), "w") as handle:
+            handle.write("---\nname: row93-shadow\ndescription: fixture\n---\n")
+        names, error = plugin_paths._shipped_skills(self.repo)
+        self.assertIsNone(error)
+        self.assertIn("row93-shadow", [name for name, _plugin in names])
+        os.makedirs(os.path.join(self.home, ".claude", "skills", "row93-shadow"))
+        result = self.apply(expect=1)
+        self.assertIn("~/.claude/skills/row93-shadow shadows",
+                      result.stdout + result.stderr)
+        record = self.record()
+        self.assertIsInstance(record.get("first_installed_at"), str)
+        self.assertTrue(record["first_installed_at"])
+        self.assertNotIn("commit", record)
 
     def test_wanted_status_line_quotes_only_when_needed(self):
         repo = os.path.join(self.root, "sl")

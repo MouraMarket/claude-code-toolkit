@@ -193,6 +193,38 @@ class TestFirstInstalledAt(RecordTestCase):
         self.assertEqual(ir.load(self.path)["first_installed_at"], "2026-10-05T00:00:00Z")
 
 
+class TestStamp(RecordTestCase):
+    def test_stamp_on_absent_record(self):
+        ir.stamp_first_install(self.path, "2026-11-01T00:00:00Z")
+        record = ir.load(self.path)
+        self.assertEqual(record["first_installed_at"], "2026-11-01T00:00:00Z")
+        self.assertNotIn("commit", record)
+        self.assertNotIn("installed_at", record)
+
+    def test_stamp_keeps_an_existing_first(self):
+        ir.finish(self.path, "/a", "c", [], "2026-10-01T00:00:00Z")
+        before = ir.load(self.path)
+        ir.stamp_first_install(self.path, "2026-11-01T00:00:00Z")
+        self.assertEqual(ir.load(self.path), before)
+
+    def test_stamp_legacy_record_uses_installed_at(self):
+        record = {"schema": 1, "permissions_added": {"allow": [], "ask": [], "deny": []},
+                  "installed_at": "2026-10-05T00:00:00Z"}
+        self.write_raw(json.dumps(record))
+        ir.stamp_first_install(self.path, "2026-11-01T00:00:00Z")
+        stamped = ir.load(self.path)
+        self.assertEqual(stamped["first_installed_at"], "2026-10-05T00:00:00Z")
+        self.assertEqual(stamped["installed_at"], "2026-10-05T00:00:00Z")
+
+    def test_stamp_writes_no_commit(self):
+        ir.add_permissions(self.path, {"ask": ["k"]})
+        ir.stamp_first_install(self.path, "2026-11-01T00:00:00Z")
+        record = ir.load(self.path)
+        self.assertNotIn("commit", record)
+        self.assertNotIn("checkout", record)
+        self.assertEqual(record["permissions_added"]["ask"], ["k"])
+
+
 SHA = "a" * 40
 
 

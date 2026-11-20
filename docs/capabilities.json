@@ -974,7 +974,8 @@
         "lib/tests/test_onboard_profile_chooser.py",
         "lib/tests/test_onboard_setup_audit.py",
         "lib/tests/test_onboard_verify_canary.py",
-        "lib/tests/test_onboard_public.py"
+        "lib/tests/test_onboard_public.py",
+        "lib/tests/test_onboard_reconcile_real_path.py"
       ],
       "commands": [],
       "hooks": [],

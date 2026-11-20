@@ -244,7 +244,23 @@ class TestLegacyRemoval(PluginInstallTestCase):
         self.assertEqual({"PreToolUse", "Notification"}, set(hooks))
         self.assertIn("kept PreToolUse: " + own, proc.stdout)
         for command in [h["command"] for h in legacy]:
-            self.assertIn("removed " + command, proc.stdout)
+            self.assertIn("removed PreToolUse hook entry from settings.json "
+                          "(no file is deleted): " + command, proc.stdout)
+
+    def test_duplicate_legacy_entries_print_once_with_a_count(self):
+        # H4 F15: the same command under three matchers printed three bare
+        # "removed <path>" lines, read as the guard file being deleted.
+        command = self.legacy_hooks()["PreToolUse"][0]["hooks"][0]["command"]
+        handler = {"type": "command", "command": command}
+        self.write_settings({"hooks": {"PreToolUse": [
+            {"matcher": m, "hooks": [handler]} for m in ("Bash", "Edit", "Write")]}})
+        proc = self.run_install()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("hooks", self.settings())
+        line = ("removed PreToolUse hook entry from settings.json "
+                "(no file is deleted): %s (x3)" % command)
+        self.assertEqual(1, proc.stdout.count(line), proc.stdout)
+        self.assertEqual(1, proc.stdout.count(command), proc.stdout)
 
     def test_home_bin_spellings_are_removed_too(self):
         with open(os.path.join(REPO_ROOT, "claude", "legacy-hook-commands.json")) as handle:
@@ -259,7 +275,8 @@ class TestLegacyRemoval(PluginInstallTestCase):
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
         self.assertNotIn("hooks", self.settings())
         for command in spellings:
-            self.assertIn("removed " + command, proc.stdout)
+            self.assertIn("hook entry from settings.json (no file is deleted): " + command,
+                          proc.stdout)
 
     def test_malformed_matcher_block_is_kept_as_is(self):
         legacy = self.legacy_hooks()["PreToolUse"][0]["hooks"][0]

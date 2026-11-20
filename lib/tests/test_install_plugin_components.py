@@ -13,8 +13,9 @@ What is pinned:
 2. An apply removes exactly the links that point into THIS checkout (realpath
    plus component containment, so a `<repo>/../x` target and a `<repo>-old/x`
    sibling are not ours), keeps the rest, and is idempotent.
-3. `--check` fails on an owned leftover, an unresolved plugin layout, a bare-name
-   clash, and an unreadable `settings.json` (an incomplete clash inventory).
+3. `--check` fails on an owned leftover, an unresolved plugin layout, a personal
+   or sibling bare-name clash, and an unreadable `settings.json` (an incomplete
+   clash inventory). A clash with a third-party plugin only warns.
 """
 
 import json
@@ -207,6 +208,36 @@ class TestCheckFailures(ComponentsSandbox):
         self.assertIn("plugin clash check did not run "
                       "(plugin_paths.py clashes exited 2)", proc.stdout)
         self.assertNotIn("no bare-name clashes", proc.stdout)
+
+    def test_third_party_clash_alone_is_not_a_required_failure(self):
+        """A third-party plugin sharing a bare name is the user's call: the
+        line is shown as a warning, but it is no required failure and does
+        not make --check exit 1."""
+        def enable_third_party():
+            claude = os.path.join(self.home, ".claude")
+            cache = os.path.join(claude, "plugins", "cache", "p")
+            os.makedirs(os.path.join(cache, "skills", SKILL))
+            with open(os.path.join(cache, "skills", SKILL, "SKILL.md"), "w") as handle:
+                handle.write("x")
+            os.makedirs(os.path.join(claude, "plugins"), exist_ok=True)
+            with open(os.path.join(claude, "plugins", "installed_plugins.json"), "w") as handle:
+                json.dump({"version": 2, "plugins": {"p@mp": [
+                    {"scope": "user", "installPath": cache}]}}, handle)
+            settings_path = os.path.join(claude, "settings.json")
+            try:
+                with open(settings_path) as handle:
+                    settings = json.load(handle)
+            except OSError:
+                settings = {}
+            settings.setdefault("enabledPlugins", {})["p@mp"] = True
+            with open(settings_path, "w") as handle:
+                json.dump(settings, handle)
+        proc = self.run_install("--check", after_seed=enable_third_party)
+        clash = "p:%s and toolkit-core:%s share a bare name" % (SKILL, SKILL)
+        self.assertIn(clash, proc.stdout)
+        self.assertNotIn("no bare-name clashes", proc.stdout)
+        self.assertNotIn("Required components failed", proc.stdout)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 
     def test_a_clean_machine_reports_no_clash(self):
         """The control for the five above: the section can pass."""

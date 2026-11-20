@@ -77,6 +77,29 @@ Claude do X any more." For every collision, in this order, presented the way the
 **"Adopt the toolkit's copy" is never a synonym for `rm` plus a link.** The installer resolves
 none of these on its own, which is what leaves room to do it properly here.
 
+**Before you move, rename or delete anything under `~/.claude`, resolve where it really lives.**
+`~/.claude/skills`, another folder under `~/.claude`, or `~/.claude` itself can be a symlink into a git checkout
+(a dotfiles or skills repo), and then the "personal copy" you are retiring is a tracked file in that
+repo. Run this, with the path you are about to touch:
+
+```bash
+python3 - "<path>" <<'EOF'
+import os, subprocess, sys
+path = os.path.realpath(os.path.expanduser(sys.argv[1]))
+if not os.path.lexists(path):
+    sys.exit("no such path: %s (check the spelling before deciding anything)" % path)
+folder = path if os.path.isdir(path) else os.path.dirname(path)
+top = subprocess.run(["git", "-C", folder, "rev-parse", "--show-toplevel"],
+                     capture_output=True, text=True)
+print(top.stdout.strip() if top.returncode == 0 else "not in a repo")
+EOF
+```
+
+**If it prints a path, this is a repo change, not a cleanup: stop and ask.** Name the repo it
+printed and the file, and change it only as a commit in that repo, with their yes. Only `not in a
+repo` means the steps above apply as written; an error means you have the wrong path, so find the
+right one before deciding.
+
 **A retired tool is the same problem wearing a different hat.** When something points at a tool
 this checkout no longer has, the prune is correct, but first check where that tool's *capability*
 went. It may live on in another tool that is inert until a config key is set. Dropping the old one
@@ -100,4 +123,5 @@ sameness test it makes is whether an existing link already points at the toolkit
 **Hooks, skills and agents ship in the profile plugin that holds them, so there is nothing to
 link.** `install.sh` removes links it made before, keeps anything else in
 `~/.claude/{commands,agents,skills}`, and `--check` fails if a personal copy shadows a plugin
-skill. When it does, diff the two and keep one.
+skill. When it does, diff the two and keep one, resolving the personal copy's real path first
+(above): it may live in a repo.

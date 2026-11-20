@@ -3140,6 +3140,13 @@ def agent_block_problems(text, gate):
     problems = []
     required = [
         "never skip the gate", "never review",
+        # Row 94: Workflow refuses a scriptPath outside the working
+        # directories (an installed plugin's), and its error suggests
+        # inlining the script. The refusal must route here, and the
+        # suggestion must be named and declined, at every gate.
+        "is refused or fails before a reviewer runs",
+        "never pass the script inline",
+        "the report is the call's return value",
         "claude-review-gate prompt --gate %s" % gate,
         "Agent(", 'model: "opus"', 'effort: "max"',
         "claude-review-gate check --report",
@@ -3238,7 +3245,8 @@ class TestTheRuntimeIsLedgered(unittest.TestCase):
     def test_the_actual_runtime_and_a_fall_back_are_written(self):
         flat = " ".join(" ".join(self._section("### The Build Ledger")).split())
         self.assertIn("runtime that actually ran", flat)
-        self.assertIn("fails as unavailable", flat)
+        self.assertIn("Workflow refusal or absence falls back to `agent`", flat)
+        self.assertIn("never inline", flat)
         self.assertIn("`Ruling:`", flat)
         self.assertIn("`accepted:` line", flat)
 

@@ -1438,8 +1438,16 @@ if isinstance(current, dict):
                 replaced = dict(block)
                 replaced["hooks"] = kept
                 new_blocks.append(replaced)
+        # One line per distinct command, and say it is the settings ENTRY that
+        # goes: "removed ~/.local/bin/claude-danger-guard", repeated per matcher,
+        # read as the guard itself being deleted (H4 F15).
+        counts = {}
         for command in event_removed:
-            print("%s %s %s" % (ACT, "would remove" if check else "removed", command))
+            counts[command] = counts.get(command, 0) + 1
+        for command, count in counts.items():
+            print("%s %s %s hook entry from settings.json (no file is deleted): %s%s"
+                  % (ACT, "would remove" if check else "removed", event, command,
+                     " (x%d)" % count if count > 1 else ""))
         if event_removed:
             any_removed = True
             for command in event_foreign:
@@ -1872,8 +1880,12 @@ else
 fi
 
 # A bare name another copy also defines is a silent wrong answer: `/<name>` runs
-# whichever loaded first. Fail strict: an inventory that could not be read is
-# reported, never read as "no clashes".
+# whichever loaded first. `plugin_paths.py clashes` prints `<severity><TAB><message>`.
+# `warn` is a clash with an enabled third-party plugin: shown, but the user's call,
+# so it is not a required failure. `required` (a personal shadow, two toolkit
+# profiles shipping one name, an incomplete inventory) fails the run, and so does
+# a line with no known severity. Fail strict: an inventory that could not be read
+# is reported, never read as "no clashes".
 clash_rc=0
 clash_out="$(python3 "$REPO/lib/plugin_paths.py" clashes "$HOME" "$REPO")" || clash_rc=$?
 if (( clash_rc != 0 )); then
@@ -1881,8 +1893,17 @@ if (( clash_rc != 0 )); then
   REQUIRED_FAILURES+=("plugin clash check did not run (plugin_paths.py clashes exited $clash_rc)")
 elif [[ -n "$clash_out" ]]; then
   while IFS= read -r clash_line; do
-    warn "$clash_line"
-    REQUIRED_FAILURES+=("$clash_line")
+    clash_severity="${clash_line%%$'\t'*}"
+    clash_message="${clash_line#*$'\t'}"
+    if [[ "$clash_severity" == "warn" && "$clash_line" == *$'\t'* ]]; then
+      warn "$clash_message (a third-party plugin: your call, not a failure)"
+    elif [[ "$clash_severity" == "required" && "$clash_line" == *$'\t'* ]]; then
+      warn "$clash_message"
+      REQUIRED_FAILURES+=("$clash_message")
+    else
+      warn "$clash_line"
+      REQUIRED_FAILURES+=("$clash_line")
+    fi
   done <<< "$clash_out"
 else
   ok "no bare-name clashes"
@@ -2361,7 +2382,19 @@ while IFS= read -r suite; do
 done < <(find "$REPO/tools" "$REPO/lib" "$REPO/skills" "$REPO/evals" "$REPO/scripts" -path '*/tests/test_*.py' -type f 2>/dev/null | sort)
 discovered=${#suites[@]}
 completed=0
+# One root for every suite's own empty HOME (a fresh s<n> under it per suite).
+# No fallback to the real HOME: if the root cannot be made, no suite runs.
+# Under ~/.cache, never $TMPDIR or /tmp: the danger-guard suite refuses a HOME
+# inside the guard's temp safe roots (tools/danger-guard/tests/test_guard.py
+# setUpModule), so a temp-dir root fails it before a single test runs.
+# ci/local-checks.sh places its suite HOMEs the same way.
+suite_root="$(mkdir -p "$HOME/.cache" 2>/dev/null && mktemp -d "$HOME/.cache/claude-toolkit-suites.XXXXXX" 2>/dev/null)" || suite_root=""
+if [[ -z "$suite_root" ]]; then
+  warn "could not create a scratch HOME root for the suites — running none"
+  failed=1
+fi
 for suite in ${suites[@]+"${suites[@]}"}; do
+  [[ -n "$suite_root" ]] || break
   base="$(dirname "$(dirname "$suite")")"
   label="$(basename "$base")/$(basename "$suite")"
   # </dev/null stays as a second line of defence: the collection loop above
@@ -2372,7 +2405,11 @@ for suite in ${suites[@]+"${suites[@]}"}; do
   # user's real setup past it. CLAUDE_CONFIG_DIR=~/.claude is allowed here but
   # makes an installer run inside a suite refuse (the fixture's ~ differs);
   # GIT_CONFIG_GLOBAL overrides the fixture HOME's git config.
-  if ( cd "$base" && env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$suite")" >/dev/null 2>&1 </dev/null ); then
+  # HOME=: each suite gets its own empty HOME, because the user's real
+  # ~/.gitconfig (e.g. a global core.hooksPath) otherwise leaks into fixture
+  # commits and turns suites red on that machine only. Mirrors ci/local-checks.sh.
+  mkdir -p "$suite_root/s$completed"
+  if ( cd "$base" && HOME="$suite_root/s$completed" env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$suite")" >/dev/null 2>&1 </dev/null ); then
     ok "$label"
   else
     warn "$label FAILED"
@@ -2380,6 +2417,7 @@ for suite in ${suites[@]+"${suites[@]}"}; do
   fi
   completed=$((completed+1))
 done
+[[ -z "$suite_root" ]] || rm -rf "$suite_root"
 if (( discovered == 0 )); then
   warn "no test suites found under tools/ lib/ skills/"
   failed=1
@@ -2397,10 +2435,18 @@ if (( failed )); then
   warn "Some suites failed — investigate before relying on the hooks."
 fi
 # The record's only creation point on a converged machine, so a failure fails
-# the run. Only on an otherwise successful apply. A required failure also
-# leaves `commit` at the last fully successful install, which updating relies on.
-if (( ! CHECK )) && (( ! UNPROTECTED )) && (( ! failed )) && (( ${#REQUIRED_FAILURES[@]} == 0 )); then
-  if ! python3 "$REPO/lib/install_record.py" finish "$REPO"; then
+# the run. `finish` (commit, checkout, profiles) only on an otherwise successful
+# apply: a required failure leaves `commit` at the last fully successful
+# install, which updating relies on. A red run whose hooks ARE installed still
+# `stamp`s `first_installed_at`: the guard audit's window starts now, and
+# without a record it never runs and --check asks for a re-run that cannot fix it.
+if (( ! CHECK )) && (( ! UNPROTECTED )); then
+  if (( ! failed )) && (( ${#REQUIRED_FAILURES[@]} == 0 )); then
+    record_verb=(finish "$REPO")
+  else
+    record_verb=(stamp)
+  fi
+  if ! python3 "$REPO/lib/install_record.py" "${record_verb[@]}"; then
     REQUIRED_FAILURES+=("install record could not be written")
   fi
 fi

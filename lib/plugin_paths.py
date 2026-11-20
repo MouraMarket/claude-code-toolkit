@@ -7,7 +7,7 @@ unexpected shape yields the documented empty result.
 
 CLI (exit 0; any other argv prints usage to stderr and exits 2):
     plugin_paths.py legacy <home> <repo>    one `owned|kept<TAB>path` per link
-    plugin_paths.py clashes <home> <repo>   one clash message per line
+    plugin_paths.py clashes <home> <repo>   one `required|warn<TAB>message` per line
 """
 
 import json
@@ -232,10 +232,16 @@ def _shipped_skills(repo):
     return shipped, None
 
 
-def skill_clashes(home, repo):
-    """Messages for every bare name that a toolkit plugin ships as a skill and
-    something else also defines. Fails strict: an inventory that cannot be
-    completed adds a line saying so rather than reporting a clean pass."""
+def classified_clashes(home, repo):
+    """Sorted `(severity, message)` for every bare name that a toolkit plugin
+    ships as a skill and something else also defines. Fails strict: an
+    inventory that cannot be completed adds a line saying so rather than
+    reporting a clean pass.
+
+    `warn` is a clash with an enabled third-party plugin: the user's call, so
+    it does not fail `install.sh --check`. Everything else is `required`: two
+    toolkit profiles shipping one name, a personal shadow, and any inventory
+    that is incomplete."""
     messages = []
     if not _is_text(home) or not _is_text(repo):
         return messages
@@ -250,24 +256,28 @@ def skill_clashes(home, repo):
             owners[name].append(plugin)
     for name in sorted(owners):
         if len(owners[name]) > 1:
-            messages.append(
+            messages.append((
+                "required",
                 "%s share a bare name: /%s runs whichever plugin loaded first. "
                 "Ship it from one profile only."
-                % (" and ".join("%s:%s" % (p, name) for p in owners[name]), name))
+                % (" and ".join("%s:%s" % (p, name) for p in owners[name]), name)))
     if error is not None:
-        messages.append("plugin inventory unreadable (%s): the plugin clash check "
-                        "is incomplete" % error)
+        messages.append(("required",
+                         "plugin inventory unreadable (%s): the plugin clash check "
+                         "is incomplete" % error))
     for name, owner in shipped:
         if os.path.lexists(os.path.join(home, ".claude", "skills", name)):
-            messages.append(
+            messages.append((
+                "required",
                 "~/.claude/skills/%s shadows %s:%s: a bare /%s runs the "
                 "personal copy. Remove it (./install.sh removes it if it links "
-                "into this checkout)." % (name, owner, name, name))
+                "into this checkout)." % (name, owner, name, name)))
         if os.path.lexists(os.path.join(home, ".claude", "commands", name + ".md")):
-            messages.append(
+            messages.append((
+                "required",
                 "~/.claude/commands/%s.md shadows %s:%s: a bare /%s may "
                 "run the personal command. Remove it (./install.sh removes it if "
-                "it links into this checkout)." % (name, owner, name, name))
+                "it links into this checkout)." % (name, owner, name, name)))
 
     settings_path = os.path.join(home, ".claude", "settings.json")
     if os.path.lexists(settings_path):
@@ -275,8 +285,9 @@ def skill_clashes(home, repo):
         enabled = settings.get("enabledPlugins") if isinstance(settings, dict) else None
         if not isinstance(settings, dict) or (
                 "enabledPlugins" in settings and not isinstance(enabled, dict)):
-            messages.append("cannot read enabledPlugins from ~/.claude/settings.json: "
-                            "the plugin clash check is incomplete")
+            messages.append(("required",
+                             "cannot read enabledPlugins from ~/.claude/settings.json: "
+                             "the plugin clash check is incomplete"))
         elif enabled:
             # Every plugin in our own marketplace is a toolkit profile: its
             # skills are the `shipped` ones, never a clash with themselves.
@@ -291,21 +302,29 @@ def skill_clashes(home, repo):
                 if root is None:
                     if other not in reported:
                         reported.add(other)
-                        messages.append("enabled plugin %s could not be located: the "
-                                        "plugin clash check is incomplete" % other)
+                        messages.append(("required",
+                                         "enabled plugin %s could not be located: the "
+                                         "plugin clash check is incomplete" % other))
                     continue
                 for name, owner in shipped:
                     if os.path.isfile(os.path.join(root, "skills", name, "SKILL.md")):
-                        messages.append(
+                        messages.append((
+                            "warn",
                             "%s:%s and %s:%s share a bare name: /%s runs "
                             "whichever plugin loaded first. Retire one copy."
-                            % (other, name, owner, name, name))
+                            % (other, name, owner, name, name)))
                     if os.path.isfile(os.path.join(root, "commands", name + ".md")):
-                        messages.append(
+                        messages.append((
+                            "warn",
                             "%s:%s (a command) and %s:%s share a bare name: "
                             "/%s runs whichever plugin loaded first. Retire one copy."
-                            % (other, name, owner, name, name))
+                            % (other, name, owner, name, name)))
     return sorted(messages)
+
+
+def skill_clashes(home, repo):
+    """The sorted clash messages of `classified_clashes`, all severities."""
+    return sorted(message for _, message in classified_clashes(home, repo))
 
 
 def main(argv):
@@ -315,8 +334,8 @@ def main(argv):
             for path, owned in owned_legacy_links(home, repo):
                 print("%s\t%s" % ("owned" if owned else "kept", path))
         else:
-            for message in skill_clashes(home, repo):
-                print(message)
+            for severity, message in classified_clashes(home, repo):
+                print("%s\t%s" % (severity, message))
         return 0
     sys.stderr.write("usage: plugin_paths.py legacy|clashes <home> <repo>\n")
     return 2

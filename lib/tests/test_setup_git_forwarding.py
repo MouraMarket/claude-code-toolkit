@@ -230,6 +230,77 @@ class TestOwnedEntriesOnly(SetupGitForwardingCase):
         self.assertEqual(os.listdir(self.hooks_dir), ["pre-push"])
 
 
+class TestPreCommitStatusIsHonest(SetupGitForwardingCase):
+    """H4 F5: --check said `OK ... (pre-commit installed)` for ANY executable
+    pre-commit, an old fork's included, while the apply re-links it and
+    lib/secret_scan_status.py calls the same state not active."""
+
+    def seed_foreign_pre_commit(self, as_link):
+        os.makedirs(self.hooks_dir)
+        old_fork = os.path.join(self.tmp, "old-fork-pre-commit")
+        with open(old_fork, "w") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(old_fork, 0o755)
+        hook = os.path.join(self.hooks_dir, "pre-commit")
+        if as_link:
+            os.symlink(old_fork, hook)
+        else:
+            shutil.copy2(old_fork, hook)
+        git(["config", "--global", "core.hooksPath", self.hooks_dir], self.home, self.env)
+        return old_fork
+
+    def assert_named_foreign_then_relinked(self, check_out, detail):
+        self.assertNotIn("(pre-commit installed)", check_out)
+        self.assertIn("NOT this checkout's scanner", check_out)
+        self.assertIn(detail, check_out)
+        self.assertIn("re-link pre-commit to", check_out)
+        applied = self.run_setup()
+        self.assertEqual(applied.returncode, 0, applied.stdout + applied.stderr)
+        self.assertEqual(os.path.realpath(os.path.join(self.hooks_dir, "pre-commit")),
+                         os.path.realpath(self.pre_commit))
+        again = self.run_setup("--check")
+        self.assertIn("(pre-commit installed)", again.stdout)
+
+    def test_a_link_to_another_checkouts_hook_is_named_not_ok(self):
+        old_fork = self.seed_foreign_pre_commit(as_link=True)
+        proc = self.run_setup("--check")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(os.readlink(os.path.join(self.hooks_dir, "pre-commit")), old_fork,
+                         "--check changed the hook")
+        self.assert_named_foreign_then_relinked(proc.stdout, "-> " + old_fork)
+
+    def test_a_regular_executable_file_is_named_not_ok(self):
+        self.seed_foreign_pre_commit(as_link=False)
+        proc = self.run_setup("--check")
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assert_named_foreign_then_relinked(proc.stdout, "(a regular file, not a link)")
+
+    def test_an_unresolvable_path_is_never_reported_installed(self):
+        """Codex Merge Review: two failed resolutions are two empty strings,
+        which compared equal and printed "installed"."""
+        self.assertEqual(self.run_setup().returncode, 0)
+        shim = os.path.join(self.tmp, "shim")
+        os.makedirs(shim)
+        fake = os.path.join(shim, "python3")
+        with open(fake, "w") as handle:
+            handle.write("#!/bin/sh\nexit 1\n")
+        os.chmod(fake, 0o755)
+        env = dict(self.env, PATH=shim + os.pathsep + self.env.get("PATH", ""))
+        proc = subprocess.run([os.path.join(self.repo, "scripts", "setup-git.sh"), "--check"],
+                              cwd=self.repo, env=env, capture_output=True,
+                              stdin=subprocess.DEVNULL, timeout=120, universal_newlines=True)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("(pre-commit installed)", proc.stdout)
+        self.assertIn("could not be checked", proc.stdout)
+
+    def test_this_checkouts_hook_is_ok(self):
+        """The control: --check can still say installed."""
+        self.assertEqual(self.run_setup().returncode, 0)
+        proc = self.run_setup("--check")
+        self.assertIn("(pre-commit installed)", proc.stdout)
+        self.assertNotIn("NOT this checkout's scanner", proc.stdout)
+
+
 class TestForwardedListDrift(unittest.TestCase):
     def test_forwarded_plus_excluded_is_exactly_the_28(self):
         forwarded = parse_forwarded_hooks()

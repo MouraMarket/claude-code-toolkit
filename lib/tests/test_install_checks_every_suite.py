@@ -160,6 +160,39 @@ class TestSuiteRunnerIsolatesStdin(RunnerChecks, unittest.TestCase):
             "comparison each, so a truncated run reports a smaller number and "
             "exits 0." % loops)
 
+    def test_every_installer_suite_run_gets_its_own_home(self):
+        """The user's real ~/.gitconfig (a global core.hooksPath, say) leaks
+        into fixture commits when a suite inherits the real HOME, and turns
+        suites red on that machine only. install.sh's sweep must set HOME= on
+        every suite-runner line, as ci/local-checks.sh's suites loop does.
+        (Not required of ci/local-checks.sh's self-test runner: it inherits a
+        disposable HOME from its caller.)"""
+        lines = suite_runner_lines(INSTALL_SH)
+        self.assertTrue(lines, "no suite-runner line found in install.sh")
+        for line in lines:
+            # The operand, not just the assignment: `HOME="$root/s$counter"`, a
+            # directory per iteration. A shared `HOME="$root/shared"` would let
+            # one suite's git or toolkit state leak into the next.
+            self.assertRegex(
+                line, r'\bHOME="\$\w+/s\$\w+"',
+                "install.sh runs a suite without its own per-suite HOME "
+                '(HOME="$<root>/s$<counter>"): the real ~/.gitconfig, or the '
+                "previous suite's state, leaks into the suite's fixture commits.")
+        with open(SUITE_RUNNERS["ci/local-checks.sh"], encoding="utf-8") as fh:
+            self.assertIn('HOME="$HOME/s$ran"', fh.read(),
+                          "ci/local-checks.sh's suites loop lost its per-suite HOME")
+
+    def test_installer_suite_homes_live_outside_the_temp_roots(self):
+        """The danger-guard suite refuses a HOME under $TMPDIR or /tmp (its
+        setUpModule), so a per-suite HOME root made there fails that suite
+        before it runs a single test. The root is made under ~/.cache."""
+        with open(INSTALL_SH, encoding="utf-8") as fh:
+            roots = [l for l in fh if "claude-toolkit-suites.XXXXXX" in l]
+        self.assertEqual(len(roots), 1, "expected one suite-root mktemp in install.sh")
+        self.assertIn('mktemp -d "$HOME/.cache/claude-toolkit-suites.XXXXXX"', roots[0])
+        self.assertNotIn("TMPDIR", roots[0])
+        self.assertNotIn("/tmp", roots[0])
+
 
 class TestTheRepoInstructionsRunnersIsolateStdin(RunnerChecks, unittest.TestCase):
     RUNNERS = INSTRUCTION_RUNNERS

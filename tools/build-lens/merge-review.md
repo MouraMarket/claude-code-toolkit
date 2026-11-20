@@ -76,11 +76,17 @@ Workflow({ scriptPath: "<absolute path of blinded-review.js in the same director
 
 **If `Workflow` is not in your tools**, dispatch the same review through the
 Agent tool. Use `Workflow` when it is in your tools; when it is not, or the
-call fails because the tool is unavailable, use this instead; never skip the
-gate, and never review the change yourself in its place. `Workflow` is off
+call is refused or fails before a reviewer runs, use this instead; never skip
+the gate, and never review the change yourself in its place. `Workflow` is off
 by default on Pro plans, and the `enableWorkflows` setting,
 `CLAUDE_CODE_WORKFLOWS=false`, `CLAUDE_CODE_DISABLE_WORKFLOWS=1`, a server
-flag or an org policy can remove it. The report goes beside the brief, at
+flag or an org policy can remove it. It also refuses a `scriptPath` outside
+your working directories, which an installed plugin usually is: that refusal
+is this case. Its error suggests passing the script inline through `script`;
+never pass the script inline, because a script you retyped is not the one
+this gate's tests run. Under `Workflow` the report is the call's return
+value; write no report file. Under the Agent tool the reviewer writes the
+report beside the brief, at
 `<directory of the brief>/merge-report-<attempt>.json`, with `<attempt>`
 starting at 1 and incremented for every retry; a report path is never reused
 or deleted.

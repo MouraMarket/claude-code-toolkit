@@ -466,12 +466,12 @@
       "the index cannot cross before rows are already being dropped would",
       "silence the only warning that the tail is being lost."
     ],
-    "distill_at_chars": 22000,
+    "distill_at_chars": 19500,
     "//distill_at_chars": [
-      "The index size, in CHARACTERS, at which a session that starts fresh",
+      "The index size at which a session that starts fresh",
       "(source startup or clear, never resume or compact) is told MEMORY.md is",
       "near its cap and offered the memory-index-distill skill. Defaults to",
-      "22000; absent means 22000, and anything that is not a positive whole",
+      "19500; absent means 19500, and anything that is not a positive whole",
       "number reads as unset.",
       "",
       "Clamped: a value at or past max_index_chars is replaced by",
@@ -480,7 +480,10 @@
       "",
       "An absolute character count, deliberately not a fraction of",
       "max_index_chars: the notice should land at a fixed distance from the",
-      "point where the harness starts dropping rows."
+      "point where the harness starts dropping rows. Size = the larger of",
+      "chars and UTF-8 bytes (bytes in practice). 19500 lands it before",
+      "Claude Code's built-in \"compact it now\" notice, which starts at",
+      "20,000 BYTES (80% of its 25,000 read limit)."
     ],
     "max_index_lines": 190,
     "//max_index_lines": [

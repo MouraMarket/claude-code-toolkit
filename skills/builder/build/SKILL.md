@@ -268,7 +268,7 @@ Miss: <gate> | <declared shape> | <the defect it should have caught>.
 ```
 
 `<runtime>` is the runtime that actually ran the gate (`workflow`, `agent` or
-`codex`). A Workflow call that fails as unavailable falls back to `agent`,
+`codex`). A Workflow refusal or absence falls back to `agent`, never inline,
 with a `Ruling:` line. Under `agent`, `Snapshot:` is `check`'s `accepted:` line.
 
 **It is a separate file for one reason, and it is the reason that decides the

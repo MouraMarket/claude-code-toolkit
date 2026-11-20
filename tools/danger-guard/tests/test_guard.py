@@ -2880,13 +2880,23 @@ class TestMalformedPayload(unittest.TestCase):
         #
         # The depth is version-dependent: 3.9 raises at 1200, but 3.13
         # parses 1200 and 5000 and first raises near 20,000 (measured
-        # 2026-10-03). 100,000 raises on both. The control below fails
-        # loudly on a future interpreter that parses this depth, rather
-        # than letting the guard's silent exit 0 read as a crash defect.
+        # 2026-10-03). 100,000 raises on both. The control below skips on
+        # an interpreter that parses this depth: there is no RecursionError
+        # to catch, so the guard's silent exit 0 would read as a crash
+        # defect. The crash boundary is proven on the release interpreters
+        # (3.9 and 3.13, scripts/check-capabilities.py VERSIONS).
         depth = 100000
         payload = "[" * depth + "0" + "]" * depth
-        with self.assertRaises(RecursionError):
+        try:
             json.loads(payload)
+        except RecursionError:
+            pass
+        else:
+            self.skipTest(
+                "Python %d.%d parses %d levels of nesting; the guard's crash "
+                "boundary is proven on the release interpreters (3.9 and "
+                "3.13, scripts/check-capabilities.py VERSIONS)"
+                % (sys.version_info[0], sys.version_info[1], depth))
         proc = subprocess.run([GUARD], input=payload, capture_output=True,
                               text=True, env=self._env())
         self.assertEqual(proc.returncode, ALLOW)

@@ -908,6 +908,29 @@ class TestApply(ApplyBase):
         self.assertTrue(os.path.exists(self.new_page()))
         self.assertIn("index chars:", out)
 
+    def test_d6_over_threshold_in_bytes_only_returns_4(self):
+        # The threshold is one past the post-apply CHAR count, so only a
+        # byte-aware check (rows carry a 3-byte em dash) still reports 4.
+        import lint_lib
+        mem = self.mem
+        seen = {}
+
+        class Cfg:
+            def get_int(self, *keys, default=0):
+                return default
+
+            def get(self, *keys, default=None):
+                if keys != ("memory_lint", "distill_at_chars"):
+                    return default
+                seen.update(lint_lib.scan(mem))
+                return seen["index_chars"] + 1
+
+        self.ready()
+        code, out = self.run_apply(config=Cfg())
+        self.assertIn("index_bytes", seen, "threshold was never read")
+        self.assertGreaterEqual(seen["index_bytes"], seen["index_chars"] + 1)
+        self.assertEqual(code, 4, out)
+
     def test_d7_already_demoted_is_a_problem(self):
         leaf = os.path.join(self.mem, "move.md")
         write(leaf, read(leaf).replace("\n---\n\nBody", "\n---\n\n> **Rule text lives in `x`**\n\nBody", 1))
