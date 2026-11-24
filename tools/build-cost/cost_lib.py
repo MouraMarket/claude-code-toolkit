@@ -402,6 +402,7 @@ LANE_BY_AGENT_TYPE = {
     "task-reviewer": "review",
     "code-reviewer": "review",
     "architect-reviewer": "review",
+    "spec-reviewer": "review",
     "workflow-subagent": "review",
     "general-purpose": "other",
     "Explore": "other",
@@ -441,7 +442,7 @@ def lane_for_agent_file(agent_path):
 
 DEFAULT_QUALIFYING_AGENT_TYPES = [
     "executor", "task-reviewer", "workflow-subagent", "code-reviewer",
-    "architect-reviewer"]
+    "architect-reviewer", "spec-reviewer"]
 
 
 def qualifying_agent_types(config):
@@ -457,6 +458,9 @@ def qualifying_agent_types(config):
     under-sampled exactly the review-heavy sessions a cost argument needs.
     `architect-reviewer` is in it for the same reason: a session that ran only
     that optional reviewer would otherwise record nothing.
+    spec-reviewer was added 2026-11-21 (row 102): it is the design/plan gates' Agent
+    fallback reviewer, and without it a session whose only gates ran that way
+    recorded nothing.
 
     A missing, unreadable or empty value falls back to the default rather than
     to nothing — recording too much is visible in the data, recording nothing is

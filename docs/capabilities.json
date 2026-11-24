@@ -975,7 +975,8 @@
         "lib/tests/test_onboard_setup_audit.py",
         "lib/tests/test_onboard_verify_canary.py",
         "lib/tests/test_onboard_public.py",
-        "lib/tests/test_onboard_reconcile_real_path.py"
+        "lib/tests/test_onboard_reconcile_real_path.py",
+        "lib/tests/test_checkout_fingerprint.py"
       ],
       "commands": [],
       "hooks": [],
@@ -1201,6 +1202,23 @@
       ],
       "tests": [
         "tools/build-lens/tests"
+      ],
+      "commands": [],
+      "hooks": [],
+      "config": [],
+      "requires": []
+    },
+    {
+      "id": "agent:spec-reviewer",
+      "kind": "agent",
+      "summary": "Reviews a design or plan as the one reviewer of a build design or plan gate when it runs through its Agent fallback.",
+      "delivery": "profile:builder",
+      "entry_points": [
+        "agents/spec-reviewer.md"
+      ],
+      "tests": [
+        "tools/build-lens/tests",
+        "tools/build-cost/tests"
       ],
       "commands": [],
       "hooks": [],

@@ -106,10 +106,16 @@ existing memory file is refused by `claude-distill-write-guard` for this reason.
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/tools/distill-guard/distill_guard.py" stamp <abs-path-to-memory-file>
 # prints a token on its own last line -- keep it
-# ... read the file, write the distilled text to a NEW file elsewhere ...
+# ... read the file, write the distilled text to a NEW staging file (where: below) ...
 python3 "${CLAUDE_PLUGIN_ROOT}/tools/distill-guard/distill_guard.py" install <abs-path-to-memory-file> <path-to-new-file> <token>
 ```
 
+- **Stage the new file where a write needs no permission:** the session scratchpad
+  if your system prompt names one, else a new `distill-staging/` folder under the
+  current directory. Never outside the working directory and never under
+  `~/.claude/`: Claude Code asks permission for that write, or refuses it in an
+  unattended run. If a staging write is refused anyway, re-stage in one of those two
+  places and carry on; a refused staging write is not a reason to stop.
 - `stamp` prints a token describing the target's mtime and size at the moment you
   read it. **Pass that exact token back to `install`.** The guard keeps no state
   between the two commands — the token is the whole record, which is what makes the

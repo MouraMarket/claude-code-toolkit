@@ -297,7 +297,8 @@ _WHEN_W, _OUTPUT_W, _OPUSEQ_W, _LANE_W, _USD_W = 19, 12, 13, 11, 11
 _KIND_W = 5
 
 # The agent types only `/build` dispatches. See `_kind_cell`.
-REVIEW_MACHINERY = {"task-reviewer", "workflow-subagent"}
+REVIEW_MACHINERY = {"task-reviewer", "workflow-subagent",
+                    "spec-reviewer"}
 
 
 def _kind_cell(row):
@@ -370,8 +371,9 @@ def _kind_cell(row):
         # motivated `adhoc` ran one
         # and was still ad-hoc: a blinded pre-PR review is something any session
         # can dispatch by hand, so counting it would label the very session that
-        # motivated this column as a `/build`. `task-reviewer` and
-        # `workflow-subagent` are the two that only `/build` produces.
+        # motivated this column as a `/build`. `task-reviewer`,
+        # `workflow-subagent` and `spec-reviewer` are the types only `/build`
+        # produces.
         if names & REVIEW_MACHINERY:
             return "build"
         return "adhoc"
@@ -398,8 +400,8 @@ def show_ledger(path):
         print("No ledger yet at %s" % path)
         print("It is written automatically by claude-build-cost-record at")
         print("SessionEnd, once a session dispatches a qualifying agent")
-        print("(default: executor, task-reviewer, workflow-subagent or")
-        print("code-reviewer — so a review gate that wrote no code counts too).")
+        print("(default: %s — so a review gate that wrote no code counts too)."
+              % ", ".join(cost_lib.DEFAULT_QUALIFYING_AGENT_TYPES))
         return 0
     rows = []
     with open(path, encoding="utf-8", errors="replace") as handle:

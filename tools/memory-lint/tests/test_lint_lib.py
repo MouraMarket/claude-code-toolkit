@@ -39,6 +39,12 @@ REPO = os.path.dirname(os.path.dirname(TOOL_DIR))
 # tools/usage-watch/tests/test_estimate_lib.py:701 for the same reason.
 os.environ["CLAUDE_TOOLKIT_CONFIG"] = "/nonexistent-memory-lint-test.json"
 
+# `build()` stays silent when auto memory is switched off, and every subprocess
+# here inherits this process's environment through `_env()`. Run under a
+# `claude -p` child that sets the switch, every "the notice fires" case would go
+# quiet without this line. Tests that want the switch set pass it explicitly.
+os.environ.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
+
 sys.path.insert(0, TOOL_DIR)
 sys.path.insert(0, os.path.join(REPO, "lib"))
 import lint_lib
@@ -54,6 +60,18 @@ HOOK = os.path.join(TOOL_DIR, "claude-memory-lint")
 # folder instead of the transcript-derived one it means to test.
 _SANDBOX_HOME = tempfile.mkdtemp(prefix="memlint-sandbox-home-")
 atexit.register(shutil.rmtree, _SANDBOX_HOME, ignore_errors=True)
+# In-process too: `build()` reads `<HOME>/.claude/settings.json` for
+# `autoMemoryEnabled`, so a machine whose real settings turn auto memory off
+# would silence every in-process "the notice fires" case.
+os.environ["HOME"] = _SANDBOX_HOME
+# Row 104: `build()` also reads project and local settings, from the payload's
+# `cwd`, else `CLAUDE_PROJECT_DIR`, else the process cwd (this repo). Pin the
+# fallback to an empty, git-free sandbox and drop `CLAUDE_CONFIG_DIR`, so the
+# session running these tests cannot reach in with its own settings.
+_SANDBOX_PROJECT = tempfile.mkdtemp(prefix="memlint-sandbox-project-")
+atexit.register(shutil.rmtree, _SANDBOX_PROJECT, ignore_errors=True)
+os.environ["CLAUDE_PROJECT_DIR"] = _SANDBOX_PROJECT
+os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
 
 def _env(**overrides):
@@ -2585,6 +2603,234 @@ class TestExampleConfigDistill(unittest.TestCase):
                                  encoding="utf-8"))["memory_lint"]
         self.assertEqual(section["distill_at_chars"], 19500)
         self.assertIn("//distill_at_chars", section)
+
+
+class TestAutoMemoryDisabled(unittest.TestCase):
+    """No notice in a session that never loaded MEMORY.md.
+
+    With `CLAUDE_CODE_DISABLE_AUTO_MEMORY` set, the harness loads no memory
+    index (every `claude -p` child of a live harness runs this way). A notice
+    about the index would tell that session to distill a file it cannot see.
+    Through the executable, because the hook inherits the session's
+    environment, and both ways: a session with auto memory ON must still be
+    told about the same drifted index.
+    """
+
+    # Read the way the binary reads its env switches (harness-check uses the
+    # same set): trimmed, case-insensitive, one of 1/true/yes/on.
+    DISABLING = ("1", "true", "TRUE", " yes ", "on")
+    NOT_DISABLING = (None, "", "0", "false", "no", "off")
+
+    def setUp(self):
+        project = tempfile.mkdtemp(prefix="memlint-proj-")
+        self.addCleanup(shutil.rmtree, project, ignore_errors=True)
+        mem = os.path.join(project, "memory")
+        os.mkdir(mem)
+        with open(os.path.join(mem, "a.md"), "w") as fh:
+            fh.write("body")
+        with open(os.path.join(mem, "MEMORY.md"), "w") as fh:
+            fh.write(row("a.md", "x" * 400) + "\n")
+        self.transcript = os.path.join(project, "s.jsonl")
+        open(self.transcript, "w").close()
+        # The session's working directory: a separate, git-free sandbox, so
+        # the project and local settings the hook reads are only the test's.
+        self.cwd = self._tmp("memlint-cwd-")
+
+    def _tmp(self, prefix):
+        path = os.path.realpath(tempfile.mkdtemp(prefix=prefix))
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
+
+    @staticmethod
+    def _write(root, name, text):
+        os.makedirs(os.path.join(root, ".claude"), exist_ok=True)
+        with open(os.path.join(root, ".claude", name), "w") as fh:
+            fh.write(text)
+
+    def _run(self, switch, settings=None, cwd=None, **env_overrides):
+        """`settings`: raw text for `<HOME>/.claude/settings.json`, or None.
+        `cwd`: the payload's session directory (default: the sandbox)."""
+        env = _env(CLAUDE_TOOLKIT_CONFIG="/nonexistent.json", **env_overrides)
+        env.pop("CLAUDE_CODE_DISABLE_AUTO_MEMORY", None)
+        if switch is not None:
+            env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = switch
+        if settings is not None:
+            home = self._tmp("memlint-home-")
+            self._write(home, "settings.json", settings)
+            env["HOME"] = home
+        return subprocess.run(
+            [sys.executable, HOOK],
+            input=json.dumps({"transcript_path": self.transcript,
+                              "source": "startup", "cwd": cwd or self.cwd}),
+            capture_output=True, text=True, timeout=15, env=env,
+        )
+
+    def _assert_notice(self, proc):
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        payload = json.loads(proc.stdout)
+        self.assertIn("a.md", payload["hookSpecificOutput"]["additionalContext"])
+
+    def _assert_silent(self, proc):
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+    @staticmethod
+    def _git(*args):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+                       + list(args), check=True, capture_output=True, env=env)
+
+    def test_a_session_with_auto_memory_off_gets_no_notice(self):
+        for switch in self.DISABLING:
+            with self.subTest(switch=switch):
+                proc = self._run(switch)
+                self.assertEqual(proc.returncode, 0)
+                self.assertEqual(proc.stdout, "")
+
+    def test_a_session_with_auto_memory_on_still_gets_the_notice(self):
+        for switch in self.NOT_DISABLING:
+            with self.subTest(switch=switch):
+                proc = self._run(switch)
+                self.assertEqual(proc.returncode, 0)
+                payload = json.loads(proc.stdout)
+                self.assertIn(
+                    "a.md", payload["hookSpecificOutput"]["additionalContext"])
+
+    # The other switch: `autoMemoryEnabled: false` in user settings, read as
+    # harness-check reads it (the JSON boolean only). Unreadable settings fail
+    # OPEN -- the notice still fires -- because a guess that silences it is the
+    # failure this class exists to catch, pointed the other way.
+    def test_auto_memory_off_in_user_settings_gets_no_notice(self):
+        proc = self._run(None, settings='{"autoMemoryEnabled": false}')
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual(proc.stdout, "")
+
+    def test_other_user_settings_still_get_the_notice(self):
+        for settings in ('{"autoMemoryEnabled": true}', '{"autoMemoryEnabled": null}',
+                         '{"autoMemoryEnabled": "false"}', '{}', '[false]',
+                         '{"autoMemoryEnabled": fal'):
+            with self.subTest(settings=settings):
+                proc = self._run(None, settings=settings)
+                self.assertEqual(proc.returncode, 0)
+                payload = json.loads(proc.stdout)
+                self.assertIn(
+                    "a.md", payload["hookSpecificOutput"]["additionalContext"])
+
+    def test_build_reads_the_switch_in_process_too(self):
+        d = MemoryDir([("a.md", "x" * 400)])
+        self.addCleanup(d.cleanup)
+        with mock.patch.dict(os.environ,
+                             {"CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}):
+            self.assertIsNone(lint_lib.build(d.path, source="startup"))
+        self.assertIsNotNone(lint_lib.build(d.path, source="startup"))
+
+    # Row 104, read from the binary (2.1.327): the merged `autoMemoryEnabled`
+    # decides, user < project < local < flag < managed, and a FALSY env value
+    # forces memory on over every setting. The hook silences only when a
+    # level it reads says false and none could switch memory on.
+    def test_a_falsy_env_value_forces_memory_on_over_settings(self):
+        for switch in ("0", "off", " FALSE ", "no"):
+            with self.subTest(switch=switch):
+                self._assert_notice(self._run(switch, settings='{"autoMemoryEnabled": false}'))
+
+    def test_project_or_local_true_overrides_user_false(self):
+        for name in ("settings.json", "settings.local.json"):
+            with self.subTest(level=name):
+                cwd = self._tmp("memlint-cwd-")
+                self._write(cwd, name, '{"autoMemoryEnabled": true}')
+                self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=cwd))
+
+    def test_project_or_local_false_alone_silences(self):
+        for name in ("settings.json", "settings.local.json"):
+            with self.subTest(level=name):
+                cwd = self._tmp("memlint-cwd-")
+                self._write(cwd, name, '{"autoMemoryEnabled": false}')
+                self._assert_silent(self._run(None, cwd=cwd))
+
+    def test_a_project_or_local_file_that_cannot_be_read_fails_open(self):
+        for name in ("settings.json", "settings.local.json"):
+            for text in ('{"autoMemoryEnabled": fal', "[false]", '{"autoMemoryEnabled": "false"}'):
+                with self.subTest(level=name, text=text):
+                    cwd = self._tmp("memlint-cwd-")
+                    self._write(cwd, name, text)
+                    self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=cwd))
+
+    # Below a git root, or in a linked worktree, the binary's choice of project
+    # and local file turns on checks the hook cannot repeat: a `true` in ANY
+    # candidate keeps the notice, a `false` there never silences it, and the
+    # user level still decides alone.
+    def test_at_a_main_checkouts_root_local_false_silences(self):
+        repo = self._tmp("memlint-repo-")
+        self._git("init", "-q", repo)
+        self._write(repo, "settings.local.json", '{"autoMemoryEnabled": false}')
+        self._assert_silent(self._run(None, cwd=repo))
+
+    def test_from_a_subdirectory_the_git_roots_files_count_only_to_keep_the_notice(self):
+        repo = self._tmp("memlint-repo-")
+        self._git("init", "-q", repo)
+        sub = os.path.join(repo, "a", "b")
+        os.makedirs(sub)
+        self._assert_silent(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=sub))
+        for name in ("settings.json", "settings.local.json"):   # Codex F2: project too
+            with self.subTest(level=name):
+                self._write(repo, name, '{"autoMemoryEnabled": true}')
+                self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=sub))
+                self._write(repo, name, '{"autoMemoryEnabled": false}')
+                self._assert_notice(self._run(None, cwd=sub))
+                os.remove(os.path.join(repo, ".claude", name))
+
+    def test_a_linked_worktree_reads_the_main_checkouts_files_to_keep_the_notice(self):
+        main = self._tmp("memlint-main-")
+        self._git("init", "-q", main)
+        self._git("-C", main, "commit", "-q", "--allow-empty", "-m", "c")
+        worktree = os.path.join(self._tmp("memlint-wts-"), "wt")
+        self._git("-C", main, "worktree", "add", "-q", worktree)
+        self._assert_silent(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=worktree))
+        self._write(main, "settings.local.json", '{"autoMemoryEnabled": true}')
+        self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=worktree))
+        self._write(main, "settings.local.json", '{"autoMemoryEnabled": false}')
+        self._assert_notice(self._run(None, cwd=worktree))
+
+    def test_below_a_root_or_in_a_worktree_a_false_in_cwd_itself_keeps_the_notice(self):
+        # The binary may read the git root's (or main checkout's) local file
+        # instead of this one, so a false here proves nothing.
+        repo = self._tmp("memlint-repo-")
+        self._git("init", "-q", repo)
+        self._git("-C", repo, "commit", "-q", "--allow-empty", "-m", "c")
+        sub = os.path.join(repo, "sub")
+        worktree = os.path.join(self._tmp("memlint-wts-"), "wt")
+        self._git("-C", repo, "worktree", "add", "-q", worktree)
+        os.makedirs(sub)
+        for cwd in (sub, worktree):
+            for name in ("settings.json", "settings.local.json"):
+                with self.subTest(cwd=os.path.basename(cwd), level=name):
+                    self._write(cwd, name, '{"autoMemoryEnabled": false}')
+                    self._assert_notice(self._run(None, cwd=cwd))
+                    os.remove(os.path.join(cwd, ".claude", name))
+
+    def test_an_unreadable_git_file_fails_open(self):
+        cwd = self._tmp("memlint-cwd-")
+        with open(os.path.join(cwd, ".git"), "w") as fh:
+            fh.write("not a gitdir line")
+        self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}', cwd=cwd))
+
+    def test_claude_config_dir_replaces_the_home_settings(self):
+        # Codex F1: with CLAUDE_CONFIG_DIR set the binary never reads
+        # ~/.claude/settings.json, so a stale false there must not silence.
+        config_dir = self._tmp("memlint-config-")
+        self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}',
+                                      CLAUDE_CONFIG_DIR=config_dir))
+
+    def test_claude_config_dir_settings_count(self):
+        config_dir = self._tmp("memlint-config-")
+        self._write(config_dir, "settings.json", '{"autoMemoryEnabled": false}')
+        os.rename(os.path.join(config_dir, ".claude", "settings.json"),
+                  os.path.join(config_dir, "settings.json"))
+        self._assert_silent(self._run(None, CLAUDE_CONFIG_DIR=config_dir))
+        with open(os.path.join(config_dir, "settings.json"), "w") as fh:
+            fh.write('{"autoMemoryEnabled": true}')
+        self._assert_notice(self._run(None, settings='{"autoMemoryEnabled": false}',
+                                      CLAUDE_CONFIG_DIR=config_dir))
 
 
 if __name__ == "__main__":

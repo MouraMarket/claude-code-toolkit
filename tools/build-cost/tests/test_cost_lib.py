@@ -1168,6 +1168,28 @@ class TestCLI(unittest.TestCase):
             self.assertTrue(os.path.exists(default_ledger),
                             "no ledger written to the default path: %s" % result.stdout)
 
+    def test_no_ledger_message_names_every_default_qualifying_type(self):
+        """The empty-ledger message derives its list from the constant.
+
+        A hand-restated list drifted once (spec-reviewer qualified but was not
+        named). `spec-reviewer` is also asserted literally so a derived list
+        that loses it still fails.
+        """
+        with tempfile.TemporaryDirectory() as root:
+            config_path = os.path.join(root, "config.json")
+            with open(config_path, "w") as handle:
+                json.dump({"build_cost": {
+                    "ledger_path": os.path.join(root, "absent.jsonl")}}, handle)
+            env = dict(os.environ, HOME=root, CLAUDE_TOOLKIT_CONFIG=config_path)
+            result = subprocess.run(
+                (sys.executable, CLI, "--ledger"), capture_output=True, text=True,
+                timeout=60, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No ledger yet", result.stdout)
+        for name in cost_lib.DEFAULT_QUALIFYING_AGENT_TYPES:
+            self.assertIn(name, result.stdout)
+        self.assertIn("spec-reviewer", result.stdout)
+
     def test_configured_ledger_path_is_honoured(self):
         """The configured-path branch of ledger_path(), which nothing covered.
 
@@ -1488,6 +1510,22 @@ class TestCLI(unittest.TestCase):
         self.assertNotIn("code-reviewer", cli_module_review_machinery(),
                          "code-reviewer counts as /build machinery, so the "
                          "session that motivated this column reads as a build")
+
+    def test_spec_reviewer_with_an_executor_is_a_build(self):
+        """`spec-reviewer` is dispatched only by the design/plan gates, so
+        unlike `code-reviewer` it is `/build` machinery and promotes an
+        executor session to a build."""
+        with tempfile.TemporaryDirectory() as root:
+            result = self._ledger_view(
+                root,
+                {"timestamp": "2026-02-07T00:00:00", "label": "gated-work",
+                 "total_output": 1000, "total_opus_equivalent_output": 900,
+                 "agent_types": ["executor", "spec-reviewer"],
+                 "qualified_by": ["executor", "spec-reviewer"]})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            line = next(ln for ln in result.stdout.splitlines()
+                        if "gated-work" in ln)
+            self.assertEqual("build", self._kind_of(line))
 
     def test_either_half_of_the_review_machinery_is_enough(self):
         """`task-reviewer` OR `workflow-subagent` — not both. A /build that
@@ -2423,6 +2461,23 @@ class TestPluginNamespacedAgents(unittest.TestCase):
         report = cost_lib.analyze(self._session("toolkit-build:architect-reviewer"))
         self.assertEqual(1, report["totals"]["review"]["messages"])
         self.assertEqual([], report["unknown_agent_types"])
+
+    def test_spec_reviewer_lands_in_review_lane(self):
+        report = cost_lib.analyze(self._session("toolkit-build:spec-reviewer"))
+        self.assertEqual(1, report["totals"]["review"]["messages"])
+        self.assertEqual(0, report["totals"]["other"]["messages"])
+        self.assertEqual([], report["unknown_agent_types"])
+
+    def test_general_purpose_still_lands_in_other(self):
+        report = cost_lib.analyze(self._session("general-purpose"))
+        self.assertEqual(1, report["totals"]["other"]["messages"])
+        self.assertEqual(0, report["totals"]["review"]["messages"])
+
+    def test_spec_reviewer_qualifies_and_general_purpose_does_not(self):
+        wanted = cost_lib.qualifying_agent_types(None)
+        self.assertEqual(["toolkit-build:spec-reviewer"], cost_lib.qualifies(
+            ["toolkit-build:spec-reviewer"], wanted))
+        self.assertEqual([], cost_lib.qualifies(["general-purpose"], wanted))
 
     def test_the_default_qualifying_set_includes_architect_reviewer(self):
         class EmptyConfig:

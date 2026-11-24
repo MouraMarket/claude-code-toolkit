@@ -294,7 +294,7 @@ class TestDispatchedAgentsShipInTheBuilderPlugin(unittest.TestCase):
 
     NAMED = re.compile(r"toolkit-build:([a-z][a-z-]*)")
     PINS = {"executor": "sonnet", "task-reviewer": "sonnet", "code-reviewer": "opus",
-            "architecture-reviewer": "fable"}
+            "architecture-reviewer": "fable", "spec-reviewer": "opus"}
 
     def _named(self):
         helper = TestNoBareAgentDispatch()
@@ -325,6 +325,19 @@ class TestDispatchedAgentsShipInTheBuilderPlugin(unittest.TestCase):
             self.assertTrue(os.path.isfile(path), path)
             with open(path, encoding="utf-8") as handle:
                 self.assertIn("model: " + self.PINS[agent] + "\n", handle.read(), path)
+
+
+    EFFORT_PINS = {"code-reviewer": "max", "spec-reviewer": "max"}
+
+    def test_reviewer_agents_pin_effort_max(self):
+        """The gate prose promises these reviewers run at max; the pin is the
+        only thing that makes it so."""
+        agents = os.path.join(REPO, self._builder()["dir"], "agents")
+        for agent, effort in sorted(self.EFFORT_PINS.items()):
+            path = os.path.join(agents, agent + ".md")
+            with open(path, encoding="utf-8") as handle:
+                frontmatter = handle.read().split("---\n")[1]
+            self.assertIn("effort: " + effort, frontmatter.splitlines(), path)
 
 
 class TestBuildLensResolvesInsideThePlugin(unittest.TestCase):

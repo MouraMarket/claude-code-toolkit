@@ -622,10 +622,12 @@ with several is unmeasured, and the build skill says so.
   (`claude-review-gate`, `review_lib.py`). That is only the same review if it
   shares the prompt and the acceptance rule: the tests compare the two prompts and
   hold both report checks to `tools/build-lens/tests/semantic_cases.json`, so
-  change the JavaScript and Python copies together. The Agent call takes no
-  `effort` argument, so a plain-agent design or plan gate does not run at `max`
-  there; code and merge gates still do, through `agents/code-reviewer.md`'s
-  frontmatter.
+  change the JavaScript and Python copies together. The Agent call may take no
+  `effort` argument, so every gate gets `max` from its agent's frontmatter:
+  `agents/code-reviewer.md` at code and merge, `agents/spec-reviewer.md` at
+  design and plan (row 102, 2026-11-21; before it, the design and plan fallback
+  was a plain agent below `max`, and its cost landed in the ledger's `other`
+  lane).
 - **Do not trim the reviewer prompt or the lens tables.** An Opus reviewer reading
   an Opus plan shares the author's priors. Three things stand in for a second
   model: the reviewer is blinded to the author's rationale, it is told the

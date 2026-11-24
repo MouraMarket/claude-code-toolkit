@@ -7,9 +7,9 @@ up with almost no rows. The hook is the trigger; the accounting is shared.
 
 Records only sessions that look like builds: at least one subagent whose
 agentType is in `build_cost.qualifying_agent_types` (default executor,
-task-reviewer, workflow-subagent, code-reviewer, architect-reviewer). Without
-that gate every one-line chat that dispatched a single research agent lands in
-the ledger and the dataset stops meaning anything.
+task-reviewer, workflow-subagent, code-reviewer, architect-reviewer,
+spec-reviewer). Without that gate every one-line chat that dispatched a single
+research agent lands in the ledger and the dataset stops meaning anything.
 
 **The review-lane types are in the default because of a measured blind spot.**
 With only executor and task-reviewer qualifying, a session that ran a `/build`

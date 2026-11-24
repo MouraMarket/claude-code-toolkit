@@ -319,6 +319,9 @@ class TestGitTimeoutSeam(unittest.TestCase):
     """`SYNC_TEST_GIT_TIMEOUT` moves `_git`'s bound only inside a test
     sandbox, and only to a finite value above zero."""
 
+    # A config path inside the temp dir, the shape every hook test uses.
+    FIXTURE = os.path.join(tempfile.gettempdir(), "row103", "config.json")
+
     def _timeout(self, **env):
         with mock.patch.dict(os.environ, env, clear=False):
             for name in ("CLAUDE_TOOLKIT_CONFIG", "SYNC_TEST_GIT_TIMEOUT"):
@@ -327,18 +330,30 @@ class TestGitTimeoutSeam(unittest.TestCase):
             return sync_lib._git_timeout()
 
     def test_a_sandboxed_override_is_used(self):
-        self.assertEqual(self._timeout(CLAUDE_TOOLKIT_CONFIG="/x.json",
+        self.assertEqual(self._timeout(CLAUDE_TOOLKIT_CONFIG=self.FIXTURE,
                                        SYNC_TEST_GIT_TIMEOUT="7"), 7.0)
 
     def test_an_override_outside_a_sandbox_is_ignored(self):
         self.assertEqual(self._timeout(SYNC_TEST_GIT_TIMEOUT="7"),
                          sync_lib.GIT_TIMEOUT_SECONDS)
 
+    def test_a_real_runtime_config_path_ignores_the_override(self):
+        # `CLAUDE_TOOLKIT_CONFIG` is also how a real install finds its
+        # config, so the marker alone must not unlock the seam: a live hook
+        # inheriting both variables would take an unbounded git timeout.
+        for path in ("/Users/someone/.config/claude-code-toolkit/config.json",
+                     "/x.json", "relative/config.json"):
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self._timeout(CLAUDE_TOOLKIT_CONFIG=path,
+                                  SYNC_TEST_GIT_TIMEOUT="7"),
+                    sync_lib.GIT_TIMEOUT_SECONDS)
+
     def test_an_unusable_override_falls_back_to_the_real_bound(self):
         for value in ("inf", "-inf", "nan", "0", "-3", "soon", ""):
             with self.subTest(value=value):
                 self.assertEqual(
-                    self._timeout(CLAUDE_TOOLKIT_CONFIG="/x.json",
+                    self._timeout(CLAUDE_TOOLKIT_CONFIG=self.FIXTURE,
                                   SYNC_TEST_GIT_TIMEOUT=value),
                     sync_lib.GIT_TIMEOUT_SECONDS)
 
@@ -349,7 +364,7 @@ class TestGitTimeoutSeam(unittest.TestCase):
             seen["timeout"] = kwargs.get("timeout")
             return subprocess.CompletedProcess(args, 0, b"main\n", b"")
 
-        with mock.patch.dict(os.environ, {"CLAUDE_TOOLKIT_CONFIG": "/x.json",
+        with mock.patch.dict(os.environ, {"CLAUDE_TOOLKIT_CONFIG": self.FIXTURE,
                                           "SYNC_TEST_GIT_TIMEOUT": "9"}), \
                 mock.patch.object(sync_lib.subprocess, "run", fake_run):
             self.assertEqual(sync_lib._git("/repo", "rev-parse", "HEAD"), "main")

@@ -192,10 +192,16 @@ file immediately before writing it.
 
 ```bash
 TOKEN=$(python3 "${CLAUDE_PLUGIN_ROOT}/tools/distill-guard/distill_guard.py" stamp <abs-path>)
-# ... read the file, write the distilled text to a NEW file elsewhere ...
+# ... read the file, write the distilled text to a NEW staging file (where: below) ...
 python3 "${CLAUDE_PLUGIN_ROOT}/tools/distill-guard/distill_guard.py" install <abs-path> <new-file> "$TOKEN"
 ```
 
+- **Stage the new file where a write needs no permission:** the session scratchpad
+  if your system prompt names one, else a new `distill-staging/` folder under the
+  current directory. Never outside the working directory and never under
+  `~/.claude/`: Claude Code asks permission for that write, or refuses it in an
+  unattended run. If a staging write is refused anyway, re-stage in one of those two
+  places and carry on; a refused staging write is not a reason to stop.
 - `stamp` writes its confirmation to **stderr** and the token alone to **stdout**, so
   the `$( )` capture above is safe. Do not add `| tail -n1`, and if you ever see the
   confirmation on stdout, that is a regression — a test pins the contract.

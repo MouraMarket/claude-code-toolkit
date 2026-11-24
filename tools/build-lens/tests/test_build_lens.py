@@ -3152,6 +3152,12 @@ def agent_block_problems(text, gate):
         "claude-review-gate check --report",
         '"enableWorkflows": true',
         "%s-report-<attempt>.json" % gate, "incremented for every retry",
+        # Row 101 (work row 98's P11): an Agent call runs in the background by
+        # default; check must wait for it, and a pending reviewer is not a
+        # failed attempt.
+        "Wait for the reviewer to finish before",
+        "never dispatch a second reviewer",
+        "from its agent's own settings",
     ]
     for needle in required:
         if needle not in flat:
@@ -3161,12 +3167,24 @@ def agent_block_problems(text, gate):
     has_plan = any("--plan" in line for line in prompt_lines)
     if has_plan != (gate == "code"):
         problems.append("--plan must appear on the prompt line only at gate code")
-    agent_type = 'subagent_type: "toolkit-build:code-reviewer"'
-    if gate in ("code", "merge"):
-        if agent_type not in flat:
-            problems.append("missing %r" % agent_type)
-    elif "subagent_type" in flat:
-        problems.append("gate %s names a subagent_type; it uses a plain agent" % gate)
+    # Judge the agent choice only inside the dispatch call: the effort
+    # sentence names both agents in every reference.
+    lines = block.splitlines()
+    first = next((i for i, line in enumerate(lines) if "Agent({" in line), None)
+    if first is None:
+        problems.append("no Agent({ call in the block")
+        return problems
+    last = next((i for i in range(first + 1, len(lines)) if "})" in lines[i]),
+                len(lines) - 1)
+    call = " ".join(" ".join(lines[first:last + 1]).split())
+    if gate in ("design", "plan"):
+        wanted, other = 'subagent_type: "toolkit-build:spec-reviewer"', "code-reviewer"
+    else:
+        wanted, other = 'subagent_type: "toolkit-build:code-reviewer"', "spec-reviewer"
+    if wanted not in call:
+        problems.append("missing %r" % wanted)
+    if other in call:
+        problems.append("gate %s dispatches %s" % (gate, other))
     return problems
 
 
@@ -3210,6 +3228,27 @@ class TestEveryGateCarriesBothRuntimes(unittest.TestCase):
         mutated, count = re.subn(r"never\s+skip\s+the\s+gate", "skip", text)
         self.assertEqual(count, 1)
         self.assertNotEqual(agent_block_problems(mutated, "code"), [])
+
+
+class TestNoGateClaimsAPlainAgentRunsBelowMax(unittest.TestCase):
+    """Every gate's Agent runs from a dedicated agent file pinned at max, so
+    no reference may say the design and plan gates run below it."""
+
+    def _check(self, gate):
+        text = (SCRIPTS_DIR / ("%s-review.md" % gate)).read_text()
+        self.assertNotIn("design and plan gates do not", " ".join(text.split()))
+
+    def test_design(self):
+        self._check("design")
+
+    def test_plan(self):
+        self._check("plan")
+
+    def test_code(self):
+        self._check("code")
+
+    def test_merge(self):
+        self._check("merge")
 
 
 class TestTheRuntimeIsLedgered(unittest.TestCase):

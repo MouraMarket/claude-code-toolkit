@@ -101,10 +101,12 @@ machine awake indefinitely, which is the mistake nobody notices.
 import contextlib
 import fcntl
 import json
+import math
 import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 
 DEFAULT_HOLD_SECONDS = 1800      # 30 min idle timer on the session hold
@@ -158,6 +160,43 @@ PMSET_TIMEOUT = 3
 HOOK_TIMEOUT = 10
 
 
+def _subprocess_timeout(real):
+    """Bound for one blocking subprocess, seconds: `real`, unless
+    `CAFFEINATE_TEST_SUBPROCESS_TIMEOUT` overrides it in a test sandbox.
+
+    The hook tests drive the real executable as a subprocess against shimmed
+    `ps`/`pmset` scripts, and under local-ci's concurrent suites a shim
+    overran these bounds: `ps` raised (the hook swallowed it, so no verdict)
+    and `pmset` read as battery (a stray override stamp). That is load, not
+    the code under test. Gated on `CLAUDE_TOOLKIT_CONFIG` being set, the same
+    sandbox signal as repo-freshness's `SYNC_TEST_GIT_TIMEOUT`, AND on that
+    path resolving inside the system temp directory: the variable alone is
+    also a real runtime override, and a live hook that took a longer bound
+    would overrun its 10 s budget and be killed without a verdict. Only a
+    finite value above zero counts: anything else falls back to the real
+    bound, because `subprocess.run(timeout=inf)` raises. The production
+    values above, and TestTimeoutBudget's sum over them, are unchanged.
+    """
+    if _config_is_a_test_fixture(os.environ.get("CLAUDE_TOOLKIT_CONFIG", "")):
+        try:
+            value = float(os.environ.get("CAFFEINATE_TEST_SUBPROCESS_TIMEOUT", ""))
+        except ValueError:
+            value = 0.0
+        if math.isfinite(value) and value > 0:
+            return value
+    return real
+
+
+def _config_is_a_test_fixture(config_path):
+    """True only for an absolute config path that resolves inside the system
+    temp directory, which is where every test fixture writes its config and
+    where no installed toolkit keeps one."""
+    if not config_path or not os.path.isabs(config_path):
+        return False
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    return os.path.realpath(config_path).startswith(temp_root + os.sep)
+
+
 class System:
     """Every OS fact this tool needs, in one place tests can replace."""
 
@@ -168,7 +207,8 @@ class System:
         """{pid: (ppid, command)} for every process, from a single `ps`."""
         result = subprocess.run(
             ["ps", "-Ao", "pid=,ppid=,comm="],
-            capture_output=True, text=True, encoding="utf-8", timeout=PS_TIMEOUT)
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=_subprocess_timeout(PS_TIMEOUT))
         return parse_process_table(result.stdout)
 
     def command_lines(self, pids):
@@ -182,7 +222,8 @@ class System:
             return {}
         result = subprocess.run(
             ["ps", "-o", "pid=,args=", "-p", ",".join(str(int(p)) for p in pids)],
-            capture_output=True, text=True, encoding="utf-8", timeout=PS_TIMEOUT)
+            capture_output=True, text=True, encoding="utf-8",
+            timeout=_subprocess_timeout(PS_TIMEOUT))
         lines = {}
         for line in result.stdout.splitlines():
             parts = line.strip().split(None, 1)
@@ -202,7 +243,8 @@ class System:
         try:
             result = subprocess.run(
                 ["pmset", "-g", "ps"],
-                capture_output=True, text=True, encoding="utf-8", timeout=PMSET_TIMEOUT)
+                capture_output=True, text=True, encoding="utf-8",
+                timeout=_subprocess_timeout(PMSET_TIMEOUT))
         except Exception:
             # A MISSING OR HUNG `pmset` reads exactly like unreadable output
             # from a working one: battery, unknown charge. Both are the
@@ -857,11 +899,13 @@ def hold_jobs(config, system, session_id, self_pid, on_ac, now, table):
     when the job exits, and the cap ends it if the job hangs. Nothing here ever
     has to notice a job finishing.
 
-    A job that already has a record is NEVER re-held — not even once its hold
-    has run out. That is what makes the cap a cap: re-holding on expiry would
-    turn one hour into "as long as the job runs". The record outlives its
-    assertion for exactly that reason, and `sweep_stale` clears it only once the
-    job itself is gone.
+    A job that already has a record is never re-held once its hold has run
+    out. That is what makes the cap a cap: re-holding on expiry would turn one
+    hour into "as long as the job runs". The record outlives its assertion for
+    exactly that reason, and `sweep_stale` clears it only once the job itself
+    is gone. The one exception is a reused PID inside the cap
+    (`_job_pid_reused`): a new job that took a finished job's number gets its
+    own hold.
     """
     claude_pid = find_claude_pid(table, self_pid)
     if not claude_pid:

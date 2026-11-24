@@ -48,7 +48,7 @@ automatically"). **Never show a wall of terminal output**: report the outcome in
 **Never apply the autonomous permission grant.** `./install.sh --autonomous` and
 `skills/core/autonomy-permissions/` are advanced opt-ins for later, and wrong for someone new. If
 they ask, say it exists, say it's for later, move on. Tell them at the start what will happen and
-that it takes one to three hours, mostly unattended test runs, longest over an older install. Never promise less.
+that it takes one to three hours, longest over an older install, much of it one unattended test run. Never promise less.
 
 ## Their level — ask this first
 
@@ -250,6 +250,8 @@ python3 lib/setup_config.py ~/.config/claude-code-toolkit/config.json "$(pwd)" \
 
 ### Preview first — this changes no setup
 
+First run `python3 lib/checkout_fingerprint.py` and keep the hash it prints: one hash naming the content of every file the tests could see. Then:
+
 ```bash
 ./install.sh --check
 ```
@@ -259,8 +261,7 @@ It changes no setup (no link swapped, no setting written), but it runs the whole
 seconds and the `Tests` section runs last. Trust it only when it ends with `Check complete. Re-run
 without --check to apply.`, or exits 1 after a summary (`Some suites failed`, `Hooks are NOT
 protected`, `Required components failed:`). With neither, it was cut off: re-run with a longer
-timeout. Keep the output. If a suite fails, stop **here**, before
-anything changed, and get help rather than debugging it with them.
+timeout. Keep the output. If a suite fails, stop **here**, before anything changed, and get help rather than debugging it with them. **This is onboarding's only full test run:** once it passes, run `python3 lib/checkout_fingerprint.py` again. The same hash as before the preview is the record: the checkout the tests passed on. A different hash, or an error, means the checkout changed during the run, so run the preview again. Each suite runs in its own empty home folder against the checkout's files, so nothing the install changes on their machine can change a result; only a change to the checkout can.
 
 **Act on two kinds of preview line before installing:**
 
@@ -284,20 +285,17 @@ committed, not just noted.
 
 ### Now install
 
+First take the fingerprint again (`python3 lib/checkout_fingerprint.py`) and compare it with the record. **Identical:** install without the tests, which the preview ran:
+
 ```bash
-./install.sh
+CLAUDE_INSTALL_SKIP_SUITES=1 ./install.sh
 ```
 
-This installs and turns on the plugin for each profile they chose, turns on what was agreed, applies
-the baseline safety rules, and runs the test suite; report the outcome in one line. If it says
-`~/.local/bin is not on your PATH`, offer to add it to their shell profile (one optional command
-won't be callable by name; nothing else is affected). If a suite fails, stop.
+Its `Tests SKIPPED (CLAUDE_INSTALL_SKIP_SUITES=1) — not a pass` line is expected. **Any difference, or an error** (reconciling changed a file in the toolkit, a pull, another branch): run plain `./install.sh`, which tests the checkout again. Once it passes, its fingerprint is the new record. Either way it installs and turns on the plugin for each profile they chose, turns on what was agreed, and applies the baseline safety rules; report the outcome in one line. If it says `~/.local/bin is not on your PATH`, offer to add it to their shell profile (one optional command won't be callable by name; nothing else is affected). If a suite fails, stop.
 
 ## Phase 3 — Git hooks and recommended plugins
 
-Say what these do **before running them**: the first sets sensible git defaults and a commit check
-that blocks credentials; the second installs a few optional plugins from Anthropic's official
-marketplace.
+Say what these do **before running them**: the first sets sensible git defaults and a commit check that blocks credentials; the second installs a few optional plugins from Anthropic's official marketplace.
 
 **Name the machine-wide part first.** `setup-git.sh` sets git's `core.hooksPath`, which applies to
 *every* repository on this machine and replaces per-repository hooks (ours forward each client-side
@@ -372,8 +370,10 @@ reading `references/tooling-map.md` and following it.
 
 ## Phase 6 — Check it works, then restart
 
+Compare the checkout with the last record first, as before the install (`python3 lib/checkout_fingerprint.py`): identical, run this; any difference or an error, drop `CLAUDE_INSTALL_SKIP_SUITES=1` so the tests run again.
+
 ```bash
-./install.sh --check
+CLAUDE_INSTALL_SKIP_SUITES=1 ./install.sh --check
 ```
 
 A non-zero exit lists any failed required components; report each. Then tell them to **restart

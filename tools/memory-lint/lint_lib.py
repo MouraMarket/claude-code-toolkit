@@ -33,6 +33,7 @@ dark once a topic file exists to hold it. Without a `topics/` subdirectory the
 tool behaves exactly as it always has.
 """
 
+import json
 import os
 import re
 
@@ -1185,9 +1186,119 @@ def _distill_block(result, config, session_id):
     )
 
 
-def build(memory_dir, config=None, source=None, session_id=None):
-    """The notice text for a session, or None when there is nothing to say."""
-    if not is_enabled(config):
+_ENV_ON = ("1", "true", "yes", "on")
+_ENV_OFF = ("0", "false", "no", "off")
+
+
+def auto_memory_disabled(cwd=None):
+    """True when this session certainly runs with auto memory switched off.
+
+    With auto memory off the harness loads no MEMORY.md (every `claude -p`
+    child of a live harness runs this way). A notice about the index would
+    send that session to distill a file it never loaded. Read from the
+    binary (2.1.327), not the docs:
+
+    - `CLAUDE_CODE_DISABLE_AUTO_MEMORY` decides first: 1/true/yes/on means
+      off, and 0/false/no/off FORCES memory on over every setting. The hook
+      inherits the session's environment.
+    - Otherwise the merged `autoMemoryEnabled` decides (default on), merged
+      user < project < local < `--settings` flag < managed.
+
+    The hook reads user, project and local settings only (row 104 ruling).
+    Where the binary reads project and local settings below a git root, or
+    in a linked worktree, turns on checks the hook cannot repeat, so files
+    are CERTAIN (the binary reads exactly this file) or merely POSSIBLE. The
+    answer is True only when a certain file says `false` and no candidate
+    could switch memory on: a `true`, a non-boolean value, or a file that
+    exists but cannot be read, in any candidate, keeps the notice firing.
+    A `false` in a merely possible file never silences it: the binary may
+    not read that file at all. Silencing the notice for a session that did
+    load the index is the failure this exists to avoid; a notice nobody
+    needed is the cheap one. Not read: `--settings` flags and managed
+    settings, so a managed or flag `true` over a lower `false` still
+    silences it.
+    """
+    value = os.environ.get("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "").strip().lower()
+    if value in _ENV_ON:
+        return True
+    if value in _ENV_OFF:
+        return False
+    candidates = _settings_candidates(cwd)
+    if candidates is None:
+        return False
+    seen_false = False
+    for path, certain in candidates:
+        try:
+            with open(path, encoding="utf-8") as handle:
+                settings = json.load(handle)
+        except FileNotFoundError:
+            continue
+        except Exception:
+            return False
+        if not isinstance(settings, dict):
+            return False
+        enabled = settings.get("autoMemoryEnabled")
+        if enabled is False:
+            seen_false = seen_false or certain
+        elif enabled is not None:
+            return False
+    return seen_false
+
+
+def _settings_candidates(cwd):
+    """(path, certain) for every settings file that may hold this session's
+    user, project or local `autoMemoryEnabled`, or None when the session's
+    checkout cannot be worked out."""
+    try:
+        import claude_home   # lib/: CLAUDE_CONFIG_DIR wins over ~/.claude
+        user = os.path.join(claude_home.claude_home(), "settings.json")
+    except Exception:
+        return None
+    project = os.path.realpath(cwd or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    roots = _git_roots(project)
+    if roots is None:
+        return None
+    # Unambiguous only outside a checkout, or at a main checkout's own root.
+    plain = not roots or (roots == [project] and os.path.isdir(os.path.join(project, ".git")))
+    candidates = [(user, True)]
+    for directory in [project] + [root for root in roots if root != project]:
+        at_cwd = directory == project
+        candidates.append((os.path.join(directory, ".claude", "settings.json"), plain and at_cwd))
+        candidates.append((os.path.join(directory, ".claude", "settings.local.json"), plain and at_cwd))
+    return candidates
+
+
+def _git_roots(realpath_start):
+    """The checkout root above the directory and, for a linked worktree, the
+    main checkout's root ([] outside any checkout; None when a `.git` file
+    cannot be read, so nothing is assumed)."""
+    path = realpath_start
+    while True:
+        dotgit = os.path.join(path, ".git")
+        if os.path.isdir(dotgit):
+            return [path]
+        if os.path.isfile(dotgit):
+            try:
+                with open(dotgit, encoding="utf-8") as handle:
+                    gitdir = handle.read().strip()
+                gitdir = os.path.join(path, gitdir.split(":", 1)[1].strip())
+                common = gitdir
+                if os.path.isfile(os.path.join(gitdir, "commondir")):
+                    with open(os.path.join(gitdir, "commondir"), encoding="utf-8") as handle:
+                        common = os.path.join(gitdir, handle.read().strip())
+            except (OSError, IndexError):
+                return None
+            return [path, os.path.realpath(os.path.dirname(os.path.normpath(common)))]
+        parent = os.path.dirname(path)
+        if parent == path:
+            return []
+        path = parent
+
+
+def build(memory_dir, config=None, source=None, session_id=None, cwd=None):
+    """The notice text for a session, or None when there is nothing to say.
+    `cwd` is the session's working directory (the hook payload's `cwd`)."""
+    if not is_enabled(config) or auto_memory_disabled(cwd):
         return None
     result = scan(memory_dir, config)
     block = None

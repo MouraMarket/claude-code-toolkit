@@ -79,6 +79,7 @@ The /build workflow and its executor and reviewer agents. Optional.
 | `toolkit-build:architecture-reviewer` | The Fable route of the architecture-review skill — a frontier, read-only architect that reviews a very large build at its design point or after everything has shipped, and returns one JSON report (principles, change plan, implementation sketch). |
 | `toolkit-build:code-reviewer` | Reviews a whole PR or branch diff against the repository's own CLAUDE.md rules. |
 | `toolkit-build:executor` | Implements ONE task from a written implementation plan. |
+| `toolkit-build:spec-reviewer` | The one reviewer of a /build Design Review or Plan Review gate when that gate runs through its Agent fallback (tools/build-lens/design-review.md or plan-review.md, with the prompt `claude-review-gate prompt` printed). |
 | `toolkit-build:task-reviewer` | Reviews the diff from ONE completed plan task against its acceptance criteria. |
 
 ### Hooks

@@ -1737,6 +1737,69 @@ class TestTimeoutBudget(unittest.TestCase):
             self.assertTrue(callable(getattr(lib, mode)))
 
 
+class TestSubprocessTimeoutSeam(unittest.TestCase):
+    """`_subprocess_timeout`: the real bound unless a test sandbox overrides it.
+
+    Row 86. The override exists only for the executable tests below, whose
+    shell-script shims overran the real 2-3 s bounds under local-ci load. It
+    must be inert without `CLAUDE_TOOLKIT_CONFIG`, and only a finite value above
+    zero may count: `subprocess.run(timeout=inf)` raises, which in `ps` would
+    cost every hook its verdict.
+    """
+
+    # Where a test's config lives: inside the system temp directory, the
+    # second condition the seam requires (the variable alone is also a real
+    # runtime override).
+    FIXTURE = os.path.join(tempfile.gettempdir(), "row86", "config.json")
+
+    def bound(self, env):
+        saved = dict(os.environ)
+        try:
+            for key in ("CLAUDE_TOOLKIT_CONFIG", "CAFFEINATE_TEST_SUBPROCESS_TIMEOUT"):
+                os.environ.pop(key, None)
+            os.environ.update(env)
+            return lib._subprocess_timeout(lib.PS_TIMEOUT)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+    def test_no_override_is_the_real_bound(self):
+        self.assertEqual(self.bound({"CLAUDE_TOOLKIT_CONFIG": self.FIXTURE}), lib.PS_TIMEOUT)
+
+    def test_a_sandboxed_override_is_used(self):
+        self.assertEqual(self.bound({"CLAUDE_TOOLKIT_CONFIG": self.FIXTURE,
+                                     "CAFFEINATE_TEST_SUBPROCESS_TIMEOUT": "8"}), 8.0)
+
+    def test_without_the_sandbox_signal_the_override_is_ignored(self):
+        self.assertEqual(self.bound({"CAFFEINATE_TEST_SUBPROCESS_TIMEOUT": "8"}), lib.PS_TIMEOUT)
+
+    def test_a_real_runtime_config_override_ignores_it(self):
+        # Codex Code Review, row 86: CLAUDE_TOOLKIT_CONFIG is ALSO how a real
+        # install points at its config. A live hook that took a longer bound
+        # would overrun its 10 s budget and be killed without a verdict.
+        real = os.path.expanduser("~/.config/claude-code-toolkit/config.json")
+        for config in (real, "relative/config.json"):
+            with self.subTest(config=config):
+                self.assertEqual(
+                    self.bound({"CLAUDE_TOOLKIT_CONFIG": config,
+                                "CAFFEINATE_TEST_SUBPROCESS_TIMEOUT": "8"}),
+                    lib.PS_TIMEOUT)
+
+    def test_only_a_finite_value_above_zero_counts(self):
+        for value in ("0", "-1", "inf", "nan", "eight", ""):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.bound({"CLAUDE_TOOLKIT_CONFIG": self.FIXTURE,
+                                "CAFFEINATE_TEST_SUBPROCESS_TIMEOUT": value}),
+                    lib.PS_TIMEOUT)
+
+
+def shim_sleep_line(delay):
+    """A shim's opening `sleep`, so a test can make it SLOW on purpose: the
+    stand-in for a shim starved under local-ci's concurrent load (row 86)."""
+    return "sleep %s\n" % delay if delay else ""
+
+
 class TestHookExecutable(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1761,7 +1824,7 @@ class TestHookExecutable(unittest.TestCase):
                       " -InternalBattery-0 (id=12345678)\t72%; discharging; "
                       "6:56 remaining present: true\n")
 
-    def shim_pmset(self, output):
+    def shim_pmset(self, output, delay=0):
         """Put a fake `pmset` on PATH so these tests DECLARE the power state.
 
         Without this the hook subprocess inherits `dict(os.environ)` and shells
@@ -1780,11 +1843,12 @@ class TestHookExecutable(unittest.TestCase):
             os.makedirs(shim)
         path = os.path.join(shim, "pmset")
         with open(path, "w") as handle:
-            handle.write("#!/bin/sh\ncat <<'EOF'\n" + output + "EOF\n")
+            handle.write("#!/bin/sh\n" + shim_sleep_line(delay)
+                         + "cat <<'EOF'\n" + output + "EOF\n")
         os.chmod(path, 0o755)
         return shim
 
-    def shim_ps(self):
+    def shim_ps(self, delay=0):
         """Put a `ps` on PATH that sees NO background jobs.
 
         Run from inside a Claude Code session, the hook's real ancestry reaches
@@ -1798,21 +1862,36 @@ class TestHookExecutable(unittest.TestCase):
         os.makedirs(shim, exist_ok=True)
         path = os.path.join(shim, "ps")
         with open(path, "w", encoding="utf-8") as handle:
-            handle.write('#!/bin/sh\ncase "$*" in *args=*) exit 0;; esac\n'
+            handle.write('#!/bin/sh\n' + shim_sleep_line(delay)
+                         + 'case "$*" in *args=*) exit 0;; esac\n'
                          'exec /bin/ps "$@"\n')
         os.chmod(path, 0o755)
         return shim
 
+    # What the hook's subprocess bound becomes under the test seam. Well above
+    # any shim's real run time, and three of them still fit inside run_hook's
+    # own 30 s timeout.
+    SEAM_TIMEOUT = "8"
+
     def run_hook(self, mode, payload='{"session_id":"probe"}', config=None,
-                 power=None):
+                 power=None, seam=True, pmset_delay=0, ps_delay=0):
         environment = dict(os.environ)
         environment["CAFFEINATE_DEBUG"] = "1"
         environment["CLAUDE_TOOLKIT_CONFIG"] = config or self.config_path
+        # The shims are shell scripts, and under local-ci's concurrent suites
+        # one overran the hook's 2-3 s bounds: `ps` raised (no verdict at all)
+        # and `pmset` read as battery (a stray override stamp). Row 86 first
+        # blamed the machine's power state; it was load. `seam=False` gives the
+        # real bounds back, which is how the slow-shim tests prove the seam matters.
+        if seam:
+            environment["CAFFEINATE_TEST_SUBPROCESS_TIMEOUT"] = self.SEAM_TIMEOUT
+        else:
+            environment.pop("CAFFEINATE_TEST_SUBPROCESS_TIMEOUT", None)
         # Default AC, which is what every test here was written against and
         # what CI runners report. A test that cares about the battery branch
         # asks for it by name.
-        self.shim_ps()
-        shim = self.shim_pmset(self.AC_OUTPUT if power is None else power)
+        self.shim_ps(ps_delay)
+        shim = self.shim_pmset(self.AC_OUTPUT if power is None else power, pmset_delay)
         environment["PATH"] = shim + os.pathsep + environment.get("PATH", "")
         argv = [sys.executable, HOOK] + ([mode] if mode else [])
         return subprocess.run(argv, input=payload, capture_output=True,
@@ -1939,6 +2018,38 @@ class TestHookExecutable(unittest.TestCase):
         released = self.run_hook("release")
         self.assertEqual(released.returncode, 0, released.stderr)
         self.assertEqual(self.state_files(), [])
+
+    # Row 86: just past each real bound (PMSET_TIMEOUT 3, PS_TIMEOUT 2), so
+    # with the seam blanked the real hook fails exactly as it did under load.
+    SLOW_PMSET = 3.5
+    SLOW_PS = 2.5
+
+    @unittest.skipUnless(sys.platform == "darwin", "needs the real caffeinate")
+    def test_a_slow_pmset_is_still_read_as_the_declared_power(self):
+        self.write_config()
+        self.run_hook("acquire", pmset_delay=self.SLOW_PMSET, seam=False)
+        self.assertIn(lib.OVERRIDE_STAMP, self.state_files(),
+                      "control: a pmset slower than PMSET_TIMEOUT must read as "
+                      "battery under the real bound, or this shim is not slow enough")
+        self.run_hook("release", seam=False)
+
+        self.tearDownState()
+        self.write_config()
+        self.run_hook("acquire", pmset_delay=self.SLOW_PMSET)
+        self.assertEqual(self.state_files(), ["probe.json"])
+        self.run_hook("release")
+
+    @unittest.skipUnless(sys.platform == "darwin", "needs the real caffeinate")
+    def test_a_slow_ps_still_reaches_a_verdict(self):
+        self.write_config()
+        starved = self.run_hook("acquire", ps_delay=self.SLOW_PS, seam=False)
+        self.assertNotIn("held", starved.stderr,
+                         "control: a ps slower than PS_TIMEOUT must cost the real "
+                         "hook its verdict, or this shim is not slow enough")
+
+        acquired = self.run_hook("acquire", ps_delay=self.SLOW_PS)
+        self.assertIn("held", acquired.stderr)
+        self.run_hook("release")
 
     @unittest.skipUnless(sys.platform == "darwin", "needs the real caffeinate")
     def test_a_real_acquire_sweeps_another_sessions_expired_record(self):

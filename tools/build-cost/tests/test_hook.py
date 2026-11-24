@@ -593,6 +593,13 @@ class TestNamespacedAgentsQualify(unittest.TestCase):
         self.assertEqual(["toolkit-build:architect-reviewer"],
                          recorded[0]["qualified_by"])
 
+    def test_a_spec_reviewer_only_session_qualifies_under_the_default_config(self):
+        recorded = self._record(["toolkit-build:spec-reviewer"])
+        self.assertEqual(1, len(recorded))
+
+    def test_a_general_purpose_only_session_writes_nothing(self):
+        self.assertEqual([], self._record(["general-purpose"]))
+
     def test_namespaced_code_reviewer_lanes_review(self):
         recorded = self._record(["toolkit-build:code-reviewer"])
         self.assertEqual(1, recorded[0]["review_messages"])

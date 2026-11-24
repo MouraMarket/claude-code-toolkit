@@ -150,7 +150,8 @@ def _is_test_sandbox() -> bool:
     override inside a module whose whole job is PATH hardening is a
     backdoor. This marker alone does NOT prove a sandbox: `CLAUDE_TOOLKIT_CONFIG`
     is also a real runtime override (the installer sets it), which is why
-    `_test_bin_override()` adds a second, independent condition. Checked LIVE
+    `_test_bin_override()` and `_config_is_a_test_fixture()` each add a
+    second, independent condition. Checked LIVE
     against `os.environ` on every call, not against `toolkit_config.CONFIG_PATH`
     -- the latter is resolved once at import time, and this module's own
     tests move it in-process via `ConfigTestCase`, which would never be
@@ -186,6 +187,26 @@ def _test_bin_override(env_var: str) -> Optional[str]:
     return value
 
 
+def _config_is_a_test_fixture() -> bool:
+    """True only when `_is_test_sandbox()` is true AND `CLAUDE_TOOLKIT_CONFIG`
+    is an absolute path that resolves inside the system temp directory.
+
+    The second condition for a seam whose value is not a path, so
+    `_test_bin_override()`'s own temp-dir check cannot cover it. Every hook
+    test writes its config under a `tempfile` dir; a real install's config
+    lives under the user's home, never there. Same gate as
+    `caffeinate_lib._config_is_a_test_fixture()`.
+    """
+    if not _is_test_sandbox():
+        return False
+    config_path = os.environ.get("CLAUDE_TOOLKIT_CONFIG", "")
+    if not os.path.isabs(config_path):
+        return False
+    temp_root = os.path.realpath(tempfile.gettempdir())
+    resolved = os.path.realpath(config_path)
+    return os.path.commonpath([temp_root, resolved]) == temp_root
+
+
 def _git_bin() -> str:
     """Which `git` executable every call in this module invokes.
 
@@ -209,12 +230,14 @@ def _git_timeout() -> float:
     `_give_real_git_room()`'s in-process patch cannot reach it. Under
     local-ci's concurrent suites one local git call overran the 1s bound and
     a diverged repo read "could not read". Gated on
-    `_is_test_sandbox()` like the bin overrides, and only a finite value
-    above zero counts: anything else falls back to the real bound, because
+    `_config_is_a_test_fixture()`: the sandbox marker alone is also a
+    real runtime override, and a live hook that inherited an unbounded
+    timeout could overrun its hook budget and be killed with no verdict.
+    Only a finite value above zero counts: anything else falls back to the real bound, because
     `subprocess.run(timeout=inf)` raises, and `_git` would turn that raise
     into a None on every call.
     """
-    if _is_test_sandbox():
+    if _config_is_a_test_fixture():
         try:
             value = float(os.environ.get("SYNC_TEST_GIT_TIMEOUT", ""))
         except ValueError:

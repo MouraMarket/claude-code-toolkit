@@ -99,6 +99,7 @@ def run_hook():
         memory_dir,
         source=payload.get("source"),
         session_id=payload.get("session_id"),
+        cwd=payload.get("cwd"),
     )
     if not notice:
         return

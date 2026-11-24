@@ -1,7 +1,7 @@
 # Getting set up with Claude Code
 
 This sets up Claude Code on your Mac with the toolkit's safety checks and
-workflow tools. Plan on one to three hours, longest over an older install: most
+workflow tools. Plan on one to three hours, longest over an older install: much
 of that is the toolkit testing itself while you do something else, and Claude
 does almost all of the rest.
 

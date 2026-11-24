@@ -100,6 +100,11 @@ Agent({ subagent_type: "toolkit-build:code-reviewer", model: "opus", effort: "ma
          description: "merge review", prompt: "<everything the command printed>" })
 ```
 
+Wait for the reviewer to finish before `check`: pass `run_in_background: false` where your
+Agent tool accepts it, and otherwise wait for its completion notice. A report that is still
+missing while the reviewer runs is not a failed attempt; never dispatch a second reviewer
+for it.
+
 ```bash
 claude-review-gate check --report <report path>
 ```
@@ -107,10 +112,10 @@ claude-review-gate check --report <report path>
 Exit 0 prints an `accepted:` line for the build ledger. Exit 1 or 2 means the
 gate did not pass: fix the cause and dispatch again with the next attempt
 number, and never read the report yourself as a substitute for `check`. If
-the Agent tool takes no `effort`, the code and merge gates still run at
-`max` from the code-reviewer agent's own settings, but the design and plan
-gates do not: record that as a `Ruling:` line. `"enableWorkflows": true` in
-your Claude Code user settings turns `Workflow` on, if you choose to.
+the Agent tool takes no `effort`, every gate still runs at `max` from its
+agent's own settings: code-reviewer at code and merge, spec-reviewer at
+design and plan. `"enableWorkflows": true` in your Claude Code user settings
+turns `Workflow` on, if you choose to.
 
 Three args: `gate: "merge"`, `briefPath`, the path Step 1 printed, and `lensDir`. Handing the reviewer
 the **file** is what keeps it blinded — its own description will accept a bare

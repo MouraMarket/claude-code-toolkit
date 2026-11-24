@@ -107,14 +107,17 @@ class TestAuditJsonBetweenPhase1bAndPhase2(OnboardDocCase):
 
 class TestApplySafePrecedesInstall(OnboardDocCase):
     """Test 3: the block naming `claude-setup-audit apply-safe` comes before
-    the first block whose only command is `./install.sh`."""
+    the first block whose only command is the install, `./install.sh`, bare or
+    with the suite skip row 84 gives it after a passing preview."""
+
+    INSTALL_BLOCKS = ("./install.sh", "CLAUDE_INSTALL_SKIP_SUITES=1 ./install.sh")
 
     def test_apply_safe_precedes_the_bare_install_block(self):
         apply_i = _first_index(self.blocks, "claude-setup-audit apply-safe")
         self.assertIsNotNone(apply_i, "no block calls claude-setup-audit apply-safe")
         install_i = None
         for i, block in enumerate(self.blocks):
-            if block.strip() == "./install.sh":
+            if block.strip() in self.INSTALL_BLOCKS:
                 install_i = i
                 break
         self.assertIsNotNone(install_i, "no block whose only command is ./install.sh")

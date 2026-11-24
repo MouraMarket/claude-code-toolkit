@@ -570,5 +570,78 @@ class TestOnboardingConduct(unittest.TestCase):
                 self.assertIn("never hand-write the file", body)
 
 
+_SKIP = "CLAUDE_INSTALL_SKIP_SUITES=1 "
+_FINGERPRINT = "`python3 lib/checkout_fingerprint.py`"
+
+
+def _install_runs(text):
+    """Every installer command line inside a bash fence, in order, minus
+    `--verify-live`, which exits before the Tests section."""
+    return [line.strip() for _, body in _blocks(text) for line in body.splitlines()
+            if "install.sh" in line and "--verify-live" not in line]
+
+
+class TestOnboardingRunsTheSuitesOnce(unittest.TestCase):
+    """Row 84: one sweep measured ~25 min (Work Mac, 2026-11-23), and onboarding
+    used to run three. The preview keeps the only full run, so a red suite still
+    stops onboarding before anything changes; the install and Phase 6 skip the
+    suites while the checkout's content fingerprint matches the one taken on both
+    sides of the passing preview (Codex Code Review: a `git status` record named
+    status letters, not content, and was taken only after the run)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.skill = _read(SKILL_MD)
+        cls.phase2 = _section(cls.skill, "## Phase 2")
+
+    def test_the_fingerprint_command_names_a_real_script(self):
+        script = _FINGERPRINT.strip("`").split()[1]
+        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, script)), script)
+
+    def test_exactly_one_installer_run_sweeps_the_suites_and_it_is_the_preview(self):
+        full = [run for run in _install_runs(self.skill) if not run.startswith(_SKIP)]
+        self.assertEqual(full, ["./install.sh --check"])
+        preview = _subsection(self.phase2, "### Preview first")
+        self.assertEqual(_install_runs(preview), ["./install.sh --check"])
+
+    def test_the_preview_is_fingerprinted_before_and_after_its_run(self):
+        preview = _subsection(self.phase2, "### Preview first")
+        fence_at = _blocks(preview)[0][0]
+        first = preview.index(_FINGERPRINT)
+        second = preview.index(_FINGERPRINT, first + 1)
+        self.assertLess(first, fence_at)
+        self.assertLess(fence_at, second)
+        self.assertIn("only full test run", preview)
+        self.assertIn("A different hash, or an error, means the checkout changed during "
+                      "the run, so run the preview again.", _flat(preview))
+
+    def test_the_install_skips_the_suites_only_on_a_matching_checkout(self):
+        step = _subsection(self.phase2, "### Now install")
+        self.assertEqual(_install_runs(step), [_SKIP + "./install.sh"])
+        fence = step.index("```bash")
+        self.assertLess(step.index(_FINGERPRINT), fence)
+        self.assertLess(step.index("compare it with the record"), fence)
+        self.assertIn("**Any difference, or an error**", step)
+        self.assertIn("run plain `./install.sh`", step)
+
+    def test_phase_6_skips_the_suites_only_on_a_matching_checkout(self):
+        step = _section(self.skill, "## Phase 6 ")
+        self.assertEqual(_install_runs(step), [_SKIP + "./install.sh --check"])
+        fence = step.index("```bash")
+        self.assertLess(step.index(_FINGERPRINT), fence)
+        self.assertLess(step.index("Compare the checkout"), fence)
+        self.assertIn("any difference or an error, drop", _flat(step))
+
+    def test_the_quoted_skip_line_is_what_install_sh_prints(self):
+        quoted = re.search(r"`(Tests SKIPPED \([^`]*)`", self.skill)
+        self.assertIsNotNone(quoted, "SKILL.md no longer quotes the SKIPPED line")
+        self.assertIn(quoted.group(1), _read(INSTALL_SH))
+
+    def test_install_sh_skips_only_on_the_exact_value_the_skill_sets(self):
+        """install.sh honours the switch only when it is exactly "1"; the
+        skill's value has to be that one, or every run is a full sweep."""
+        self.assertIn('[[ "${CLAUDE_INSTALL_SKIP_SUITES:-}" == "1" ]]', _read(INSTALL_SH))
+
+
 if __name__ == "__main__":
     unittest.main()
