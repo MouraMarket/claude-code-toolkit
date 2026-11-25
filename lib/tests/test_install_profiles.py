@@ -333,6 +333,31 @@ class TestDeselectedProfiles(ProfilesTestCase):
         self.assertIn("kept %s: other@thirdparty depends on it" % A_ID, proc.stdout)
         self.assertNotIn("%s enabled outside your profiles" % A_ID, proc.stdout)
 
+    def test_a_kept_plugin_with_a_stale_version_is_refreshed_not_uninstalled(self):
+        """Codex Code Review (row 107): a deselected plugin kept for a dependent
+        is live and served from this checkout, so a stale listed version is
+        refreshed like a profile's. Enablement is never changed."""
+        self.first_install(["extra", "a"])
+        self.add_foreign_plugin("other@thirdparty", ["toolkit-a"])
+        head12 = git("rev-parse", "HEAD", cwd=self.repo).stdout.strip()[:12]
+        with open(self.state) as handle:
+            state = json.load(handle)
+        for plugin in state["plugins"]:
+            if plugin["id"] == A_ID:
+                plugin["version"] = "aaaaaaaaaaaa"
+        with open(self.state, "w") as handle:
+            json.dump(state, handle)
+        proc = self.run_profiles(["extra"],
+                                 CLAUDE_SHIM_LATEST=json.dumps({A_ID: head12}))
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual([], self.uninstalls())
+        self.assertIn("kept %s: other@thirdparty depends on it" % A_ID, proc.stdout)
+        self.assertEqual(["plugin update %s --scope user" % A_ID],
+                         [l for l in self.log() if l.startswith("plugin update")])
+        self.assertFalse([l for l in self.log()
+                          if l.startswith(("plugin enable", "plugin disable"))
+                          and A_ID in l])
+
     def test_dependents_are_uninstalled_first(self):
         self.first_install(["extra", "a", "b"])
         self.depends("plugin-b", "toolkit-b", ["toolkit-a"])

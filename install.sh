@@ -1186,6 +1186,10 @@ def stale_version(entry):
 uninstalled_now = []
 # The plugins this run refreshed, for the end-state check.
 refreshed_now = []
+# Deselected profile plugins this run KEPT because something still needs them:
+# still installed, enabled and served from this checkout, so their listed
+# version is refreshed like a profile's (Codex Code Review, row 107).
+retained_now = []
 
 
 def refresh_if_stale(entry, pid):
@@ -1268,6 +1272,7 @@ def uninstall_deselected(plugins, markets):
         order, kept = plugin_deps.plan_removal(dropped, stays, deps_of)
     for pid in sorted(kept):
         print("%s kept %s: %s" % (OK, pid, kept[pid]))
+    retained_now.extend(sorted(kept))
 
     for pid in order:
         if check:
@@ -1349,13 +1354,22 @@ if have_claude:
                 print("%s plugin %s enabled" % (OK, pid))
                 refresh_if_stale(entry, pid)
         deselected_handled = uninstall_deselected(plugins, markets or [])
-        # Another toolkit plugin the user enabled by hand is theirs: say so, change nothing.
+        for pid in retained_now:
+            entry = plugin_entry(plugins, pid)
+            if entry is not None and entry.get("enabled") is True:
+                refresh_if_stale(entry, pid)
+        # Another toolkit plugin the user enabled by hand (or a profile's
+        # dependency, e.g. skill-prompt-optimizer) is theirs: say so and never
+        # change whether it is enabled. Its listed version is refreshed like a
+        # profile's, though: it serves from this same checkout, so after an
+        # --update it would otherwise keep listing the old commit (H11 P1).
         for entry in plugins:
             other = entry.get("id")
             if (isinstance(other, str) and other.endswith("@" + hook_manifest.MARKETPLACE)
                     and entry.get("scope") == "user" and entry.get("enabled") is True
                     and other not in selected_ids and other not in deselected_handled):
                 print("%s %s enabled outside your profiles — left as is" % (OK, other))
+                refresh_if_stale(entry, other)
         if check:
             report_prerequisites(plugins)
 
@@ -2389,6 +2403,7 @@ completed=0
 # setUpModule), so a temp-dir root fails it before a single test runs.
 # ci/local-checks.sh places its suite HOMEs the same way.
 suite_root="$(mkdir -p "$HOME/.cache" 2>/dev/null && mktemp -d "$HOME/.cache/claude-toolkit-suites.XXXXXX" 2>/dev/null)" || suite_root=""
+suite_logs=""
 if [[ -z "$suite_root" ]]; then
   warn "could not create a scratch HOME root for the suites — running none"
   failed=1
@@ -2408,12 +2423,31 @@ for suite in ${suites[@]+"${suites[@]}"}; do
   # HOME=: each suite gets its own empty HOME, because the user's real
   # ~/.gitconfig (e.g. a global core.hooksPath) otherwise leaks into fixture
   # commits and turns suites red on that machine only. Mirrors ci/local-checks.sh.
+  # Output goes to a scratch file beside the suite's HOME, not /dev/null: a
+  # failing suite's file is copied to a kept log (below) so a red install on
+  # someone's machine carries its traceback (H11 could not show N1's). A passing
+  # suite's file goes with $suite_root.
   mkdir -p "$suite_root/s$completed"
-  if ( cd "$base" && HOME="$suite_root/s$completed" env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$suite")" >/dev/null 2>&1 </dev/null ); then
+  suite_out="$suite_root/s$completed.out"
+  if ( cd "$base" && HOME="$suite_root/s$completed" env -u CLAUDE_CONFIG_DIR -u GIT_CONFIG_GLOBAL python3 "tests/$(basename "$suite")" >"$suite_out" 2>&1 </dev/null ); then
     ok "$label"
   else
     warn "$label FAILED"
     failed=1
+    # One kept directory per run, made at the first failure only; never pruned
+    # (a run that keeps nothing makes nothing). Not $suite_root: that is removed.
+    if [[ -z "$suite_logs" ]]; then
+      suite_logs="$(mkdir -p "$HOME/.cache/claude-toolkit-suite-logs" 2>/dev/null && mktemp -d "$HOME/.cache/claude-toolkit-suite-logs/run.XXXXXX" 2>/dev/null)" || suite_logs=""
+    fi
+    # Named by the suite's path under the repo, not its label: two skills'
+    # scripts/tests/test_same.py share a label and would overwrite each other.
+    rel="${suite#"$REPO"/}"
+    kept="$suite_logs/${rel//\//__}.log"
+    if [[ -n "$suite_logs" ]] && cp "$suite_out" "$kept" 2>/dev/null; then
+      echo "     its output: $kept"
+    else
+      echo "     its output could not be kept"
+    fi
   fi
   completed=$((completed+1))
 done

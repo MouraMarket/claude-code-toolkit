@@ -1090,6 +1090,90 @@ def _parse_env_prefix(tokens, sep, start, windows=False):
     return None
 
 
+# Shell variables the command line assigns to itself (mission row 106).
+# `W=<worktree>; git -C $W stash push` ran unjudged on 2026-11-22: `$W` was
+# never expanded, the target resolved nowhere, and an unresolvable target
+# allows. A literal `NAME=value` that is a statement of its own (`W=/x;`,
+# `W=/x &&`, a newline) or an `export NAME=value` is recorded and expanded in
+# every directory target the walk prepares. What it records is deliberately
+# narrow, each rule the shell's own:
+#   - a prefix assignment (`W=/x git ...`) is not recorded: the shell expands
+#     `$W` in that command BEFORE the prefix applies;
+#   - one inside `( )`, or followed by a pipe or `&`, is not kept: it ran in
+#     a subshell;
+#   - a value holding `$(...)` or a backtick is unknowable, so it UNBINDS the
+#     name rather than leave an older literal in force;
+#   - `W+=/sub` appends to the recorded value; onto an unknown one it
+#     unbinds the name;
+#   - a token holding a single quote or a backslash anywhere is not
+#     expanded: the unquoted text no longer says which `$` the shell kept
+#     literal (`'$W'`, `\$W`), and expanding one could refuse a command
+#     that names a real `$W` directory.
+# Anything still unresolved allows, exactly as before (fail open). A value
+# set in an earlier Bash call or in the environment is not on this command
+# line at all and stays out of reach.
+_ASSIGN_NAME_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=")
+_VAR_REF_RE = re.compile(
+    r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+# Separators after which a standalone assignment is still in force: the
+# rest run their left side in a subshell (`|`, `|&`) or the background (`&`).
+_SUBSHELL_SEPARATORS = frozenset(("|", "|&", "&", "&|", "&!"))
+
+
+def expand_shell_vars(value, scopes, raw=""):
+    """`value` with every `$NAME`/`${NAME}` the command line assigned
+    replaced by its recorded value. `scopes` is a tuple of name -> value
+    maps searched in order; a name present in an earlier one shadows the
+    rest, even when its value is None (unbound). Searched, never merged: a
+    merged copy per assignment made the walk quadratic in the number of
+    names (test_walk_linearity). Unknown names are left as written, so
+    `$HOME` still reaches `prepare_path`. `raw` is the token as typed: one
+    holding a single quote or a backslash is returned unchanged, since the
+    unquoted text no longer says which `$` the shell left literal."""
+    if ("$" not in value or "'" in raw or "\\" in raw
+            or not any(scopes)):
+        return value
+
+    def substitute(match):
+        name = match.group(1) or match.group(2)
+        for scope in scopes:
+            if name in scope:
+                known = scope[name]
+                return match.group(0) if known is None else known
+        return match.group(0)
+
+    return _VAR_REF_RE.sub(substitute, value)
+
+
+def _lookup(scopes, name):
+    for scope in scopes:
+        if name in scope:
+            return scope[name]
+    return None
+
+
+def _record_assignment(tok, raw, scopes, into):
+    """Record `NAME=value` (or `NAME+=value`, which appends) from one token
+    into `into`, expanding the value against `scopes` (see
+    expand_shell_vars). A non-identifier name records nothing; an
+    unknowable value -- or an append onto an unknown one -- records None,
+    which unbinds the name."""
+    match = _ASSIGN_NAME_RE.match(tok)
+    if not match:
+        return
+    name, append = match.group(1), match.group(2)
+    value = tok[match.end():]
+    if "$(" in value or "`" in value:
+        into[name] = None   # unbinds: a later lookup must not see an old literal
+        return
+    # The raw token is `NAME=...`, so its quoting starts after the `=`.
+    value = expand_shell_vars(value, scopes, raw.partition("=")[2])
+    if append:
+        base = _lookup(scopes, name)
+        value = None if base is None else base + value
+    into[name] = value
+
+
 def _walk_tokens(walk, tokens, raw_tokens, cwd):
     """The whole command, token for token, tracking directory context
     across cd/&&/;/|/() -- the zsh original's equivalent.
@@ -1119,28 +1203,65 @@ def _walk_tokens(walk, tokens, raw_tokens, cwd):
     # invocation, then restored, because `env -C` changes the child
     # process's cwd, not the calling shell's (unlike `cd`, which persists).
     env_restore_dir_ctx = None
+    # Same-line shell variables (see _SUBSHELL_SEPARATORS above): `shell_vars`
+    # is what is in force; `pending_vars` holds a statement's leading
+    # assignments until its end shows whether a command followed them.
+    # A subshell's bindings are undone on `)` from `undo_log` (name, prior
+    # value) back to the mark `(` pushed -- never by copying the table, which
+    # costs names x subshells (test_walk_linearity).
+    shell_vars = {}
+    pending_vars = {}
+    undo_log = []
+    vars_marks = []
+    missing = object()
+
+    def bind(name, value):
+        if vars_marks:
+            undo_log.append((name, shell_vars.get(name, missing)))
+        shell_vars[name] = value
+
+    def expand(idx):
+        return expand_shell_vars(tokens[idx], (shell_vars,), raw_tokens[idx])
 
     while i < n:
         tok = tokens[i]
 
         if raw_tokens[i] == "(":
             dir_stack.append(dir_ctx)
+            vars_marks.append(len(undo_log))
             statement_start = True
             env_gd = ""
             env_wt = ""
+            pending_vars = {}
             i += 1
             continue
 
         if raw_tokens[i] == ")":
             if dir_stack:
                 dir_ctx = dir_stack.pop()
+            if vars_marks:
+                mark = vars_marks.pop()
+                while len(undo_log) > mark:
+                    name, prior = undo_log.pop()
+                    if prior is missing:
+                        shell_vars.pop(name, None)
+                    else:
+                        shell_vars[name] = prior
             statement_start = True
             env_gd = ""
             env_wt = ""
+            pending_vars = {}
             i += 1
             continue
 
         if sep[i]:
+            # Assignments with no command after them persist -- unless this
+            # separator ran them in a subshell or the background.
+            if (statement_start and pending_vars
+                    and raw_tokens[i] not in _SUBSHELL_SEPARATORS):
+                for name, value in pending_vars.items():
+                    bind(name, value)
+            pending_vars = {}
             statement_start = True
             env_gd = ""
             env_wt = ""
@@ -1149,7 +1270,7 @@ def _walk_tokens(walk, tokens, raw_tokens, cwd):
 
         if tok == "cd" and statement_start:
             if i + 1 < n and not sep[i + 1]:
-                dir_ctx = prepare_path(tokens[i + 1], dir_ctx, walk.ctx)
+                dir_ctx = prepare_path(expand(i + 1), dir_ctx, walk.ctx)
                 i += 2
             else:
                 i += 1
@@ -1158,11 +1279,29 @@ def _walk_tokens(walk, tokens, raw_tokens, cwd):
 
         if statement_start and _ASSIGNMENT_RE.match(tok):
             if tok.startswith("GIT_DIR="):
-                env_gd = tok[len("GIT_DIR="):]
+                env_gd = expand(i)[len("GIT_DIR="):]
             elif tok.startswith("GIT_WORK_TREE="):
-                env_wt = tok[len("GIT_WORK_TREE="):]
+                env_wt = expand(i)[len("GIT_WORK_TREE="):]
+            # Left to right, as the shell assigns: `R=/x W=$R/wt` sees R.
+            _record_assignment(tok, raw_tokens[i],
+                               (pending_vars, shell_vars), pending_vars)
             i += 1
             continue   # statement_start stays True: more may follow
+
+        if statement_start and tok == "export":
+            # `export NAME=value ...`: every word is expanded before export
+            # runs, so all of them see the variables from BEFORE it.
+            exported = {}
+            i += 1
+            while i < n and not sep[i]:
+                if _ASSIGNMENT_RE.match(tokens[i]):
+                    _record_assignment(tokens[i], raw_tokens[i],
+                                       (shell_vars,), exported)
+                i += 1
+            for name, value in exported.items():
+                bind(name, value)
+            statement_start = False
+            continue
 
         if statement_start and _normalized_command_word(
                 tok, walk.ctx.windows) == "env":
@@ -1176,13 +1315,17 @@ def _walk_tokens(walk, tokens, raw_tokens, cwd):
                 ei, env_c_dir, assigned, cleared = parsed
                 if env_c_dir:
                     env_restore_dir_ctx = dir_ctx
-                    dir_ctx = prepare_path(env_c_dir, dir_ctx, walk.ctx)
+                    dir_ctx = prepare_path(
+                        expand_shell_vars(env_c_dir, (shell_vars,)),
+                        dir_ctx, walk.ctx)
                 if "GIT_DIR" in cleared:
                     env_gd = ""
                 if "GIT_WORK_TREE" in cleared:
                     env_wt = ""
-                env_gd = assigned.get("GIT_DIR", env_gd)
-                env_wt = assigned.get("GIT_WORK_TREE", env_wt)
+                env_gd = expand_shell_vars(
+                    assigned.get("GIT_DIR", env_gd), (shell_vars,))
+                env_wt = expand_shell_vars(
+                    assigned.get("GIT_WORK_TREE", env_wt), (shell_vars,))
                 i = ei
                 continue   # statement_start stays True: git is the command
             i += 1
@@ -1207,7 +1350,10 @@ def _walk_tokens(walk, tokens, raw_tokens, cwd):
             gd_target = ""
             while j < n and not sep[j] and tokens[j].startswith("-"):
                 if tokens[j] == "-C":
-                    c_value, j = _option_value(tokens, sep, j + 1)
+                    c_at = j + 1
+                    c_value, j = _option_value(tokens, sep, c_at)
+                    if c_value:
+                        c_value = expand(c_at)
                     # git applies each -C relative to the previous one, and
                     # an empty value leaves the directory unchanged.
                     if c_value:
@@ -1216,15 +1362,21 @@ def _walk_tokens(walk, tokens, raw_tokens, cwd):
                 elif tokens[j] == "-c":
                     _, j = _option_value(tokens, sep, j + 1)
                 elif tokens[j].startswith("--work-tree="):
-                    wt_target = tokens[j][len("--work-tree="):]
+                    wt_target = expand(j)[len("--work-tree="):]
                     j += 1
                 elif tokens[j] == "--work-tree":
-                    wt_target, j = _option_value(tokens, sep, j + 1)
+                    wt_at = j + 1
+                    wt_target, j = _option_value(tokens, sep, wt_at)
+                    if wt_target:
+                        wt_target = expand(wt_at)
                 elif tokens[j].startswith("--git-dir="):
-                    gd_target = tokens[j][len("--git-dir="):]
+                    gd_target = expand(j)[len("--git-dir="):]
                     j += 1
                 elif tokens[j] == "--git-dir":
-                    gd_target, j = _option_value(tokens, sep, j + 1)
+                    gd_at = j + 1
+                    gd_target, j = _option_value(tokens, sep, gd_at)
+                    if gd_target:
+                        gd_target = expand(gd_at)
                 else:
                     j += 1
 

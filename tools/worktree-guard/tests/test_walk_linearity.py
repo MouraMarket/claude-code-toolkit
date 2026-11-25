@@ -93,7 +93,35 @@ def _shape_dash_f_overlap(n):
     return "git push -f" * n
 
 
+def _shape_distinct_assignments(n):
+    # Row 106: every name new, so a walk that copies the variable table per
+    # assignment grows with the table.
+    return "".join("A%d=x; " % k for k in range(n)) + "git -C $A0 status"
+
+
+def _shape_prefix_assignments(n):
+    # Row 106: one statement's leading assignments, all pending at once.
+    return "".join("A%d=x " % k for k in range(n)) + "git status"
+
+
+def _shape_exports(n):
+    return "".join("export A%d=x; " % k for k in range(n)) + "git status"
+
+
+def _shape_assignments_then_subshells(n):
+    # Row 106: a table of n names, then n nested subshells, so a walk that
+    # copies the table on every `(` costs n * n.
+    half = max(n // 2, 1)
+    return ("".join("A%d=x; " % k for k in range(half)) + "( " * half
+            + "git status" + " )" * half)
+
+
 SHAPES = (
+    ("'A<k>=x; ' * n + 'git -C $A0 status'", _shape_distinct_assignments, False),
+    ("'A<k>=x ' * n + 'git status'", _shape_prefix_assignments, False),
+    ("'export A<k>=x; ' * n + 'git status'", _shape_exports, False),
+    ("'A<k>=x; ' * n/2 + '( ' * n/2 + ...", _shape_assignments_then_subshells,
+     False),
     ("'git status ; ' * n", _shape_status_chain, False),
     ("'git ' + '-c a=b ' * n + 'push'", _shape_dash_c_then_push, True),
     ("'cd x && ' * n + 'git status'", _shape_cd_chain, False),

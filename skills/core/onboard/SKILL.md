@@ -266,7 +266,7 @@ timeout. Keep the output. If a suite fails, stop **here**, before anything chang
 **Act on two kinds of preview line before installing:**
 
 - `profile <p> is no longer selected (would uninstall)`: a profile the last install chose and this selection drops; the install will uninstall it. Ask: *let it go*, or *keep* it. To keep it, re-run the `--profiles` command above with it added (maintainer brings builder, so keep both), then the preview.
-- `<plugin> enabled outside your profiles — left as is`: installed by hand; the installer never touches it, and its hooks still run. Ask: keep it, or turn it off with `claude plugin disable <plugin>@claude-code-toolkit`, maintainer before builder, because maintainer depends on builder.
+- `<plugin> enabled outside your profiles — left as is`: installed by hand or as a dependency; the installer never enables or disables it (it may refresh its listed version), and its hooks still run. Ask: keep it, or turn it off with `claude plugin disable <plugin>@claude-code-toolkit`, maintainer before builder, because maintainer depends on builder.
 
 ### Reconcile what collided
 

@@ -49,7 +49,10 @@
 # invocation is built at runtime, per input line), `$(...)`/`` `...` ``
 # (command substitution -- the inner command is not on this command line at
 # all), `pushd` (changes directory like `cd`, but this hook only tracks `cd`
-# and parenthesised subshells).
+# and parenthesised subshells), and a `$VAR` this command line does not
+# itself assign a literal value (one set by an earlier call or the
+# environment). A same-line `W=/x; git -C $W ...` IS resolved (row 106; the
+# scoping rules are at worktree_lib.expand_shell_vars).
 #
 # No network I/O -- it runs on every Bash call and must stay fast.
 #

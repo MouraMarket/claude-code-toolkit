@@ -2295,6 +2295,129 @@ class TestHomeSpellingsResolve(WorktreeGuardTestCase):
         self.assertEqual(self._run("git -C ${HOME}/main commit -am x", self.main), ALLOW)
 
 
+class TestSameLineVariablesResolve(WorktreeGuardTestCase):
+    """Mission row 106. `W=<worktree>; git -C $W stash push` ran from a
+    non-repo cwd on 2026-11-22 while the literal-path form is refused: the
+    guard never expanded `$W`, the target resolved nowhere, and an
+    unresolvable target allows. A variable the command line assigns to itself
+    from a literal value is now expanded in every directory target; anything
+    it cannot know still allows, as before."""
+
+    def test_incident_shape_from_non_repo_cwd_is_blocked(self):
+        # The exact 11-22 shape: assignment, `;`, `git -C $W stash push --`.
+        self.assertBlocked("W=%s; git -C $W stash push -q -- f.txt" % self.wt,
+                           self._dir)
+
+    def test_literal_form_is_blocked(self):
+        # Control: the spelling the guard always caught.
+        self.assertBlocked("git -C %s stash push -q -- f.txt" % self.wt,
+                           self._dir)
+
+    def test_braced_and_quoted_reference_is_blocked(self):
+        self.assertBlocked('W="%s" && git -C "${W}" stash' % self.wt, self._dir)
+
+    def test_export_assignment_is_blocked(self):
+        self.assertBlocked("export W=%s; git -C $W stash" % self.wt, self._dir)
+
+    def test_newline_separated_assignment_is_blocked(self):
+        self.assertBlocked("W=%s\ngit -C $W stash" % self.wt, self._dir)
+
+    def test_cd_through_variable_is_blocked(self):
+        self.assertBlocked("W=%s; cd $W && git checkout main" % self.wt,
+                           self._dir)
+
+    def test_variable_built_from_another_is_blocked(self):
+        # `R=<root>; W=$R/wt` -- the second value expands the first.
+        self.assertBlocked("R=%s; W=$R/wt; git -C $W stash" % self._dir,
+                           self._dir)
+
+    def test_same_statement_assignments_apply_left_to_right(self):
+        # `R=<root> W=$R/wt` in ONE statement: the shell assigns left to
+        # right, so W sees R.
+        self.assertBlocked("R=%s W=$R/wt; git -C $W stash" % self._dir,
+                           self._dir)
+
+    def test_rule_a_through_variable_is_blocked(self):
+        # Rule A, from inside a repo: a commit reaching into the OTHER checkout.
+        self.assertBlocked("W=%s; git -C $W commit -am x" % self.wt, self.main)
+
+    def test_rule_a_through_variable_naming_this_checkout_is_allowed(self):
+        # Negative control: resolving it must not refuse in-place work.
+        self.assertAllowed("W=%s; git -C $W commit -am x" % self.main, self.main)
+
+    def test_git_dir_and_work_tree_through_variable_are_blocked(self):
+        self.assertBlocked("W=%s; git --work-tree=$W commit -am x" % self.wt,
+                           self.main)
+        self.assertBlocked("W=%s; GIT_DIR=$W/.git git commit -am x" % self.main,
+                           self.wt)
+
+    def test_unassigned_variable_still_allows(self):
+        # Fail-open is unchanged for a value the command line never gives.
+        self.assertAllowed("git -C $UNSET_ROW106 stash", self._dir)
+
+    def test_prefix_assignment_does_not_expand_in_its_own_command(self):
+        # `W=x git -C $W` expands $W BEFORE the prefix applies (the shell's
+        # rule), so the prefix value must not be used for this command.
+        self.assertAllowed("W=%s git -C $W stash" % self.wt, self._dir)
+
+    def test_prefix_assignment_does_not_persist_past_its_command(self):
+        # `W=x echo hi;` set W for echo only; the next statement never sees it.
+        self.assertAllowed("W=%s echo hi; git -C $W stash" % self.wt, self._dir)
+
+    def test_assignment_inside_a_subshell_does_not_leak_out(self):
+        # The `;` commits W INSIDE the subshell; `)` must undo it.
+        self.assertAllowed("(W=%s; true); git -C $W stash" % self.wt, self._dir)
+
+    def test_assignment_inside_a_subshell_applies_inside_it(self):
+        # Positive control for the one above: W is in force until `)`.
+        self.assertBlocked("(W=%s; git -C $W stash)" % self.wt, self._dir)
+
+    def test_subshell_restores_the_outer_value(self):
+        # An outer W rebound inside `( )` is the outer value again after it.
+        self.assertBlocked("W=%s; (W=%s; true); git -C $W stash"
+                           % (self.wt, self.solo), self._dir)
+
+    def test_assignment_in_a_pipeline_does_not_persist(self):
+        # Each pipeline element runs in a subshell.
+        self.assertAllowed("W=%s | cat; git -C $W stash" % self.wt, self._dir)
+
+    def test_command_substitution_value_unbinds(self):
+        # An unknowable reassignment must not leave the older literal in force.
+        self.assertAllowed("W=%s; W=$(pwd); git -C $W stash" % self.wt,
+                           self._dir)
+
+    def test_single_quoted_reference_is_not_expanded(self):
+        # The shell keeps '$W' literal, so the guard must too.
+        self.assertAllowed("W=%s; git -C '$W' stash" % self.wt, self._dir)
+
+    def test_append_assignment_is_followed(self):
+        # Codex, row 106: `W+=` was skipped and the stale W kept.
+        self.assertBlocked("W=%s; W+=/wt; git -C $W stash" % self._dir,
+                           self._dir)
+
+    def test_append_onto_unknown_value_unbinds(self):
+        # W was a real worktree; appending to it makes a path nobody knows,
+        # so the old literal must not stay in force.
+        self.assertAllowed("W=%s; W+=$(pwd); git -C $W stash" % self.wt,
+                           self._dir)
+        # X was never set on this line, so it may hold anything from the
+        # environment: `X+=<wt>` is unknown, not `<wt>`. Fail open.
+        self.assertAllowed("X+=%s; git -C $X stash" % self.wt, self._dir)
+
+    def test_escaped_reference_is_not_expanded(self):
+        # Codex, row 106: the shell keeps \$W literal. In a single-checkout
+        # repo holding a real `$W` directory, the command targets that repo;
+        # expanding W to the other worktree would refuse a valid command.
+        literal = os.path.join(self.solo, "$W")
+        os.makedirs(literal, exist_ok=True)
+        self.addCleanup(os.rmdir, literal)
+        self.assertAllowed("W=%s; git -C \\$W stash" % self.wt, self.solo)
+
+    def test_single_checkout_through_variable_is_allowed(self):
+        # Rule B stays invisible in a single-checkout repo.
+        self.assertAllowed("W=%s; git -C $W stash" % self.solo, self._dir)
+
+
 class TestGitWrappersAreJudged(WorktreeGuardTestCase):
     """A bare `git` is judged wherever it appears in a statement, so a
     command wrapper in front of it does not hide it. Gating bare `git` on the

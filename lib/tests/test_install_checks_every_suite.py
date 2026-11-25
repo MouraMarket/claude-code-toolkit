@@ -327,7 +327,7 @@ class TestSweepCountsWhatItRan(unittest.TestCase):
         Remove it from an installer copy: the failing suite must still RUN."""
         with open(INSTALL_SH, encoding="utf-8") as fh:
             body = fh.read()
-        stripped = body.replace(">/dev/null 2>&1 </dev/null )", ">/dev/null 2>&1 )")
+        stripped = body.replace('>"$suite_out" 2>&1 </dev/null )', '>"$suite_out" 2>&1 )')
         self.assertNotEqual(body, stripped, "mutation did not apply")
         os.remove(os.path.join(self.repo, "install.sh"))
         copy = os.path.join(self.repo, "install.sh")
@@ -342,6 +342,61 @@ class TestSweepCountsWhatItRan(unittest.TestCase):
         self.assertTrue(os.path.exists(marker), proc.stdout + proc.stderr)
         self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
         self.assertIn("lib/test_b.py FAILED", proc.stdout)
+
+    def logs_root(self):
+        return os.path.join(self.home, ".cache", "claude-toolkit-suite-logs")
+
+    def test_a_failing_suites_output_is_kept_and_named(self):
+        """H11: the sweep sent every suite's output to /dev/null, so a red
+        suite on a user's machine left no traceback. A failing suite's stdout
+        AND stderr are kept, the path is printed under its FAILED line, and a
+        passing suite's output is not kept."""
+        self.add_suite("test_a.py", textwrap.dedent("""\
+            import sys
+            print("OUT-MARKER-a")
+            sys.stderr.write("ERR-MARKER-a\\n")
+            sys.exit(1)
+            """))
+        self.add_suite("test_b.py", "print('OUT-MARKER-b')\n")
+        proc = self.run_install()
+        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
+        match = re.search(r"lib/test_a\.py FAILED\n\s+its output: (\S+)\n", proc.stdout)
+        self.assertIsNotNone(match, proc.stdout)
+        kept = match.group(1)
+        self.assertEqual(os.path.realpath(self.logs_root()),
+                         os.path.realpath(os.path.dirname(os.path.dirname(kept))))
+        with open(kept, encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("OUT-MARKER-a", text)
+        self.assertIn("ERR-MARKER-a", text)
+        self.assertEqual(["lib__tests__test_a.py.log"], os.listdir(os.path.dirname(kept)))
+        self.assertEqual(1, proc.stdout.count("its output:"))
+
+    def test_two_failing_suites_with_one_label_keep_two_logs(self):
+        """Codex Code Review (row 107): two skills' scripts/tests/test_same.py
+        share the label scripts/test_same.py, so a label-named log let the
+        second failure overwrite the first while both lines named one path."""
+        for skill in ("alpha", "beta"):
+            tests = os.path.join(self.repo, "skills", "core", skill, "scripts", "tests")
+            os.makedirs(tests)
+            with open(os.path.join(tests, "test_same.py"), "w") as fh:
+                fh.write("import sys; print(%r); sys.exit(1)\n" % ("MARKER-" + skill))
+        proc = self.run_install()
+        self.assertEqual(1, proc.returncode, proc.stdout + proc.stderr)
+        paths = re.findall(r"its output: (\S+)", proc.stdout)
+        self.assertEqual(2, len(paths), proc.stdout)
+        self.assertEqual(2, len(set(paths)), paths)
+        contents = sorted(open(p, encoding="utf-8").read().strip() for p in paths)
+        self.assertEqual(["MARKER-alpha", "MARKER-beta"], contents)
+
+    def test_a_green_sweep_keeps_no_log(self):
+        """Positive control for the test above: nothing failed, so nothing is
+        kept, no log directory is made, and no output line is printed."""
+        self.add_suite("test_a.py", "print('OUT-MARKER-a')\n")
+        proc = self.run_install()
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertNotIn("its output", proc.stdout)
+        self.assertFalse(os.path.exists(self.logs_root()), os.listdir(self.home))
 
     def test_suites_do_not_inherit_the_users_config_overrides(self):
         """A user may set CLAUDE_CONFIG_DIR to their own ~/.claude (install.sh

@@ -70,6 +70,29 @@ SCRUBBED = ("DANGER_ALLOW", "WORKTREE_ALLOW", "WT_ALLOW_MAIN", "CLAIM_ALLOW",
 
 DEEP_JSON = '{"a":' * 100000 + '1' + '}' * 100000
 
+# Whether the guards' interpreter parses DEEP_JSON instead of raising
+# RecursionError: None until probed, then True/False. Python 3.14+ bounds
+# recursion by the real stack, so a larger stack (`ulimit -s 65520`, measured:
+# 3.14.7 parses there, raises at the default 8176) or an interpreter built
+# differently (Homebrew 3.15.2, H11) parses this depth, and the decode fault
+# has no crash to report. The probe runs in a child on sys.executable, the
+# interpreter Harness.run uses, so it sees the same stack the guard would.
+_DEEP_JSON_PARSES = None
+# scripts/check-capabilities.py VERSIONS, as (major, minor).
+RELEASE_INTERPRETERS = ((3, 9), (3, 13))
+
+
+def deep_json_parses():
+    """True only when a child parses DEEP_JSON cleanly. A child that fails any
+    other way returns False, so the decode test still runs and shows it."""
+    global _DEEP_JSON_PARSES
+    if _DEEP_JSON_PARSES is None:
+        proc = subprocess.run(
+            [sys.executable, "-c", "import json, sys; json.loads(sys.stdin.read())"],
+            input=DEEP_JSON, capture_output=True, text=True, timeout=120)
+        _DEEP_JSON_PARSES = proc.returncode == 0
+    return _DEEP_JSON_PARSES
+
 
 class Harness(object):
     """Owns a temp dir and runs one guard in a child process."""
@@ -181,6 +204,20 @@ class CrashReportMixin(object):
         self.assert_crash_report("import", "ModuleNotFoundError")
 
     def test_decode_crash_reports_on_both_channels(self):
+        # Same skip as the worktree- and danger-guard deep-JSON controls (row
+        # 93): with no RecursionError there is no crash, so the guard's silent
+        # allow would read as a missing report. The crash boundary is proven
+        # on the release interpreters (scripts/check-capabilities.py VERSIONS).
+        # Those two raise at any stack size (3.9 counts frames, 3.13 has a
+        # fixed C limit; measured at `ulimit -s 65520`), so a skip there is
+        # a broken probe or skip, never a real parse: fail instead.
+        if deep_json_parses():
+            if sys.version_info[:2] in RELEASE_INTERPRETERS:
+                self.fail("the decode control would skip on a release "
+                          "interpreter, Python %d.%d" % sys.version_info[:2])
+            self.skipTest(
+                "Python %d.%d parses 100000 levels of nesting on this stack"
+                % sys.version_info[:2])
         self.assert_crash_report("decode", "RecursionError")
 
     def test_positive_control_unfaulted_run_is_not_a_crash(self):

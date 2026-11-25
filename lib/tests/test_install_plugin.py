@@ -578,6 +578,62 @@ class TestPluginVersionRefresh(PluginInstallTestCase):
         self.assertIn("plugin %s still shows %s after refreshing it, not the checkout's %s"
                       % (fx.PLUGIN_ID, self.STALE, self.head12), proc.stdout)
 
+    # H11 P1: a toolkit plugin outside the selected profiles (a hand-enabled
+    # one, or a dependency such as skill-prompt-optimizer) serves from the
+    # same checkout but kept listing the commit it was installed at.
+    EXTRA = "extra@claude-code-toolkit"
+
+    def seed_extra(self, version, enabled=True, plugin_id=EXTRA):
+        self.seed(self.head12)  # the profiles are current: only EXTRA can move
+        with open(self.state) as handle:
+            state = json.load(handle)
+        state["plugins"].append({"id": plugin_id, "enabled": enabled, "scope": "user",
+                                 "installPath": "/shim/" + plugin_id, "version": version})
+        with open(self.state, "w") as handle:
+            json.dump(state, handle)
+
+    def latest_with(self, plugin_id=EXTRA):
+        env = self.latest()
+        latest = json.loads(env["CLAUDE_SHIM_LATEST"])
+        latest[plugin_id] = self.head12
+        return {"CLAUDE_SHIM_LATEST": json.dumps(latest)}
+
+    def test_a_stale_plugin_outside_the_profiles_is_refreshed_and_left_enabled(self):
+        self.seed_extra(self.STALE)
+        proc = self.run_install(extra_env=self.latest_with())
+        self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+        self.assertEqual(["plugin update %s --scope user" % self.EXTRA], self.updates())
+        self.assertEqual(self.head12, self.versions()[self.EXTRA])
+        self.assertIn("%s enabled outside your profiles — left as is" % self.EXTRA, proc.stdout)
+        self.assertIn("refreshing plugin %s (shows %s, the checkout is at %s)"
+                      % (self.EXTRA, self.STALE, self.head12), proc.stdout)
+        self.assertFalse([line for line in self.log()
+                          if line.startswith(("plugin enable", "plugin disable",
+                                              "plugin uninstall", "plugin install"))
+                          and self.EXTRA in line])
+
+    def test_check_reports_a_stale_plugin_outside_the_profiles_and_refreshes_nothing(self):
+        self.seed_extra(self.STALE)
+        proc = self.run_install(["--check"], extra_env=self.latest_with())
+        self.assertIn("plugin %s shows %s, the checkout is at %s (would refresh)"
+                      % (self.EXTRA, self.STALE, self.head12), proc.stdout)
+        self.assertEqual([], self.updates())
+
+    def test_a_current_disabled_or_foreign_plugin_outside_the_profiles_is_not_refreshed(self):
+        # Controls for the refresh above: current version; disabled (theirs to
+        # leave off); another marketplace's plugin (not served from here).
+        for version, enabled, plugin_id in ((None, True, self.EXTRA),
+                                            (self.STALE, False, self.EXTRA),
+                                            (self.STALE, True, "extra@other-market")):
+            with self.subTest(version=version, enabled=enabled, plugin_id=plugin_id):
+                for stale in (self.state, self.state + ".log"):  # fresh shim per case
+                    if os.path.exists(stale):
+                        os.remove(stale)
+                self.seed_extra(version or self.head12, enabled, plugin_id)
+                proc = self.run_install(extra_env=self.latest_with(plugin_id))
+                self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
+                self.assertEqual([], self.updates())
+
 
 if __name__ == "__main__":
     unittest.main()
