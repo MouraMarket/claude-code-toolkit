@@ -126,6 +126,27 @@
       "requires": []
     },
     {
+      "id": "tool:load-guard",
+      "kind": "tool",
+      "summary": "Serializes heavy local jobs through PATH shims that take a lock and refuse below a memory floor.",
+      "delivery": "profile:mac",
+      "entry_points": [
+        "tools/load-guard/claude-heavy-run"
+      ],
+      "tests": [
+        "tools/load-guard/tests",
+        "lib/tests/test_install_load_guard_shims.py"
+      ],
+      "commands": [
+        "claude-heavy-run"
+      ],
+      "hooks": [],
+      "config": [
+        "load_guard"
+      ],
+      "requires": []
+    },
+    {
       "id": "tool:catalogue",
       "kind": "tool",
       "summary": "Generates the catalogue of what each profile installs and what each hook writes on its own, and checks that it is current.",

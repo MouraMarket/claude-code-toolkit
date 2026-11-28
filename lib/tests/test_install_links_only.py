@@ -62,11 +62,15 @@ class LinksOnlySandbox(unittest.TestCase):
 
         # Strip `tests` so the installer's suite runner finds nothing: without
         # this a full --check run inside this test runs the whole toolkit suite.
+        # load_guard_lib.py is left out so the shim step has nothing to import and
+        # stands down: these suites assert a clean or exact --check, and which
+        # shims it proposes would depend on which heavy tools the machine has on PATH.
+        # The shim step has its own suite (test_install_load_guard_shims.py).
         shutil.copytree(
             REPO, self.repo,
             symlinks=True,
             ignore=shutil.ignore_patterns(".git", ".claude", "tests",
-                                          "__pycache__"))
+                                          "__pycache__", "load_guard_lib.py"))
         fx.stub_pending_components(self.repo)
         os.makedirs(self.home + "/.local/bin", exist_ok=True)
 

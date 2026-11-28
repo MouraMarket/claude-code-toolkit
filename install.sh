@@ -760,7 +760,7 @@ EXECUTABLE_NAMES=(claude-danger-guard claude-worktree-guard claude-model-guard c
   claude-usage-anchor claude-usage-dispatch \
   claude-title-session claude-title-backfill csearch \
   claude-thread-watch claude-thread-deliver \
-  claude-caffeinate claude-spec-archive claude-base-pin claude-toolkit-integrity \
+  claude-caffeinate claude-heavy-run claude-spec-archive claude-base-pin claude-toolkit-integrity \
   claude-wrap-up-survey claude-backup claude-build-cost claude-build-route claude-merge-brief claude-review-gate claude-codex-review claude-harness-check claude-prompt-optimizer claude-skill-trigger \
   claude-setup-audit git-tidy claude-repo-freshness claude-local-ci)
 # Must list every executable the `link` calls below place in ~/.local/bin.
@@ -816,6 +816,7 @@ link "$REPO/tools/thread-handover/claude-thread-deliver" "$HOME/.local/bin/claud
 link "$REPO/tools/secret-scan/claude-secret-scan"      "$HOME/.local/bin/claude-secret-scan"
 link "$REPO/tools/local-ci/claude-local-ci" "$HOME/.local/bin/claude-local-ci"
 link "$REPO/tools/caffeinate/claude-caffeinate"        "$HOME/.local/bin/claude-caffeinate"
+link "$REPO/tools/load-guard/claude-heavy-run"         "$HOME/.local/bin/claude-heavy-run"
 # Also registered as a SessionStart hook in plugin-build/hooks/hooks.json, run as
 # `--hook`, and it is not report-only:
 # `--hook` flips stale status: live specs and archives declared shipped/superseded
@@ -849,6 +850,95 @@ link "$REPO/tools/prompt-optimizer/claude-prompt-optimizer" "$HOME/.local/bin/cl
 # Run by hand and by /onboard, never a hook: it reads `install.sh --manifest`
 # to report what this installer manages versus what is on the machine.
 link "$REPO/tools/setup-audit/claude-setup-audit"      "$HOME/.local/bin/claude-setup-audit"
+
+# Load-guard shims. ~/.local/bin/<tool> -> claude-heavy-run makes a bare `ffmpeg`
+# (loops, scripts, `bash -c` and your own terminal included) run under the heavy-job
+# lock. Deliberately NOT `link` calls: the set is dynamic (built-ins plus
+# load_guard.commands), and a shim must exist only while the real tool does, because
+# a shim for a missing tool would answer "not installed" where the shell's own
+# "command not found" belongs. So `TestExecutableNamesCoversEveryLink` neither sees
+# nor needs these. Names are decided in Python (load_guard_lib.heavy_set plus config,
+# PATH searched outside ~/.local/bin). Output: `ok`, then `want <name>` for every
+# name config asks for and `have <name>` for those whose real tool is on PATH now.
+# CREATE follows `have` (PATH-dependent); PRUNE follows `want` only (config-
+# dependent), because the PATH an install sees varies by surface (a narrow-PATH
+# shell must not delete working shims). A shim whose tool was uninstalled stays
+# and exits 127, which is loud. No `ok` first line means nothing was decided and
+# the prune is skipped. Skipped for --manifest, whose rows are consumed as a
+# fixed list of links. --check reports a would-be shim as information only: it
+# depends on PATH, so counting it would make surfaces disagree.
+SHIM_TARGET="$REPO/tools/load-guard/claude-heavy-run"
+SHIM_DECIDED=0
+SHIM_WANTED=""
+SHIM_HAVE=""
+if (( ! MANIFEST )); then
+  shim_out="$(CLAUDE_TOOLKIT_CONFIG="$CONFIG" python3 - "$REPO" "$HOME/.local/bin" "$SHIM_TARGET" <<'PYEOF' 2>/dev/null || true
+import os, re, sys
+repo, local_bin, target = sys.argv[1:4]
+sys.path[:0] = [os.path.join(repo, "tools", "load-guard"), os.path.join(repo, "lib")]
+import load_guard_lib
+import toolkit_config
+want, have = [], []
+if toolkit_config.get("load_guard", "enabled") is not False:
+    wanted = sorted(load_guard_lib.heavy_set(toolkit_config.get("load_guard", "commands")))
+    skip_dir = os.path.realpath(local_bin)
+    own = os.path.realpath(target)
+    for name in wanted:
+        if name == "claude-heavy-run" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", name):
+            continue
+        want.append(name)
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory or os.path.realpath(directory) == skip_dir:
+                continue
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK) \
+                    and os.path.realpath(path) != own:
+                have.append(name)
+                break
+print("ok")
+for name in want:
+    print("want " + name)
+for name in have:
+    print("have " + name)
+PYEOF
+)"
+  if [[ "${shim_out%%$'\n'*}" == "ok" ]]; then
+    SHIM_DECIDED=1
+    SHIM_WANTED="$(printf '%s\n' "$shim_out" | sed -n 's/^want //p')"
+    SHIM_HAVE="$(printf '%s\n' "$shim_out" | sed -n 's/^have //p')"
+  fi
+fi
+
+if (( SHIM_DECIDED )); then
+  echo
+  echo "Load-guard shims -> ~/.local/bin"
+  if [[ ! -e "$SHIM_TARGET" ]]; then
+    warn "missing in repo, shims skipped: ${SHIM_TARGET#$REPO/}"
+  else
+    shim_any=0
+    while IFS= read -r shim_name; do
+      [[ -n "$shim_name" ]] || continue
+      shim_any=1
+      shim_dest="$HOME/.local/bin/$shim_name"
+      note_managed_link "$shim_dest" from-link
+      if [[ -L "$shim_dest" && "$(readlink "$shim_dest")" == "$SHIM_TARGET" ]]; then
+        ok "${shim_dest/#$HOME/$TILDE}"
+      elif [[ -e "$shim_dest" || -L "$shim_dest" ]]; then
+        # Never replace a file or link that is not already our shim. Not counted
+        # as a missing link: that would make --check fail on every run.
+        warn "${shim_dest/#$HOME/$TILDE} exists and is not the load-guard shim — not touching it, so $shim_name runs unguarded"
+      elif (( CHECK )); then
+        # Information, not a missing link: whether a shim is wanted depends on
+        # the PATH this run sees, which differs between surfaces.
+        ok "$shim_name: real tool found; install would add a shim"
+      else
+        act "${shim_dest/#$HOME/$TILDE} -> ${SHIM_TARGET#$REPO/}"
+        ln -sfn "$SHIM_TARGET" "$shim_dest"
+      fi
+    done <<< "$SHIM_HAVE"
+    (( shim_any )) || ok "no heavy tool on PATH to shim (or load_guard.enabled is false)"
+  fi
+fi
 
 # Skipped under --links-only: it reads ~/.gitconfig and reports on an alias, not
 # on a symlink, and a flag named links-only that prints other findings is a flag
@@ -1841,6 +1931,28 @@ for dir in "$HOME/.local/bin"; do
   done
 done
 (( found_dangling )) || ok "no links to files this repo no longer has"
+
+# A shim for a retired name or load_guard.enabled false (config only, never
+# PATH). Not dangling (claude-heavy-run still exists), so the loop above never
+# sees it. Ours only when it points at exactly $SHIM_TARGET and is not the
+# wrapper's own link; run only when the shim step above reached a decision, so a
+# config or import failure can never clear working shims.
+if (( SHIM_DECIDED )); then
+  found_stale_shim=0
+  for entry in "$HOME/.local/bin"/*; do
+    [[ -L "$entry" ]] || continue
+    [[ "$(readlink "$entry")" == "$SHIM_TARGET" ]] || continue
+    shim_name="${entry##*/}"
+    [[ "$shim_name" == "claude-heavy-run" ]] && continue
+    case $'\n'"$SHIM_WANTED"$'\n' in
+      *$'\n'"$shim_name"$'\n'*) continue ;;
+    esac
+    found_stale_shim=1
+    act "removing ${entry/#$HOME/$TILDE} -> ${SHIM_TARGET#$REPO/} (shim no longer wanted)"
+    (( CHECK )) || rm -f "$entry"
+  done
+  (( found_stale_shim )) || ok "no stale load-guard shims"
+fi
 
 echo
 echo "Plugin components"

@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""Run a heavy local job under an exclusive lock, one at a time.
+
+    claude-heavy-run [--needs-gb N] [--] CMD ARGS...
+    claude-heavy-run --status
+
+Takes `fcntl.flock(LOCK_EX | LOCK_NB)` on `heavy-run.lock` in the state dir,
+refuses below the memory floor, writes a holder record (pid, argv, start time)
+into the lock file, then `os.execvp`s CMD IN THIS SAME PROCESS with the lock fd
+left inheritable. The lock therefore lives exactly as long as the job: a crash
+leaves no stale lock, nothing needs signal forwarding, and the exit code is the
+job's own. (A flock belongs to the open file description, which survives exec;
+Python fds are non-inheritable by default, so `os.set_inheritable` is the line
+that makes this work.)
+
+Memory is judged in GB: available_gb = kern.memorystatus_level / 100 *
+hw.memsize / 2^30 (both via `sysctl -n`). The job is refused when
+available_gb < N + floor, where N is `--needs-gb` (default 0; a positive
+number, else usage error, exit 2) and floor is `min_available_gb`.
+
+SHIM MODE. `~/.local/bin/<tool>` is a symlink to this script. When
+`basename(argv[0])` is not `claude-heavy-run` it runs as that tool: it walks PATH
+for the real binary (skipping every candidate whose realpath is this script, so
+it can never exec itself; none found = exit 127) and runs it under the same
+lock and floor, with the tool's arguments untouched. This catches loops,
+`bash -c`, scripts and Python subprocesses. Two cases skip the lock and floor:
+  - CLAUDE_HEAVY_RUN_HELD=1 is in the environment. The wrapper sets it for the
+    job it execs, so a wrapped job can call a shim. Exporting it by hand
+    disables the guard for that shell.
+  - the arguments are exactly one of --version -version --help -h -help.
+KNOWN LIMIT: a call by absolute path (/opt/homebrew/bin/ffmpeg) bypasses the shim.
+
+Exit 75 (EX_TEMPFAIL) when the lock is held (names the holder on stderr), when
+memory is below N + floor or cannot be read, when `state_dir` is not an absolute
+path (config fails strict), or when the lock file keeps being replaced under
+us. Unlike a hook, the wrapper FAILS STRICT on an unreadable reading: the floor
+is a safety value.
+
+The lock is flock on the lock FILE's inode. After taking it the wrapper checks
+the path still names that inode and retries (max 3) if not. That closes the race
+with a concurrent delete-and-recreate; it does NOT stop someone deleting the file
+while a job runs: the next job then creates a fresh file and is not refused.
+
+Config (`load_guard` in the toolkit config), all optional:
+  min_available_gb       absent = 3 (a starting value, not measured under load)
+  state_dir              absent = ~/.claude/load-guard; must resolve absolute
+  commands               extra tool names that get a shim (installer reads it)
+
+Only jobs that go through the wrapper or a shim are serialized.
+"""
+import fcntl
+import os
+import subprocess
+import sys
+import time
+
+EX_TEMPFAIL = 75
+DEFAULT_FLOOR_GB = 3.0
+LOCK_NAME = "heavy-run.lock"
+HELD_ENV = "CLAUDE_HEAVY_RUN_HELD"
+SELF_NAME = "claude-heavy-run"
+MAX_LOCK_TRIES = 3
+
+
+def _sysctl(key):
+    """`sysctl -n KEY` output, or None when it cannot be read."""
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", key],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=10, universal_newlines=True,
+            encoding="utf-8", errors="replace")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout
+
+
+def _read_available_gb():
+    """Available memory in GB, or None when either reading is unusable."""
+    import load_guard_lib as lib
+    level = lib.parse_level(_sysctl("kern.memorystatus_level") or "")
+    memsize = (_sysctl("hw.memsize") or "").strip()
+    if level is None or not memsize.isdigit() or int(memsize) <= 0:
+        return None
+    return level / 100.0 * int(memsize) / 2 ** 30
+
+
+def _settings():
+    """(floor_gb, state_dir, state_dir_error) from config.
+
+    The floor falls back to the default on any config trouble. state_dir fails
+    strict: relative or with an unexpanded `$`, it is an error, never a guess.
+    """
+    floor = DEFAULT_FLOOR_GB
+    state_dir = os.path.expanduser("~/.claude/load-guard")
+    error = None
+    try:
+        import toolkit_config as config
+        raw = config.get("load_guard", "min_available_gb")
+        # bool is an int in Python; true/false is not a size
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool) \
+                and raw == raw and raw >= 0:
+            floor = float(raw)
+        state_dir = config.get_path("load_guard", "state_dir",
+                                    default=state_dir)
+        if not os.path.isabs(state_dir) or "$" in state_dir:
+            error = ("load_guard.state_dir must be an absolute path, got %r"
+                     % state_dir)
+    except Exception:  # noqa: BLE001 - a broken config must not disarm the lock
+        pass
+    return floor, state_dir, error
+
+
+def _describe(holder):
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(holder["started"]))
+    return "pid %d, started %s: %s" % (
+        holder["pid"], when, " ".join(holder["argv"]))
+
+
+def _holder_text(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    return os.read(fd, 65536).decode("utf-8", "replace")
+
+
+def _open_lock(state_dir):
+    os.makedirs(state_dir, exist_ok=True)
+    return os.open(os.path.join(state_dir, LOCK_NAME),
+                   os.O_RDWR | os.O_CREAT, 0o644)
+
+
+def _report_held(fd):
+    import load_guard_lib as lib
+    holder = lib.parse_holder(_holder_text(fd))
+    if holder is None:
+        return "another heavy job holds the lock (its record is not written yet)"
+    return "another heavy job holds the lock: " + _describe(holder)
+
+
+def _acquire(state_dir):
+    """('ok', fd), ('held', fd) or ('raced', None).
+
+    After the flock, the path must still name the inode we locked; otherwise
+    the file was replaced under us, our lock guards nothing, and we retry.
+    """
+    for _ in range(MAX_LOCK_TRIES):
+        fd = _open_lock(state_dir)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return "held", fd
+        mine = os.fstat(fd)
+        try:
+            now = os.stat(os.path.join(state_dir, LOCK_NAME))
+            same = (mine.st_dev, mine.st_ino) == (now.st_dev, now.st_ino)
+        except OSError:
+            same = False
+        if same:
+            return "ok", fd
+        os.close(fd)
+    return "raced", None
+
+
+def status(state_dir):
+    outcome, fd = _acquire(state_dir)
+    if outcome == "held":
+        print(_report_held(fd))
+        return 0
+    print("free")  # lock acquired, so any record in the file is stale
+    return 0
+
+
+def run(argv, exec_path, state_dir, floor, needs_gb):
+    """Lock, check memory, record the holder, then exec `exec_path` with `argv`."""
+    import load_guard_lib as lib
+    outcome, fd = _acquire(state_dir)
+    if outcome == "held":
+        sys.stderr.write(
+            "claude-heavy-run: %s\nDeleting the lock file does not stop the "
+            "running job and lets a second one start; wait for the named "
+            "pid instead.\n" % _report_held(fd))
+        return EX_TEMPFAIL
+    if outcome == "raced":
+        sys.stderr.write("claude-heavy-run: the lock file in %s keeps being "
+                         "replaced; refusing.\n" % state_dir)
+        return EX_TEMPFAIL
+
+    available = _read_available_gb()
+    if available is None:
+        sys.stderr.write("claude-heavy-run: could not read memory "
+                         "(sysctl kern.memorystatus_level, hw.memsize); "
+                         "refusing.\n")
+        return EX_TEMPFAIL
+    if available < needs_gb + floor:
+        sys.stderr.write(
+            "claude-heavy-run: %.1f GB available, the job needs %.1f GB and "
+            "the floor is %.1f GB; refusing.\n" % (available, needs_gb, floor))
+        return EX_TEMPFAIL
+
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, lib.format_holder(os.getpid(), argv, time.time()).encode())
+    os.set_inheritable(fd, True)  # the lock must outlive the exec
+    env = dict(os.environ)
+    env[HELD_ENV] = "1"  # lets the job call a shim without re-locking
+    try:
+        os.execvpe(exec_path, argv, env)
+    except FileNotFoundError:
+        sys.stderr.write("claude-heavy-run: command not found: %s\n" % exec_path)
+        return 127
+    except OSError as exc:
+        sys.stderr.write("claude-heavy-run: cannot run %s: %s\n" % (exec_path, exc))
+        return 126
+
+
+def _find_real(tool):
+    """First executable `tool` on PATH that is not this script, or None."""
+    me = os.path.realpath(__file__)
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        candidate = os.path.join(directory or ".", tool)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK) \
+                and os.path.realpath(candidate) != me:
+            return candidate
+    return None
+
+
+def shim(tool, args):
+    import load_guard_lib as lib
+    real = _find_real(tool)
+    if real is None:
+        sys.stderr.write("%s: not installed (only the claude-heavy-run shim "
+                         "was found)\n" % tool)
+        return 127
+    argv = [tool] + args
+    if os.environ.get(HELD_ENV) == "1" or (len(args) == 1
+                                           and args[0] in lib.LIGHT_ARGS):
+        os.execv(real, argv)  # no lock; a failed exec raises, loudly
+    floor, state_dir, error = _settings()
+    if error:
+        sys.stderr.write("claude-heavy-run: %s; refusing.\n" % error)
+        return EX_TEMPFAIL
+    return run(argv, real, state_dir, floor, 0.0)
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+
+    args = sys.argv[1:]
+    invoked = os.path.basename(sys.argv[0])
+    if invoked != SELF_NAME:
+        return shim(invoked, args)
+    floor, state_dir, state_error = _settings()
+    if state_error:
+        sys.stderr.write("claude-heavy-run: %s; refusing.\n" % state_error)
+        return EX_TEMPFAIL
+    if args == ["--status"]:
+        return status(state_dir)
+    needs_gb = 0.0
+    if args and args[0] == "--needs-gb":
+        try:
+            needs_gb = float(args[1])
+        except (IndexError, ValueError):
+            needs_gb = 0.0
+        if not needs_gb > 0 or needs_gb == float("inf"):
+            sys.stderr.write("claude-heavy-run: --needs-gb takes a positive "
+                             "number of GB\n")
+            return 2
+        args = args[2:]
+    if args and args[0] == "--":
+        args = args[1:]
+    if not args:
+        sys.stderr.write("usage: claude-heavy-run [--needs-gb N] [--] "
+                         "CMD ARGS...\n"
+                         "       claude-heavy-run --status\n")
+        return 2
+    return run(args, args[0], state_dir, floor, needs_gb)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    sys.exit(main())

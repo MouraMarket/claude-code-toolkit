@@ -179,6 +179,7 @@ Install any of these on its own; none adds hooks or commands.
 | `claude-secret-scan` | `tools/secret-scan/claude-secret-scan` |
 | `claude-local-ci` | `tools/local-ci/claude-local-ci` |
 | `claude-caffeinate` | `tools/caffeinate/claude-caffeinate` |
+| `claude-heavy-run` | `tools/load-guard/claude-heavy-run` |
 | `claude-spec-archive` | `tools/spec-archive/claude-spec-archive` |
 | `claude-base-pin` | `tools/base-pin/claude-base-pin` |
 | `claude-toolkit-integrity` | `tools/toolkit-integrity/claude-toolkit-integrity` |
