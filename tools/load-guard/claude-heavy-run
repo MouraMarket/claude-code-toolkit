@@ -176,7 +176,10 @@ def run(argv, exec_path, state_dir, floor, needs_gb):
     import load_guard_lib as lib
     outcome, fd = _acquire(state_dir)
     if outcome == "held":
-        sys.stderr.write("claude-heavy-run: %s\n" % _report_held(fd))
+        sys.stderr.write(
+            "claude-heavy-run: %s\nDeleting the lock file does not stop the "
+            "running job and lets a second one start; wait for the named "
+            "pid instead.\n" % _report_held(fd))
         return EX_TEMPFAIL
     if outcome == "raced":
         sys.stderr.write("claude-heavy-run: the lock file in %s keeps being "

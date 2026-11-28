@@ -851,6 +851,83 @@ link "$REPO/tools/prompt-optimizer/claude-prompt-optimizer" "$HOME/.local/bin/cl
 # to report what this installer manages versus what is on the machine.
 link "$REPO/tools/setup-audit/claude-setup-audit"      "$HOME/.local/bin/claude-setup-audit"
 
+# Load-guard shims. ~/.local/bin/<tool> -> claude-heavy-run makes a bare `ffmpeg`
+# (loops, scripts, `bash -c` and your own terminal included) run under the heavy-job
+# lock. Deliberately NOT `link` calls: the set is dynamic (built-ins plus
+# load_guard.commands), and a shim must exist only while the real tool does, because
+# a shim for a missing tool would answer "not installed" where the shell's own
+# "command not found" belongs. So `TestExecutableNamesCoversEveryLink` neither sees
+# nor needs these. Names are decided in Python (load_guard_lib.heavy_set plus config,
+# PATH searched outside ~/.local/bin); the first line printed is `ok` or nothing was
+# decided, and a blank decision (load_guard.enabled false) is different from no
+# decision: the prune below clears shims only on a real decision. Skipped for
+# --manifest, whose rows are consumed as a fixed list of links.
+SHIM_TARGET="$REPO/tools/load-guard/claude-heavy-run"
+SHIM_DECIDED=0
+SHIM_NAMES=""
+if (( ! MANIFEST )); then
+  shim_out="$(CLAUDE_TOOLKIT_CONFIG="$CONFIG" python3 - "$REPO" "$HOME/.local/bin" "$SHIM_TARGET" <<'PYEOF' 2>/dev/null || true
+import os, re, sys
+repo, local_bin, target = sys.argv[1:4]
+sys.path[:0] = [os.path.join(repo, "tools", "load-guard"), os.path.join(repo, "lib")]
+import load_guard_lib
+import toolkit_config
+names = []
+if toolkit_config.get("load_guard", "enabled") is not False:
+    wanted = sorted(load_guard_lib.heavy_set(toolkit_config.get("load_guard", "commands")))
+    skip_dir = os.path.realpath(local_bin)
+    own = os.path.realpath(target)
+    for name in wanted:
+        if name == "claude-heavy-run" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", name):
+            continue
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory or os.path.realpath(directory) == skip_dir:
+                continue
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK) \
+                    and os.path.realpath(path) != own:
+                names.append(name)
+                break
+print("ok")
+for name in names:
+    print(name)
+PYEOF
+)"
+  if [[ "${shim_out%%$'\n'*}" == "ok" ]]; then
+    SHIM_DECIDED=1
+    SHIM_NAMES="${shim_out#ok}"
+  fi
+fi
+
+if (( SHIM_DECIDED )); then
+  echo
+  echo "Load-guard shims -> ~/.local/bin"
+  if [[ ! -e "$SHIM_TARGET" ]]; then
+    warn "missing in repo, shims skipped: ${SHIM_TARGET#$REPO/}"
+  else
+    shim_any=0
+    while IFS= read -r shim_name; do
+      [[ -n "$shim_name" ]] || continue
+      shim_any=1
+      shim_dest="$HOME/.local/bin/$shim_name"
+      note_managed_link "$shim_dest" from-link
+      if [[ -L "$shim_dest" && "$(readlink "$shim_dest")" == "$SHIM_TARGET" ]]; then
+        ok "${shim_dest/#$HOME/$TILDE}"
+      elif [[ -e "$shim_dest" || -L "$shim_dest" ]]; then
+        # Never replace a file or link that is not already our shim. Not counted
+        # as a missing link: that would make --check fail on every run.
+        warn "${shim_dest/#$HOME/$TILDE} exists and is not the load-guard shim — not touching it, so $shim_name runs unguarded"
+      else
+        act "${shim_dest/#$HOME/$TILDE} -> ${SHIM_TARGET#$REPO/}"
+        MISSING_LINKS=$(( MISSING_LINKS + 1 ))
+        LINKS_ABSENT=$(( LINKS_ABSENT + 1 ))
+        (( CHECK )) || ln -sfn "$SHIM_TARGET" "$shim_dest"
+      fi
+    done <<< "$SHIM_NAMES"
+    (( shim_any )) || ok "no heavy tool on PATH to shim (or load_guard.enabled is false)"
+  fi
+fi
+
 # Skipped under --links-only: it reads ~/.gitconfig and reports on an alias, not
 # on a symlink, and a flag named links-only that prints other findings is a flag
 # whose output you have to re-read to trust.
@@ -1842,6 +1919,28 @@ for dir in "$HOME/.local/bin"; do
   done
 done
 (( found_dangling )) || ok "no links to files this repo no longer has"
+
+# A shim for a retired name, a tool no longer installed, or load_guard.enabled
+# false. Not dangling (claude-heavy-run still exists), so the loop above never
+# sees it. Ours only when it points at exactly $SHIM_TARGET and is not the
+# wrapper's own link; run only when the shim step above reached a decision, so a
+# config or import failure can never clear working shims.
+if (( SHIM_DECIDED )); then
+  found_stale_shim=0
+  for entry in "$HOME/.local/bin"/*; do
+    [[ -L "$entry" ]] || continue
+    [[ "$(readlink "$entry")" == "$SHIM_TARGET" ]] || continue
+    shim_name="${entry##*/}"
+    [[ "$shim_name" == "claude-heavy-run" ]] && continue
+    case $'\n'"$SHIM_NAMES"$'\n' in
+      *$'\n'"$shim_name"$'\n'*) continue ;;
+    esac
+    found_stale_shim=1
+    act "removing ${entry/#$HOME/$TILDE} -> ${SHIM_TARGET#$REPO/} (shim no longer wanted)"
+    (( CHECK )) || rm -f "$entry"
+  done
+  (( found_stale_shim )) || ok "no stale load-guard shims"
+fi
 
 echo
 echo "Plugin components"

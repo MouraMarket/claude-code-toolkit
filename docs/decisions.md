@@ -547,21 +547,36 @@ update deletes a live tool's link when it drifts. So
 and it checks both directions. Do not delete that test as hygiene on the grounds
 that the array is unread, and do not make a prune iterate the array.
 
-### The load guard denies, and its lock rides on the job itself
+### The load guard is PATH shims, and its lock rides on the job itself
 
-Defends: `tools/load-guard/claude-load-guard`, `tools/load-guard/claude-heavy-run`
+Defends: `tools/load-guard/claude-heavy-run`, the shim step in `install.sh`
 
-- **Deny, not ask.** A bare heavy command is refused with the exact
-  `claude-heavy-run ...` rewrite. An ask puts a prompt in front of an unattended
-  run, which nobody can answer; a deny lets Claude correct itself.
+- **Shims at the exec layer, not a PreToolUse parser.** `~/.local/bin/<tool>` is a
+  symlink to `claude-heavy-run`, which runs the real tool under the lock when it is
+  called by another name. The first design parsed the Bash command in a hook; the
+  review found `for ...; do whisper-cli ... & done` and `{ ...; }` groups unguarded
+  while heredoc bodies and `ollama list` were wrongly denied. Parsing shell text is the
+  wrong layer; a shim sees every caller (loops, `bash -c`, scripts, Python
+  subprocesses, a human's terminal). The hook and parser were removed.
+- **A shim exists only while the real tool does.** The installer links one only if an
+  executable of that name is on PATH outside `~/.local/bin`, never replaces a
+  `~/.local/bin/<name>` that is not already our link (it warns), and prunes a shim
+  whose tool left or whose name was retired or disabled. These are not `link` calls,
+  so `TestExecutableNamesCoversEveryLink` does not apply; the shim tests do.
 - **exec with an inherited fd, not a supervisor.** The wrapper takes the `flock`,
   then `exec`s the job in the same process with the lock fd inheritable. The lock
   lives exactly as long as the job, a crash leaves nothing stale, and there is no
   signal forwarding to get wrong. Making the fd non-inheritable breaks this
   silently; the survives-exec test pins it.
-- **Unreadable memory fails strict in the wrapper and open in the hook.** The
-  floor is a safety value, so the wrapper refuses to run on a reading it cannot
-  trust; the hook does not read memory and fails open on anything it cannot parse.
+- **The HELD marker.** The wrapper sets `CLAUDE_HEAVY_RUN_HELD=1` for the job it
+  execs, so a wrapped script can call a shim without deadlocking on its own lock.
+  Exporting it by hand disables the guard for that shell.
+- **Unreadable memory fails strict.** The floor is a safety value, so the wrapper
+  refuses on a reading it cannot trust; so does a relative `state_dir`.
+- **Known limits.** A call by absolute path (`/opt/homebrew/bin/ffmpeg`) bypasses the
+  shim. Deleting the lock file mid-job lets a second job start (the lock is on the
+  file's inode); the refusal message says to wait for the pid instead. The 3 GB floor
+  is unmeasured.
 
 ### Install record and ownership-aware uninstall
 
