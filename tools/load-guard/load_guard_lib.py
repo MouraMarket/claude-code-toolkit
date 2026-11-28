@@ -77,12 +77,14 @@ def heavy_set(extra):
 
     Non-string and blank entries are ignored: a hand-edited config must not be
     able to crash the hook or add an empty name that matches nothing useful.
+    Each name is reduced to its basename, because `decide` compares basenames
+    and a configured "/path/reel_extract" would otherwise never match.
     """
     names = set(BUILTIN_HEAVY)
     if isinstance(extra, (list, tuple, set, frozenset)):
         for name in extra:
-            if isinstance(name, str) and name.strip():
-                names.add(name.strip())
+            if isinstance(name, str) and os.path.basename(name.strip()):
+                names.add(os.path.basename(name.strip()))
     return frozenset(names)
 
 

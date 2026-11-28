@@ -139,6 +139,12 @@ class TestHeavySet(unittest.TestCase):
         got = lib.heavy_set(["reel_extract", "", "  ", 3, None])
         self.assertEqual(got, lib.BUILTIN_HEAVY | {"reel_extract"})
 
+    def test_extra_path_reduced_to_basename(self):
+        self.assertEqual(lib.heavy_set(["/opt/x/reel_extract", "dir/"]),
+                         lib.BUILTIN_HEAVY | {"reel_extract"})
+        v = judge("python3 reel_extract.py", ["/opt/x/reel_extract"])
+        self.assertEqual((v.allowed, v.path), (False, lib.DENY_HEAVY))
+
     def test_non_list_extra_ignored(self):
         self.assertEqual(lib.heavy_set("ffmpeg2"), lib.BUILTIN_HEAVY)
 

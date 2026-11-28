@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Run a heavy local job under an exclusive lock, one at a time.
+
+    claude-heavy-run [--] CMD ARGS...
+    claude-heavy-run --status
+
+Takes `fcntl.flock(LOCK_EX | LOCK_NB)` on `heavy-run.lock` in the state dir,
+refuses below the memory floor, writes a holder record (pid, argv, start time)
+into the lock file, then `os.execvp`s CMD IN THIS SAME PROCESS with the lock fd
+left inheritable. The lock therefore lives exactly as long as the job: a crash
+leaves no stale lock, nothing needs signal forwarding, and the exit code is the
+job's own. (A flock belongs to the open file description, which survives exec;
+Python fds are non-inheritable by default, so `os.set_inheritable` is the line
+that makes this work.)
+
+Exit 75 (EX_TEMPFAIL) when the lock is held (names the holder on stderr) or
+when memory is below the floor or cannot be read. Unlike the hook, the wrapper
+FAILS STRICT on an unreadable reading: the floor is a safety value.
+
+Config (`load_guard` in the toolkit config), all optional:
+  min_available_percent  absent = 40 (a starting value, not measured under load)
+  state_dir              absent = ~/.claude/load-guard
+`enabled` applies to the hook only; the wrapper always locks.
+
+Only jobs that go through the wrapper are serialized.
+"""
+import fcntl
+import os
+import subprocess
+import sys
+import time
+
+EX_TEMPFAIL = 75
+DEFAULT_FLOOR = 40
+LOCK_NAME = "heavy-run.lock"
+
+
+def _read_level():
+    """The kernel's percent-available figure, or None when unreadable."""
+    import load_guard_lib as lib
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "kern.memorystatus_level"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, timeout=10, universal_newlines=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return lib.parse_level(out.stdout)
+
+
+def _settings():
+    """(floor, state_dir) from config; any config trouble means the defaults."""
+    floor = DEFAULT_FLOOR
+    state_dir = os.path.expanduser("~/.claude/load-guard")
+    try:
+        import toolkit_config as config
+        floor = config.get_int("load_guard", "min_available_percent",
+                               default=DEFAULT_FLOOR)
+        state_dir = config.get_path("load_guard", "state_dir",
+                                    default=state_dir)
+    except Exception:  # noqa: BLE001 - a broken config must not disarm the lock
+        pass
+    return floor, state_dir
+
+
+def _describe(holder):
+    when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(holder["started"]))
+    return "pid %d, started %s: %s" % (
+        holder["pid"], when, " ".join(holder["argv"]))
+
+
+def _holder_text(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    return os.read(fd, 65536).decode("utf-8", "replace")
+
+
+def _open_lock(state_dir):
+    os.makedirs(state_dir, exist_ok=True)
+    return os.open(os.path.join(state_dir, LOCK_NAME),
+                   os.O_RDWR | os.O_CREAT, 0o644)
+
+
+def _report_held(fd):
+    import load_guard_lib as lib
+    holder = lib.parse_holder(_holder_text(fd))
+    if holder is None:
+        return "another heavy job holds the lock (its record is not written yet)"
+    return "another heavy job holds the lock: " + _describe(holder)
+
+
+def status(state_dir):
+    fd = _open_lock(state_dir)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(_report_held(fd))
+        return 0
+    print("free")  # lock acquired, so any record in the file is stale
+    return 0
+
+
+def run(argv, state_dir, floor):
+    import load_guard_lib as lib
+    fd = _open_lock(state_dir)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        sys.stderr.write("claude-heavy-run: %s\n" % _report_held(fd))
+        return EX_TEMPFAIL
+
+    level = _read_level()
+    if level is None:
+        sys.stderr.write("claude-heavy-run: could not read memory "
+                         "(sysctl kern.memorystatus_level); refusing.\n")
+        return EX_TEMPFAIL
+    if level < floor:
+        sys.stderr.write(
+            "claude-heavy-run: memory available is %d%%, below the floor of "
+            "%d%%; refusing.\n" % (level, floor))
+        return EX_TEMPFAIL
+
+    os.ftruncate(fd, 0)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.write(fd, lib.format_holder(os.getpid(), argv, time.time()).encode())
+    os.set_inheritable(fd, True)  # the lock must outlive the exec
+    try:
+        os.execvp(argv[0], argv)
+    except FileNotFoundError:
+        sys.stderr.write("claude-heavy-run: command not found: %s\n" % argv[0])
+        return 127
+    except OSError as exc:
+        sys.stderr.write("claude-heavy-run: cannot run %s: %s\n" % (argv[0], exc))
+        return 126
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink.
+    sys.path.insert(0, here)
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+
+    args = sys.argv[1:]
+    floor, state_dir = _settings()
+    if args == ["--status"]:
+        return status(state_dir)
+    if args and args[0] == "--":
+        args = args[1:]
+    if not args:
+        sys.stderr.write("usage: claude-heavy-run [--] CMD ARGS...\n"
+                         "       claude-heavy-run --status\n")
+        return 2
+    return run(args, state_dir, floor)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
