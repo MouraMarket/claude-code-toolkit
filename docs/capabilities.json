@@ -131,20 +131,15 @@
       "summary": "Refuses a bare heavy local job (whisper, ffmpeg, yt-dlp, local models) and runs it one at a time under a lock with a memory floor.",
       "delivery": "profile:mac",
       "entry_points": [
-        "tools/load-guard/claude-heavy-run",
-        "tools/load-guard/claude-load-guard"
+        "tools/load-guard/claude-heavy-run"
       ],
       "tests": [
-        "tools/load-guard/tests",
-        "lib/tests/test_guard_crash_reports.py"
+        "tools/load-guard/tests"
       ],
       "commands": [
-        "claude-heavy-run",
-        "claude-load-guard"
+        "claude-heavy-run"
       ],
-      "hooks": [
-        "tools/load-guard/claude-load-guard"
-      ],
+      "hooks": [],
       "config": [
         "load_guard"
       ],

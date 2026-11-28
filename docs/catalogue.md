@@ -127,7 +127,6 @@ macOS-only helpers, starting with /caffeinate. Optional.
 
 | Hook | Runs on | Writes on its own | What it is for |
 | --- | --- | --- | --- |
-| `claude-load-guard` | PreToolUse (Bash) | nothing | — |
 | `claude-caffeinate` | SessionEnd, UserPromptSubmit, Stop, PostToolBatch, StopFailure | starts and stops macOS caffeinate processes that keep the Mac awake, only with caffeinate.enabled on (off by default); its own state under ~/.claude/caffeinate/ | Keeps your computer from falling asleep while Claude is in the middle of a long task, so it doesn't get interrupted by your screen locking or your machine sleeping. |
 | `claude-hook-heartbeat` | SessionStart | its own marker files under ~/.claude/claude-code-toolkit/heartbeat/, pruned after 30 days | — |
 
@@ -181,7 +180,6 @@ Install any of these on its own; none adds hooks or commands.
 | `claude-local-ci` | `tools/local-ci/claude-local-ci` |
 | `claude-caffeinate` | `tools/caffeinate/claude-caffeinate` |
 | `claude-heavy-run` | `tools/load-guard/claude-heavy-run` |
-| `claude-load-guard` | `tools/load-guard/claude-load-guard` |
 | `claude-spec-archive` | `tools/spec-archive/claude-spec-archive` |
 | `claude-base-pin` | `tools/base-pin/claude-base-pin` |
 | `claude-toolkit-integrity` | `tools/toolkit-integrity/claude-toolkit-integrity` |

@@ -760,7 +760,7 @@ EXECUTABLE_NAMES=(claude-danger-guard claude-worktree-guard claude-model-guard c
   claude-usage-anchor claude-usage-dispatch \
   claude-title-session claude-title-backfill csearch \
   claude-thread-watch claude-thread-deliver \
-  claude-caffeinate claude-heavy-run claude-load-guard claude-spec-archive claude-base-pin claude-toolkit-integrity \
+  claude-caffeinate claude-heavy-run claude-spec-archive claude-base-pin claude-toolkit-integrity \
   claude-wrap-up-survey claude-backup claude-build-cost claude-build-route claude-merge-brief claude-review-gate claude-codex-review claude-harness-check claude-prompt-optimizer claude-skill-trigger \
   claude-setup-audit git-tidy claude-repo-freshness claude-local-ci)
 # Must list every executable the `link` calls below place in ~/.local/bin.
@@ -817,7 +817,6 @@ link "$REPO/tools/secret-scan/claude-secret-scan"      "$HOME/.local/bin/claude-
 link "$REPO/tools/local-ci/claude-local-ci" "$HOME/.local/bin/claude-local-ci"
 link "$REPO/tools/caffeinate/claude-caffeinate"        "$HOME/.local/bin/claude-caffeinate"
 link "$REPO/tools/load-guard/claude-heavy-run"         "$HOME/.local/bin/claude-heavy-run"
-link "$REPO/tools/load-guard/claude-load-guard"        "$HOME/.local/bin/claude-load-guard"
 # Also registered as a SessionStart hook in plugin-build/hooks/hooks.json, run as
 # `--hook`, and it is not report-only:
 # `--hook` flips stale status: live specs and archives declared shipped/superseded

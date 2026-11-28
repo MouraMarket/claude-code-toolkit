@@ -52,7 +52,6 @@ PLUGIN_ONLY = [
     ("PreToolUse", "Agent", "claude-prompt-optimizer", [], 5),
     ("PostToolUse", "Bash|Read|Grep|Glob|mcp__.*", "claude-tool-rules", [], 5),
     ("SessionStart", None, "claude-tool-rules", ["--reset"], 5),
-    ("PreToolUse", "Bash", "claude-load-guard", [], 5),
 ]
 
 # Each non-core plugin dir also registers the heartbeat's SessionStart handler, as the
@@ -212,7 +211,6 @@ PLACEMENT = {
     "claude-spec-archive": "builder",
     "claude-harness-check": "maintainer",
     "claude-caffeinate": "mac",
-    "claude-load-guard": "mac",
 }
 PROFILES = ("core", "continuity", "builder", "maintainer", "mac")
 

@@ -85,7 +85,6 @@
     "tools/base-pin/claude-base-pin": "runs a background git fetch in the current repo, updating its remote-tracking refs; its own state in ~/.claude/base-pin-state.json",
     "tools/spec-archive/claude-spec-archive": "moves shipped specs from spec_archive.specs_dir into its archive/ folder; with spec_archive.stale_flip_days set (off by default) it also rewrites idle specs' status: live to shipped; a lock file in specs_dir",
     "tools/harness-check/claude-harness-check": "its own state in ~/.claude/harness-check-noticed.json, only with harness_check.enabled on (off by default)",
-    "tools/caffeinate/claude-caffeinate": "starts and stops macOS caffeinate processes that keep the Mac awake, only with caffeinate.enabled on (off by default); its own state under ~/.claude/caffeinate/",
-    "tools/load-guard/claude-load-guard": "nothing"
+    "tools/caffeinate/claude-caffeinate": "starts and stops macOS caffeinate processes that keep the Mac awake, only with caffeinate.enabled on (off by default); its own state under ~/.claude/caffeinate/"
   }
 }
