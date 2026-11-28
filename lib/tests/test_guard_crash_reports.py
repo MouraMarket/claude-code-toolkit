@@ -37,6 +37,8 @@ GUARDS = {
     "dispatch": ("usage-watch", "claude-usage-dispatch",
                  "claude-usage-dispatch", "dispatch", "dispatch_lib",
                  ("dispatch_lib", "verdict")),
+    "load": ("load-guard", "claude-load-guard", "claude-load-guard", "command",
+             "load_guard_lib", ("load_guard_lib", "decide")),
 }
 
 # PreToolUse hooks that are NOT guards: they never refuse, so a crash that
@@ -66,7 +68,7 @@ NONZERO_EXIT = {
 REFUSALS = ('"deny"', "'deny'", '"block"', "'block'")
 
 SCRUBBED = ("DANGER_ALLOW", "WORKTREE_ALLOW", "WT_ALLOW_MAIN", "CLAIM_ALLOW",
-            "MODEL_GUARD_ALLOW")
+            "MODEL_GUARD_ALLOW", "LOAD_GUARD_ALLOW")
 
 DEEP_JSON = '{"a":' * 100000 + '1' + '}' * 100000
 
@@ -110,7 +112,7 @@ class Harness(object):
         self._tmp.cleanup()
 
     def payload(self):
-        if self.key in ("danger", "worktree"):
+        if self.key in ("danger", "worktree", "load"):
             body = {"tool_name": "Bash", "tool_input": {"command": "echo hi"},
                     "cwd": self.tmp}
         elif self.key in ("session", "distill"):
@@ -255,6 +257,10 @@ class TestUsageDispatchCrashReports(CrashReportMixin, unittest.TestCase):
     KEY = "dispatch"
 
 
+class TestLoadGuardCrashReports(CrashReportMixin, unittest.TestCase):
+    KEY = "load"
+
+
 class TestEveryShippedGuardIsCovered(unittest.TestCase):
     """Every PreToolUse hook a plugin ships is either a guard in GUARDS or a
     named ADVISORY with no deny path -- so a new guard cannot ship outside the
@@ -317,6 +323,7 @@ class TestMessagesMatchTheGuardNounTable(unittest.TestCase):
             "model": "claude-model-guard crashed and did NOT check this dispatch: RuntimeError: boom",
             "distill": "claude-distill-write-guard crashed and did NOT check this write: RuntimeError: boom",
             "dispatch": "claude-usage-dispatch crashed and did NOT check this dispatch: RuntimeError: boom",
+            "load": "claude-load-guard crashed and did NOT check this command: RuntimeError: boom",
         }
         observed = {}
         for key in GUARDS:

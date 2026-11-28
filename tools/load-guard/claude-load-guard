@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""PreToolUse (Bash): refuse a heavy local job started outside `claude-heavy-run`.
+
+Three whisper/ffmpeg/yt-dlp jobs in parallel crashed this Mac twice. The wrapper
+serializes heavy jobs with a lock and a memory floor, but only for jobs that go
+through it; this hook is what sends Claude through it.
+
+Deliberately thin: read the payload, call one pure function, print JSON, exit 0.
+Every judgement lives in `load_guard_lib.decide`, which takes no clock, no paths
+and no config. The hook reads `load_guard.commands` and passes it to `heavy_set`.
+
+DENY, not ASK, for the reason `claude-model-guard` gives: a denial is
+self-correcting (the reason reaches Claude, which re-runs the command through the
+wrapper) and an `ask` would put a prompt in front of every media job.
+
+KNOWN LIMITS are listed in `load_guard_lib`: `bash -c "ffmpeg ..."`, `xargs
+ffmpeg`, `find -exec`, a heavy tool called from an unlisted script, and anything
+run outside Claude are not caught.
+
+OVERRIDE: `LOAD_GUARD_ALLOW=1` in the hook's environment or as a prefix on the
+command skips the guard. It is the human's to set, never Claude's. It is checked
+before any config read, so it works when the config is broken.
+
+FAIL OPEN. Any exception lets the command proceed and the exit code is ALWAYS 0,
+but a crash is reported rather than silent: one JSON object on stdout carrying a
+systemMessage for the human and additionalContext for Claude, with no
+permissionDecision. Ordinary malformed input stays a silent allow.
+"""
+import json
+import os
+import re
+import sys
+
+GUARD = "claude-load-guard"
+NOUN = "command"
+
+_ALLOW_PREFIX = re.compile(r"(?:^|[\s;&|(])LOAD_GUARD_ALLOW=1(?:\s|$)")
+_LEADING_ASSIGNMENTS = re.compile(r"^((?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*)(.*)$", re.S)
+
+
+def _crash_report(exc):
+    # A crashed guard allows (house rule: fail open), but it must not look
+    # like a guard that checked and allowed. Two channels: systemMessage for
+    # the human, additionalContext for Claude -- which reaches Claude on every
+    # surface, so Claude can tell the human where the warning does not render.
+    # permissionDecision is OMITTED: "allow" would bypass other rules.
+    message = "%s crashed and did NOT check this %s: %s: %s" % (
+        GUARD, NOUN, type(exc).__name__, exc)
+    return {
+        "systemMessage": message,
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": message + ". This guard's check did not run; "
+                                 "other guards and permission rules still "
+                                 "apply. Tell the user this guard is broken.",
+        },
+    }
+
+
+def main():
+    here = os.path.dirname(os.path.realpath(__file__))
+    # realpath, not abspath: this runs through a ~/.local/bin symlink and
+    # abspath does not resolve one.
+    sys.path.insert(0, here)
+    import load_guard_lib as lib
+
+    try:
+        payload = json.loads(sys.stdin.buffer.read())
+    except ValueError:
+        return
+    except Exception as exc:
+        print(json.dumps(_crash_report(exc)))
+        return
+    if not isinstance(payload, dict):
+        return
+
+    # Checked BEFORE any config read. An override that only works when the
+    # config file happens to parse is not an override.
+    if os.environ.get("LOAD_GUARD_ALLOW") == "1":
+        return
+
+    if payload.get("tool_name") != "Bash":
+        return
+
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str):
+        return
+    if _ALLOW_PREFIX.search(command):
+        return
+
+    if not _enabled(here):
+        return
+
+    heavy = lib.heavy_set(_extra_commands(here))
+    verdict = lib.decide(command, heavy)
+    if verdict.allowed:
+        # Emit NOTHING, rather than permissionDecision "allow": "allow" bypasses
+        # every other permission rule, which is not this guard's business.
+        return
+
+    reason = verdict.reason + _rewrite_hint(lib, command, heavy)
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        },
+    }))
+
+
+def _rewrite_hint(lib, command, heavy):
+    """The offending segment rewritten through the wrapper, or "".
+
+    Leading VAR=value assignments stay in front of the wrapper: `execvp` would
+    otherwise try to run `VAR=value` as a program.
+    """
+    for segment in lib.split_segments(command):
+        if lib.decide(segment, heavy).allowed:
+            continue
+        assignments, rest = _LEADING_ASSIGNMENTS.match(segment.strip()).groups()
+        return " Exact rewrite of the blocked part: `%s%s %s`." % (
+            assignments, lib.WRAPPER, rest)
+    return ""
+
+
+def _read_config(here, key):
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.dirname(here)), "lib"))
+    import toolkit_config as config
+    return config.get("load_guard", key)
+
+
+def _extra_commands(here):
+    """Extra heavy program names from config. A broken config adds none: the
+    built-in set still applies, so the guard stays at least as strict."""
+    try:
+        return _read_config(here, "commands")
+    except Exception:
+        return None
+
+
+def _enabled(here):
+    """Whether the guard is on. Absent config means ON.
+
+    The stricter direction for the absent case, per this repo's config rule: a
+    machine with no config gets the guard, rather than silently getting nothing.
+    Any failure reading config also returns True for the same reason -- a broken
+    config must not be a way to disarm a guard. That is the one place this tool
+    fails strict rather than open, and it is about CONFIG, never about a command.
+    """
+    try:
+        value = _read_config(here, "enabled")
+    except Exception:
+        return True
+    if value is None:
+        return True
+    return bool(value)
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
+    try:
+        main()
+    except Exception as exc:
+        # Still fails open and exits 0, but reports the crash on both channels.
+        print(json.dumps(_crash_report(exc)))
+    sys.exit(0)
