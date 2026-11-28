@@ -144,19 +144,39 @@ class TestShimInstall(ShimInstallCase):
         self.install()
         self.assertTrue(self.is_our_shim("mytool"))
 
-    def test_a_shim_for_a_tool_no_longer_installed_is_pruned(self):
+    def test_a_shim_is_kept_when_its_tool_is_uninstalled(self):
+        # Pruning follows config, not PATH: the shim then exits 127, loudly.
         self.add_real_tool("ffmpeg")
         self.install()
         os.remove(os.path.join(self.tool_dir, "ffmpeg"))
         self.install()
-        self.assertFalse(os.path.lexists(self.shim("ffmpeg")))
+        self.assertTrue(self.is_our_shim("ffmpeg"))
+
+    def test_a_shim_is_pruned_when_its_name_leaves_the_config(self):
+        self.add_real_tool("mytool")
+        self.write_config({"load_guard": {"commands": ["mytool"]}})
+        self.install()
+        self.assertTrue(self.is_our_shim("mytool"))
+        self.write_config({})
+        self.install()
+        self.assertFalse(os.path.lexists(self.shim("mytool")))
+
+    def test_a_narrow_path_install_after_a_full_one_keeps_the_shims(self):
+        self.add_real_tool("ffmpeg")
+        self.install()
+        self.assertTrue(self.is_our_shim("ffmpeg"))
+        narrow = path_without(os.path.join(self.root, "narrow"),
+                              {"ffmpeg", "whisper-cli", "llama-server",
+                               "llama-cli", "llama-bench"})
+        wt.run_install(self.repo, self.home, (), {"PATH": narrow})
+        self.assertTrue(self.is_our_shim("ffmpeg"))
 
     def test_the_wrapper_itself_is_not_taken_for_the_real_tool(self):
-        # ~/.local/bin on PATH holding only the shim is not "the tool exists".
-        os.symlink(os.path.join(self.repo, HEAVY_RUN), self.shim("ffmpeg"))
-        path = path_without(os.path.join(self.root, "shadows"), {"ffmpeg"})
-        wt.run_install(self.repo, self.home, (),
-                       {"PATH": self.local_bin + os.pathsep + path})
+        # An ffmpeg elsewhere on PATH that is only a link to the wrapper is not
+        # "the tool exists".
+        os.symlink(os.path.join(self.repo, HEAVY_RUN),
+                   os.path.join(self.tool_dir, "ffmpeg"))
+        self.install()
         self.assertFalse(os.path.lexists(self.shim("ffmpeg")))
 
 
@@ -166,18 +186,20 @@ class TestShimCheck(ShimInstallCase):
         self.write_config({"load_guard": {"commands": ["mytool"]}})
         self.add_real_tool("mytool")
         self.install()
-        again = self.install("--check")
-        out = again.stdout
+        out = self.install("--check").stdout
         self.assertIn("OK\x1b[0m ~/.local/bin/ffmpeg", out)   # seen and in place
         self.assertIn("OK\x1b[0m ~/.local/bin/mytool", out)
         self.assertNotIn("~/.local/bin/ffmpeg -> ", out)
         self.assertNotIn("~/.local/bin/mytool -> ", out)
         self.assertNotIn("shim no longer wanted", out)
 
-    def test_check_proposes_the_missing_shim_and_creates_nothing(self):
+    def test_check_reports_a_missing_shim_informationally_and_exits_0(self):
+        self.install()                  # every other link in place, no ffmpeg yet
         self.add_real_tool("ffmpeg")
         result = self.install("--check")
-        self.assertIn("~/.local/bin/ffmpeg -> tools/load-guard/claude-heavy-run", result.stdout)
+        self.assertIn("ffmpeg: real tool found; install would add a shim", result.stdout)
+        self.assertNotIn("~/.local/bin/ffmpeg -> ", result.stdout)
+        self.assertNotIn("link(s) not in place", result.stdout)
         self.assertFalse(os.path.lexists(self.shim("ffmpeg")))
 
 

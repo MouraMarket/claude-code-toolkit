@@ -858,13 +858,19 @@ link "$REPO/tools/setup-audit/claude-setup-audit"      "$HOME/.local/bin/claude-
 # a shim for a missing tool would answer "not installed" where the shell's own
 # "command not found" belongs. So `TestExecutableNamesCoversEveryLink` neither sees
 # nor needs these. Names are decided in Python (load_guard_lib.heavy_set plus config,
-# PATH searched outside ~/.local/bin); the first line printed is `ok` or nothing was
-# decided, and a blank decision (load_guard.enabled false) is different from no
-# decision: the prune below clears shims only on a real decision. Skipped for
-# --manifest, whose rows are consumed as a fixed list of links.
+# PATH searched outside ~/.local/bin). Output: `ok`, then `want <name>` for every
+# name config asks for and `have <name>` for those whose real tool is on PATH now.
+# CREATE follows `have` (PATH-dependent); PRUNE follows `want` only (config-
+# dependent), because the PATH an install sees varies by surface (a narrow-PATH
+# shell must not delete working shims). A shim whose tool was uninstalled stays
+# and exits 127, which is loud. No `ok` first line means nothing was decided and
+# the prune is skipped. Skipped for --manifest, whose rows are consumed as a
+# fixed list of links. --check reports a would-be shim as information only: it
+# depends on PATH, so counting it would make surfaces disagree.
 SHIM_TARGET="$REPO/tools/load-guard/claude-heavy-run"
 SHIM_DECIDED=0
-SHIM_NAMES=""
+SHIM_WANTED=""
+SHIM_HAVE=""
 if (( ! MANIFEST )); then
   shim_out="$(CLAUDE_TOOLKIT_CONFIG="$CONFIG" python3 - "$REPO" "$HOME/.local/bin" "$SHIM_TARGET" <<'PYEOF' 2>/dev/null || true
 import os, re, sys
@@ -872,7 +878,7 @@ repo, local_bin, target = sys.argv[1:4]
 sys.path[:0] = [os.path.join(repo, "tools", "load-guard"), os.path.join(repo, "lib")]
 import load_guard_lib
 import toolkit_config
-names = []
+want, have = [], []
 if toolkit_config.get("load_guard", "enabled") is not False:
     wanted = sorted(load_guard_lib.heavy_set(toolkit_config.get("load_guard", "commands")))
     skip_dir = os.path.realpath(local_bin)
@@ -880,22 +886,26 @@ if toolkit_config.get("load_guard", "enabled") is not False:
     for name in wanted:
         if name == "claude-heavy-run" or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", name):
             continue
+        want.append(name)
         for directory in os.environ.get("PATH", "").split(os.pathsep):
             if not directory or os.path.realpath(directory) == skip_dir:
                 continue
             path = os.path.join(directory, name)
             if os.path.isfile(path) and os.access(path, os.X_OK) \
                     and os.path.realpath(path) != own:
-                names.append(name)
+                have.append(name)
                 break
 print("ok")
-for name in names:
-    print(name)
+for name in want:
+    print("want " + name)
+for name in have:
+    print("have " + name)
 PYEOF
 )"
   if [[ "${shim_out%%$'\n'*}" == "ok" ]]; then
     SHIM_DECIDED=1
-    SHIM_NAMES="${shim_out#ok}"
+    SHIM_WANTED="$(printf '%s\n' "$shim_out" | sed -n 's/^want //p')"
+    SHIM_HAVE="$(printf '%s\n' "$shim_out" | sed -n 's/^have //p')"
   fi
 fi
 
@@ -917,13 +927,15 @@ if (( SHIM_DECIDED )); then
         # Never replace a file or link that is not already our shim. Not counted
         # as a missing link: that would make --check fail on every run.
         warn "${shim_dest/#$HOME/$TILDE} exists and is not the load-guard shim — not touching it, so $shim_name runs unguarded"
+      elif (( CHECK )); then
+        # Information, not a missing link: whether a shim is wanted depends on
+        # the PATH this run sees, which differs between surfaces.
+        ok "$shim_name: real tool found; install would add a shim"
       else
         act "${shim_dest/#$HOME/$TILDE} -> ${SHIM_TARGET#$REPO/}"
-        MISSING_LINKS=$(( MISSING_LINKS + 1 ))
-        LINKS_ABSENT=$(( LINKS_ABSENT + 1 ))
-        (( CHECK )) || ln -sfn "$SHIM_TARGET" "$shim_dest"
+        ln -sfn "$SHIM_TARGET" "$shim_dest"
       fi
-    done <<< "$SHIM_NAMES"
+    done <<< "$SHIM_HAVE"
     (( shim_any )) || ok "no heavy tool on PATH to shim (or load_guard.enabled is false)"
   fi
 fi
@@ -1920,8 +1932,8 @@ for dir in "$HOME/.local/bin"; do
 done
 (( found_dangling )) || ok "no links to files this repo no longer has"
 
-# A shim for a retired name, a tool no longer installed, or load_guard.enabled
-# false. Not dangling (claude-heavy-run still exists), so the loop above never
+# A shim for a retired name or load_guard.enabled false (config only, never
+# PATH). Not dangling (claude-heavy-run still exists), so the loop above never
 # sees it. Ours only when it points at exactly $SHIM_TARGET and is not the
 # wrapper's own link; run only when the shim step above reached a decision, so a
 # config or import failure can never clear working shims.
@@ -1932,7 +1944,7 @@ if (( SHIM_DECIDED )); then
     [[ "$(readlink "$entry")" == "$SHIM_TARGET" ]] || continue
     shim_name="${entry##*/}"
     [[ "$shim_name" == "claude-heavy-run" ]] && continue
-    case $'\n'"$SHIM_NAMES"$'\n' in
+    case $'\n'"$SHIM_WANTED"$'\n' in
       *$'\n'"$shim_name"$'\n'*) continue ;;
     esac
     found_stale_shim=1

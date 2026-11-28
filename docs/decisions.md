@@ -558,11 +558,16 @@ Defends: `tools/load-guard/claude-heavy-run`, the shim step in `install.sh`
   while heredoc bodies and `ollama list` were wrongly denied. Parsing shell text is the
   wrong layer; a shim sees every caller (loops, `bash -c`, scripts, Python
   subprocesses, a human's terminal). The hook and parser were removed.
-- **A shim exists only while the real tool does.** The installer links one only if an
-  executable of that name is on PATH outside `~/.local/bin`, never replaces a
-  `~/.local/bin/<name>` that is not already our link (it warns), and prunes a shim
-  whose tool left or whose name was retired or disabled. These are not `link` calls,
-  so `TestExecutableNamesCoversEveryLink` does not apply; the shim tests do.
+- **A shim is created only while the real tool is visible.** The installer links one
+  only if an executable of that name is on PATH outside `~/.local/bin`, and never
+  replaces a `~/.local/bin/<name>` that is not already our link (it warns). Pruning
+  follows config only, never PATH: a shim goes when its name leaves
+  `heavy_set(commands)` or `load_guard.enabled` is false. The PATH an install sees
+  differs by surface (a narrow-PATH shell would otherwise delete working shims), and
+  a shim whose tool was uninstalled exits 127 "not installed", which is loud.
+  `--check` reports a would-be shim as information, not a missing link, for the same
+  reason. These are not `link` calls, so `TestExecutableNamesCoversEveryLink` does not
+  apply; the shim tests do.
 - **exec with an inherited fd, not a supervisor.** The wrapper takes the `flock`,
   then `exec`s the job in the same process with the lock fd inheritable. The lock
   lives exactly as long as the job, a crash leaves nothing stale, and there is no
