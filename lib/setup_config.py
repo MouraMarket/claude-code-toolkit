@@ -1196,6 +1196,7 @@ KEY_VALIDATORS = {
     "caffeinate.settle_seconds": _int_in_range(1),              # caffeinate_lib.py
     "caffeinate.hold_seconds": _int_in_range(1),                # caffeinate_lib.py
     "caffeinate.job_hold_seconds": _int_in_range(1),            # caffeinate_lib.py
+    "load_guard.min_available_gb": _int_in_range(0),            # claude-heavy-run
     "usage_watch.stale_after_seconds": _int_in_range(1),        # usage_lib.py
     "usage_watch.unknown_reannounce_seconds": _int_in_range(1), # usage_lib.py
     "usage_watch.default_ratio": _int_in_range(1),              # estimate_lib.py
