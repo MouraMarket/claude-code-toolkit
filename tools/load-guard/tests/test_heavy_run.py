@@ -32,8 +32,8 @@ class HeavyRunCase(unittest.TestCase):
         os.mkdir(self.bin)
         self.children = []
         self.addCleanup(self._reap)
-        self.set_sysctl("55")
-        self.floor = 40
+        self.set_sysctl("55")  # 55% of 16 GB = 8.8 GB available
+        self.floor = 3
 
     def _reap(self):
         for child in self.children:
@@ -44,18 +44,22 @@ class HeavyRunCase(unittest.TestCase):
                 if stream:
                     stream.close()
 
-    def set_sysctl(self, output, exit_code=0):
+    def set_sysctl(self, level, memsize="17179869184", exit_code=0):
+        """Fake sysctl answering both keys; 16 GiB of RAM unless told otherwise."""
         path = os.path.join(self.bin, "sysctl")
         with open(path, "w") as handle:
-            handle.write("#!/bin/sh\nprintf '%%s\\n' '%s'\nexit %d\n"
-                         % (output, exit_code))
+            handle.write(
+                "#!/bin/sh\ncase \"$2\" in\n"
+                "  kern.memorystatus_level) printf '%%s\\n' '%s' ;;\n"
+                "  hw.memsize) printf '%%s\\n' '%s' ;;\n"
+                "  *) exit 1 ;;\nesac\nexit %d\n" % (level, memsize, exit_code))
         os.chmod(path, 0o755)
 
     def env(self):
         config = os.path.join(self.tmp, "config.json")
         with open(config, "w") as handle:
             json.dump({"load_guard": {"state_dir": self.state_dir,
-                                      "min_available_percent": self.floor}},
+                                      "min_available_gb": self.floor}},
                       handle)
         return {"HOME": self.tmp, "PATH": self.bin + ":/usr/bin:/bin",
                 "CLAUDE_TOOLKIT_CONFIG": config}
@@ -131,26 +135,51 @@ class TestExitAndLock(HeavyRunCase):
 
 class TestMemoryFloor(HeavyRunCase):
 
-    def marker_run(self):
+    def marker_run(self, *prefix):
         marker = os.path.join(self.tmp, "ran")
         if os.path.exists(marker):
             os.remove(marker)
-        result = self.run_wrapper("touch", marker)
+        result = self.run_wrapper(*(list(prefix) + ["touch", marker]))
         return result, os.path.exists(marker)
 
     def test_d_below_floor_refuses_and_job_never_runs(self):
-        self.set_sysctl("30")
+        self.set_sysctl("10")  # 1.6 GB available, floor 3
         result, ran = self.marker_run()
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertFalse(ran)
-        self.assertIn("30", result.stderr)
-        self.assertIn("40", result.stderr)
+        self.assertIn("1.6", result.stderr)
+        self.assertIn("3.0", result.stderr)
 
     def test_d_above_floor_runs(self):
         self.set_sysctl("55")
         result, ran = self.marker_run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(ran)
+
+    def test_needs_gb_larger_than_headroom_refuses(self):
+        self.set_sysctl("38")  # 6.1 GB available, floor 3: 9 + 3 > 6.1
+        result, ran = self.marker_run("--needs-gb", "9")
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertFalse(ran)
+        self.assertIn("9.0", result.stderr)  # the message names N
+
+    def test_needs_gb_that_fits_runs(self):
+        self.set_sysctl("38")  # 6.1 GB available: 2 + 3 <= 6.1
+        result, ran = self.marker_run("--needs-gb", "2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(ran)
+
+    def test_needs_gb_accepts_double_dash_after(self):
+        result, ran = self.marker_run("--needs-gb", "1", "--")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(ran)
+
+    def test_needs_gb_not_a_number_is_usage_error(self):
+        for bad in ("abc", "0", "-2", "nan", "inf"):
+            result, ran = self.marker_run("--needs-gb", bad)
+            self.assertEqual(result.returncode, 2, (bad, result.stderr))
+            self.assertFalse(ran)
+        self.assertEqual(self.run_wrapper("--needs-gb").returncode, 2)
 
     def test_d_garbage_refuses(self):
         self.set_sysctl("garbage")
@@ -159,19 +188,27 @@ class TestMemoryFloor(HeavyRunCase):
         self.assertFalse(ran)
         self.assertIn("could not read", result.stderr)
 
+    def test_d_unreadable_memsize_refuses(self):
+        for bad in ("garbage", "", "0"):
+            self.set_sysctl("55", memsize=bad)
+            result, ran = self.marker_run()
+            self.assertEqual(result.returncode, 75, (bad, result.stderr))
+            self.assertFalse(ran)
+            self.assertIn("could not read", result.stderr)
+
     def test_d_sysctl_failure_refuses(self):
         self.set_sysctl("55", exit_code=1)
         result, ran = self.marker_run()
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertFalse(ran)
 
-    def test_d_default_floor_is_40_without_config(self):
+    def test_d_default_floor_is_3_gb_without_config(self):
         self.floor = "not a number"  # unusable value falls back to the default
-        self.set_sysctl("39")
+        self.set_sysctl("18")  # 2.88 GB available, under 3
         result, ran = self.marker_run()
         self.assertEqual(result.returncode, 75, result.stderr)
         self.assertFalse(ran)
-        self.set_sysctl("40")
+        self.set_sysctl("19")  # 3.04 GB
         result, ran = self.marker_run()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(ran)

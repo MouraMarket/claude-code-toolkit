@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run a heavy local job under an exclusive lock, one at a time.
 
-    claude-heavy-run [--] CMD ARGS...
+    claude-heavy-run [--needs-gb N] [--] CMD ARGS...
     claude-heavy-run --status
 
 Takes `fcntl.flock(LOCK_EX | LOCK_NB)` on `heavy-run.lock` in the state dir,
@@ -13,12 +13,17 @@ job's own. (A flock belongs to the open file description, which survives exec;
 Python fds are non-inheritable by default, so `os.set_inheritable` is the line
 that makes this work.)
 
+Memory is judged in GB: available_gb = kern.memorystatus_level / 100 *
+hw.memsize / 2^30 (both via `sysctl -n`). The job is refused when
+available_gb < N + floor, where N is `--needs-gb` (default 0; a positive
+number, else usage error, exit 2) and floor is `min_available_gb`.
+
 Exit 75 (EX_TEMPFAIL) when the lock is held (names the holder on stderr) or
-when memory is below the floor or cannot be read. Unlike the hook, the wrapper
+when memory is below N + floor or cannot be read. Unlike the hook, the wrapper
 FAILS STRICT on an unreadable reading: the floor is a safety value.
 
 Config (`load_guard` in the toolkit config), all optional:
-  min_available_percent  absent = 40 (a starting value, not measured under load)
+  min_available_gb       absent = 3 (a starting value, not measured under load)
   state_dir              absent = ~/.claude/load-guard
 `enabled` applies to the hook only; the wrapper always locks.
 
@@ -31,33 +36,46 @@ import sys
 import time
 
 EX_TEMPFAIL = 75
-DEFAULT_FLOOR = 40
+DEFAULT_FLOOR_GB = 3.0
 LOCK_NAME = "heavy-run.lock"
 
 
-def _read_level():
-    """The kernel's percent-available figure, or None when unreadable."""
-    import load_guard_lib as lib
+def _sysctl(key):
+    """`sysctl -n KEY` output, or None when it cannot be read."""
     try:
         out = subprocess.run(
-            ["sysctl", "-n", "kern.memorystatus_level"],
+            ["sysctl", "-n", key],
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, timeout=10, universal_newlines=True)
+            stderr=subprocess.DEVNULL, timeout=10, universal_newlines=True,
+            encoding="utf-8", errors="replace")
     except (OSError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
         return None
-    return lib.parse_level(out.stdout)
+    return out.stdout
+
+
+def _read_available_gb():
+    """Available memory in GB, or None when either reading is unusable."""
+    import load_guard_lib as lib
+    level = lib.parse_level(_sysctl("kern.memorystatus_level") or "")
+    memsize = (_sysctl("hw.memsize") or "").strip()
+    if level is None or not memsize.isdigit() or int(memsize) <= 0:
+        return None
+    return level / 100.0 * int(memsize) / 2 ** 30
 
 
 def _settings():
-    """(floor, state_dir) from config; any config trouble means the defaults."""
-    floor = DEFAULT_FLOOR
+    """(floor_gb, state_dir) from config; any config trouble means the defaults."""
+    floor = DEFAULT_FLOOR_GB
     state_dir = os.path.expanduser("~/.claude/load-guard")
     try:
         import toolkit_config as config
-        floor = config.get_int("load_guard", "min_available_percent",
-                               default=DEFAULT_FLOOR)
+        raw = config.get("load_guard", "min_available_gb")
+        # bool is an int in Python; true/false is not a size
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool) \
+                and raw == raw and raw >= 0:
+            floor = float(raw)
         state_dir = config.get_path("load_guard", "state_dir",
                                     default=state_dir)
     except Exception:  # noqa: BLE001 - a broken config must not disarm the lock
@@ -101,7 +119,7 @@ def status(state_dir):
     return 0
 
 
-def run(argv, state_dir, floor):
+def run(argv, state_dir, floor, needs_gb):
     import load_guard_lib as lib
     fd = _open_lock(state_dir)
     try:
@@ -110,15 +128,16 @@ def run(argv, state_dir, floor):
         sys.stderr.write("claude-heavy-run: %s\n" % _report_held(fd))
         return EX_TEMPFAIL
 
-    level = _read_level()
-    if level is None:
+    available = _read_available_gb()
+    if available is None:
         sys.stderr.write("claude-heavy-run: could not read memory "
-                         "(sysctl kern.memorystatus_level); refusing.\n")
+                         "(sysctl kern.memorystatus_level, hw.memsize); "
+                         "refusing.\n")
         return EX_TEMPFAIL
-    if level < floor:
+    if available < needs_gb + floor:
         sys.stderr.write(
-            "claude-heavy-run: memory available is %d%%, below the floor of "
-            "%d%%; refusing.\n" % (level, floor))
+            "claude-heavy-run: %.1f GB available, the job needs %.1f GB and "
+            "the floor is %.1f GB; refusing.\n" % (available, needs_gb, floor))
         return EX_TEMPFAIL
 
     os.ftruncate(fd, 0)
@@ -146,14 +165,31 @@ def main():
     floor, state_dir = _settings()
     if args == ["--status"]:
         return status(state_dir)
+    needs_gb = 0.0
+    if args and args[0] == "--needs-gb":
+        try:
+            needs_gb = float(args[1])
+        except (IndexError, ValueError):
+            needs_gb = 0.0
+        if not needs_gb > 0 or needs_gb == float("inf"):
+            sys.stderr.write("claude-heavy-run: --needs-gb takes a positive "
+                             "number of GB\n")
+            return 2
+        args = args[2:]
     if args and args[0] == "--":
         args = args[1:]
     if not args:
-        sys.stderr.write("usage: claude-heavy-run [--] CMD ARGS...\n"
+        sys.stderr.write("usage: claude-heavy-run [--needs-gb N] [--] "
+                         "CMD ARGS...\n"
                          "       claude-heavy-run --status\n")
         return 2
-    return run(args, state_dir, floor)
+    return run(args, state_dir, floor, needs_gb)
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors=_stream.errors)
+        except (AttributeError, ValueError):
+            pass
     sys.exit(main())

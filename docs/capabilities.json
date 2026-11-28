@@ -126,6 +126,31 @@
       "requires": []
     },
     {
+      "id": "tool:load-guard",
+      "kind": "tool",
+      "summary": "Refuses a bare heavy local job (whisper, ffmpeg, yt-dlp, local models) and runs it one at a time under a lock with a memory floor.",
+      "delivery": "profile:mac",
+      "entry_points": [
+        "tools/load-guard/claude-heavy-run",
+        "tools/load-guard/claude-load-guard"
+      ],
+      "tests": [
+        "tools/load-guard/tests",
+        "lib/tests/test_guard_crash_reports.py"
+      ],
+      "commands": [
+        "claude-heavy-run",
+        "claude-load-guard"
+      ],
+      "hooks": [
+        "tools/load-guard/claude-load-guard"
+      ],
+      "config": [
+        "load_guard"
+      ],
+      "requires": []
+    },
+    {
       "id": "tool:catalogue",
       "kind": "tool",
       "summary": "Generates the catalogue of what each profile installs and what each hook writes on its own, and checks that it is current.",
